@@ -1,5 +1,13 @@
 # WorkBuddy 国际版多账号反代网关
 
+<p align="center">
+  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-intl/releases"><img src="https://img.shields.io/github/v/release/ardeyouxipianyi/workbuddy2api-intl?color=2496ED&style=flat-square" alt="Release"></a>
+  <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
+  <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
+  <img src="https://img.shields.io/badge/Endpoint-www.workbuddy.ai-0DBD8B?style=flat-square" alt="workbuddy.ai">
+  <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License">
+</p>
+
 本项目为 **WorkBuddy 国际版多账号反代网关**，将腾讯 **www.workbuddy.ai** 原生服务封装为标准 OpenAI 兼容接口，支持多账号负载轮询、OAuth 一键免客户端登录、Web 监控看板、实时积分查询、以及 Chat Completions 与 Responses API (Codex / Claude Code) 双协议全功能支持。
 
 - **开箱即用**：包内自带 Python 运行时，不用装任何东西
