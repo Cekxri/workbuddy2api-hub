@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WorkBuddy 用量看板</title>
+<style>
+:root{
+  --bg:#0f1117; --panel:#171a23; --panel2:#1e222d; --line:#2a2f3d;
+  --fg:#e6e9f0; --dim:#8b93a7; --accent:#4f8cff; --accent2:#22c55e;
+  --warn:#f59e0b; --think:#a855f7; --bad:#ef4444;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif}
+header{padding:20px 24px;border-bottom:1px solid var(--line);display:flex;
+  align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
+  position:sticky;top:0;background:rgba(15,17,23,.92);backdrop-filter:blur(8px);z-index:10}
+h1{margin:0;font-size:17px;font-weight:600;letter-spacing:.2px}
+h1 span{color:var(--dim);font-weight:400;font-size:13px;margin-left:8px}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent2);
+  margin-right:7px;vertical-align:middle;box-shadow:0 0 8px var(--accent2)}
+.dot.err{background:var(--bad);box-shadow:0 0 8px var(--bad)}
+.meta{color:var(--dim);font-size:12px;text-align:right;line-height:1.7}
+.meta b{color:var(--fg);font-weight:500}
+main{padding:20px 24px 60px;max-width:1280px;margin:0 auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:12px;margin-bottom:22px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.card .k{color:var(--dim);font-size:12px;margin-bottom:6px}
+.card .v{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
+.card .s{color:var(--dim);font-size:11px;margin-top:4px}
+.card.think .v{color:var(--think)}
+.card.accent .v{color:var(--accent)}
+.card.accent2 .v{color:var(--accent2)}
+.card.err .v{color:var(--bad)}
+section{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:16px 18px;margin-bottom:18px}
+section h2{margin:0 0 14px;font-size:13px;font-weight:600;color:var(--dim);
+  text-transform:uppercase;letter-spacing:.6px}
+section h2 em{color:var(--fg);font-style:normal;text-transform:none;letter-spacing:0;margin-left:6px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:right;padding:8px 10px;border-bottom:1px solid var(--line);
+  font-variant-numeric:tabular-nums}
+th{color:var(--dim);font-weight:500;font-size:12px;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--panel2)}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+.bar-fill{height:6px;border-radius:3px;background:var(--accent);min-width:2px;display:inline-block;vertical-align:middle}
+.bar-fill.think{background:var(--think)}
+.badge{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;
+  background:var(--panel2);border:1px solid var(--line);color:var(--dim)}
+.badge.ok{color:var(--accent2);border-color:rgba(34,197,94,.4)}
+.badge.s{color:var(--accent)}
+.badge.off{color:var(--dim)}
+.badge.warn{color:var(--warn);border-color:rgba(245,158,11,.4)}
+.badge.bad{color:var(--bad);border-color:rgba(239,68,68,.4)}
+.empty{color:var(--dim);text-align:center;padding:26px 0;font-size:13px}
+.legend{display:flex;gap:14px;color:var(--dim);font-size:11px;margin-top:10px;flex-wrap:wrap}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+button{cursor:pointer;font:inherit;font-size:12px;padding:6px 12px;border-radius:8px;
+  border:1px solid var(--accent);background:var(--accent);color:#fff;transition:opacity .15s}
+button:hover{opacity:.85}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.sec{background:transparent;border-color:var(--line);color:var(--fg)}
+button.sec:hover{border-color:var(--dim)}
+button.danger{border-color:var(--bad);background:transparent;color:var(--bad)}
+button.mini{padding:3px 9px;font-size:11px}
+.modal-mask{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);
+  align-items:center;justify-content:center;padding:20px;z-index:100}
+.modal-mask.show{display:flex}
+.modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  width:min(620px,100%);max-height:88vh;overflow:auto}
+.modal-hd{display:flex;align-items:center;justify-content:space-between;
+  padding:16px 20px;border-bottom:1px solid var(--line)}
+.modal-hd h2{margin:0;font-size:15px;font-weight:600;text-transform:none;letter-spacing:0;color:var(--fg)}
+.modal-x{background:none;border:none;color:var(--dim);font-size:22px;line-height:1;padding:0 4px}
+.modal-bd{padding:18px 20px}
+.modal-ft{padding:14px 20px;border-top:1px solid var(--line);display:flex;
+  justify-content:flex-end;gap:8px}
+.login-link{display:block;word-break:break-all;background:var(--panel2);
+  border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:12px 0;
+  color:var(--accent);text-decoration:none;font-size:12px}
+.login-link:hover{border-color:var(--accent)}
+.hint{color:var(--dim);font-size:12px;margin:8px 0}
+.step{display:flex;gap:10px;align-items:flex-start;margin:10px 0}
+.step .n{flex:0 0 20px;height:20px;border-radius:50%;background:var(--panel2);
+  border:1px solid var(--line);color:var(--dim);font-size:11px;display:flex;
+  align-items:center;justify-content:center}
+.step.active .n{border-color:var(--accent);color:var(--accent)}
+.step.done .n{border-color:var(--accent2);color:var(--accent2)}
+.step .t{font-size:13px}
+footer{color:var(--dim);font-size:12px;text-align:center;margin-top:26px}
+a{color:var(--accent);text-decoration:none}
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="dot" id="statusDot"></span>WorkBuddy 用量看板<span id="realm"></span></h1>
+  <div class="meta" id="meta">加载中…</div>
+</header>
+<main>
+  <div id="keyBar" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;
+       background:var(--panel);border:1px solid var(--warn);border-radius:12px;
+       padding:12px 16px;margin-bottom:18px">
+    <b style="color:var(--warn)">此服务器需要 API Key</b>
+    <span style="color:var(--dim);font-size:12px">粘贴启动窗口里显示的密钥</span>
+    <input id="keyInput" type="text" placeholder="API Key"
+           style="flex:1;min-width:220px;background:var(--panel2);border:1px solid var(--line);
+                  border-radius:8px;padding:7px 10px;color:var(--fg);font:inherit">
+    <button onclick="saveKey()">连接</button>
+    <span id="keyStatus" style="color:var(--dim);font-size:12px"></span>
+  </div>
+
+  <div class="cards" id="cards"></div>
+
+  <section>
+    <h2>账号<em id="acctCount"></em></h2>
+    <div class="toolbar">
+      <button onclick="startLogin()">登录新账号</button>
+      <button class="sec" onclick="queryCredits(this)">查询积分</button>
+      <button class="sec" onclick="importDesktop(this)">从桌面应用导入</button>
+      <button class="sec" onclick="refreshAccounts()">刷新令牌</button>
+      <button class="sec" onclick="setAll(true)">全部启用</button>
+      <button class="sec" onclick="setAll(false)">全部停用</button>
+    </div>
+    <div id="accounts"></div>
+  </section>
+
+  <section>
+    <h2>性能指标</h2>
+    <div id="perf"></div>
+  </section>
+
+  <section>
+    <h2>按模型</h2>
+    <div id="models"></div>
+  </section>
+
+  <section>
+    <h2>最近请求</h2>
+    <div id="recent"></div>
+  </section>
+
+  <footer>每 5 秒自动刷新 · 数据来自本机反代 <span class="mono" id="logfile"></span></footer>
+</main>
+
+<div class="modal-mask" id="loginModal">
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-hd">
+      <h2>登录新的 WorkBuddy 账号</h2>
+      <button class="modal-x" onclick="closeLogin()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <div class="step" id="step1"><div class="n">1</div><div class="t">正在向 workbuddy.ai 申请登录链接…</div></div>
+      <div class="step" id="step2"><div class="n">2</div><div class="t">在浏览器里打开下面的链接并登录</div></div>
+      <div id="loginLinkBox"></div>
+      <div class="step" id="step3"><div class="n">3</div><div class="t">等待浏览器完成登录…</div></div>
+      <p class="hint" id="loginStatus"></p>
+    </div>
+    <div class="modal-ft">
+      <button class="sec" onclick="closeLogin()">取消</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const fmt = n => (n ?? 0).toLocaleString('en-US');
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ms = v => v == null ? '—' : (v >= 1000 ? (v/1000).toFixed(2) + ' s' : Math.round(v) + ' ms');
+const pct = v => v == null ? '—' : v.toFixed(1) + '%';
+
+function perfRow(label, b, unit, fmtFn, color){
+  if(!b) return '<tr><td>' + label + '</td><td colspan="5" style="color:var(--dim)">暂无数据</td></tr>';
+  const f = fmtFn || (v => v);
+  const dot = color ? ' <i style="display:inline-block;width:7px;height:7px;border-radius:2px;background:' + color + ';margin-left:6px"></i>' : '';
+  return '<tr><td>' + label + dot + '</td>'
+    + '<td><b>' + f(b.avg) + '</b>' + unit + '</td>'
+    + '<td>' + f(b.p50) + unit + '</td>'
+    + '<td>' + f(b.p90) + unit + '</td>'
+    + '<td>' + f(b.p99) + unit + '</td>'
+    + '<td style="color:var(--dim)">' + b.samples + ' 次</td></tr>';
+}
+
+function card(k, v, sub, cls){
+  return '<div class="card ' + (cls||'') + '"><div class="k">' + k + '</div>'
+    + '<div class="v">' + v + '</div>' + (sub ? '<div class="s">' + sub + '</div>' : '') + '</div>';
+}
+
+/* ---- api key handling ---- */
+const KEY_STORE = 'wb-proxy-api-key';
+let API_KEY = '';
+(function initKey(){
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get('key');
+    if(fromUrl){
+      API_KEY = fromUrl;
+      localStorage.setItem(KEY_STORE, fromUrl);
+      history.replaceState(null, '', window.location.pathname);
+    } else {
+      API_KEY = localStorage.getItem(KEY_STORE) || '';
+    }
+  } catch(e){ API_KEY = ''; }
+})();
+
+function authHeaders(base){
+  const h = Object.assign({}, base || {});
+  if(API_KEY) h['Authorization'] = 'Bearer ' + API_KEY;
+  return h;
+}
+function needKey(msg){
+  const bar = document.getElementById('keyBar');
+  if(bar) bar.style.display = 'flex';
+  const st = document.getElementById('keyStatus');
+  if(st) st.textContent = msg || '';
+  const inp = document.getElementById('keyInput');
+  if(inp) inp.value = '';
+  if(inp) inp.focus();
+}
+function saveKey(){
+  const v = (document.getElementById('keyInput').value || '').trim();
+  if(!v) return;
+  API_KEY = v;
+  try { localStorage.setItem(KEY_STORE, v); } catch(e){}
+  document.getElementById('keyBar').style.display = 'none';
+  loadAccounts();
+  refresh();
+}
+
+async function getJSON(url){
+  const r = await fetch(url, {cache:'no-store', headers: authHeaders()});
+  if(r.status === 401 || r.status === 403){ needKey('密钥不对，请重试'); throw new Error('unauthorized'); }
+  if(!r.ok) throw new Error(r.status);
+  return r.json();
+}
+async function postJSON(url, body){
+  const r = await fetch(url, {method:'POST', headers: authHeaders({'Content-Type':'application/json'}),
+                              body: JSON.stringify(body || {})});
+  const t = await r.text();
+  let parsed = {};
+  try { parsed = t ? JSON.parse(t) : {}; } catch(e) { parsed = {raw: t}; }
+  if(r.status === 401 || r.status === 403){ needKey('密钥不对，请重试'); throw new Error('unauthorized'); }
+  if(!r.ok) throw new Error((parsed.error && parsed.error.message) || r.status);
+  return parsed;
+}
+function toast(msg){ console.log('[wb]', msg); }
+
+/* ------------------------------- accounts ------------------------------- */
+let ACCOUNTS = [];
+let USAGE_BY_ACCOUNT = {};
+
+function accountRow(a){
+  const usage = USAGE_BY_ACCOUNT[a.uid] || {};
+  const state = !a.enabled ? '<span class="badge off">已停用</span>'
+              : a.inCooldown ? '<span class="badge warn">冷却 ' + (a.cooldownFor||0) + 's</span>'
+              : a.expiresIn === 'expired' ? '<span class="badge bad">已过期</span>'
+              : '<span class="badge ok">可用</span>';
+  const err = a.lastError ? '<div class="hint" style="color:var(--warn);margin:2px 0 0">' + esc(a.lastError) + '</div>' : '';
+  const cred = a.credits;
+  const credText = cred ? ('<b style="color:var(--accent2)">' + fmt(cred.remain) + '</b> / ' + fmt(cred.size)) : '<span style="color:var(--dim)">未查询</span>';
+  return '<tr>'
+    + '<td><div>' + esc(a.nickname) + ' ' + state + '</div>'
+    + '<div class="mono" style="color:var(--dim);font-size:11px">' + esc(a.uid.slice(0,8)) + ' · ' + esc(a.source) + ' · 到期 ' + esc(a.expiresIn || '?') + '</div>'
+    + err + '</td>'
+    + '<td class="mono" style="font-size:11px">' + esc(a.domain) + '</td>'
+    + '<td style="white-space:nowrap">' + credText + '</td>'
+    + '<td>' + fmt(usage.requests) + '</td>'
+    + '<td>' + fmt(usage.total_tokens) + '</td>'
+    + '<td>' + fmt(usage.cached_tokens) + '</td>'
+    + '<td style="white-space:nowrap">'
+    + '<button class="sec mini" onclick="toggleAccount(&quot;' + a.uid + '&quot;,' + (!a.enabled) + ')">' + (a.enabled ? '停用' : '启用') + '</button> '
+    + '<button class="sec mini" onclick="refreshOne(&quot;' + a.uid + '&quot;)">刷新</button> '
+    + '<button class="danger mini" onclick="deleteAccount(&quot;' + a.uid + '&quot;,&quot;' + esc(a.nickname).replace(/["']/g, '') + '&quot;)">删除</button>'
+    + '</td></tr>';
+}
+
+function renderAccounts(){
+  const box = document.getElementById('accounts');
+  const usable = ACCOUNTS.filter(a => a.enabled).length;
+  document.getElementById('acctCount').textContent =
+    ACCOUNTS.length ? ('共 ' + ACCOUNTS.length + ' 个，启用 ' + usable + ' 个') : '';
+  if(!ACCOUNTS.length){
+    box.innerHTML =
+      '<div style="text-align:center;padding:30px 16px">'
+      + '<div style="font-size:15px;margin-bottom:8px">还没有账号</div>'
+      + '<div style="color:var(--dim);font-size:13px;margin-bottom:18px">'
+      +   '请先登录一个 WorkBuddy 账号，之后所有请求都会走这个账号'
+      + '</div>'
+      + '<button onclick="startLogin()" style="font-size:14px;padding:10px 22px">'
+      +   '登录新账号'
+      + '</button>'
+      + '<div style="color:var(--dim);font-size:12px;margin-top:16px;line-height:1.9">'
+      +   '点上面的按钮会弹出一个登录链接，<br>'
+      +   '在浏览器里登录完成后账号会自动加入。'
+      + '</div>'
+      + '</div>';
+    return;
+  }
+  box.innerHTML = '<table><thead><tr>'
+    + '<th>账号</th><th>域名</th><th>积分额度</th><th>请求</th><th>总 token</th><th>缓存</th><th></th>'
+    + '</tr></thead><tbody>' + ACCOUNTS.map(accountRow).join('') + '</tbody></table>'
+    + '<div class="legend"><span>多个账号按会话粘性 + 轮询使用；某个账号被上游拒绝时自动切到下一个</span></div>';
+}
+
+async function loadAccounts(){
+  try{
+    const [acct, byAcct] = await Promise.all([getJSON('/accounts'), getJSON('/usage/by-account')]);
+    ACCOUNTS = acct.accounts || [];
+    USAGE_BY_ACCOUNT = {};
+    (byAcct.accounts || []).forEach(a => { USAGE_BY_ACCOUNT[a.account] = a; });
+    renderAccounts();
+    // Auto-fetch credits once if not present
+    if(ACCOUNTS.length && ACCOUNTS.some(a => !a.credits)){
+      postJSON('/accounts/credits', {}).then(r => {
+        ACCOUNTS = r.accounts || ACCOUNTS;
+        renderAccounts();
+      }).catch(()=>{});
+    }
+  }catch(e){ toast('账号加载失败: ' + e.message); }
+}
+
+async function queryCredits(btn){
+  btn.disabled = true;
+  try{
+    const r = await postJSON('/accounts/credits', {});
+    ACCOUNTS = r.accounts || ACCOUNTS;
+    renderAccounts();
+    refresh();
+  }catch(e){ toast('积分查询失败: ' + e.message); }
+  finally{ btn.disabled = false; }
+}
+
+async function toggleAccount(uid, enable){
+  try{ await postJSON('/accounts/set', {uid: uid, enabled: enable}); await loadAccounts(); }
+  catch(e){ toast(e.message); }
+}
+async function refreshOne(uid){
+  try{ const r = await postJSON('/accounts/refresh', {uid: uid});
+       const ok = (r.results||[])[0];
+       toast(ok && ok.ok ? '刷新成功' : ('刷新失败: ' + (ok && ok.error)));
+       await loadAccounts(); }
+  catch(e){ toast(e.message); }
+}
+async function refreshAccounts(){
+  try{ const r = await postJSON('/accounts/refresh', {});
+       const okc = (r.results||[]).filter(x=>x.ok).length;
+       toast('刷新完成: ' + okc + '/' + (r.results||[]).length);
+       await loadAccounts(); }
+  catch(e){ toast(e.message); }
+}
+async function setAll(enable){
+  try{ await postJSON('/accounts/set-all', {enabled: enable}); await loadAccounts(); }
+  catch(e){ toast(e.message); }
+}
+async function deleteAccount(uid, name){
+  if(!confirm("确定删除账号 " + name + "？")) return;
+  try{ await postJSON('/accounts/delete', {uid: uid}); await loadAccounts(); }
+  catch(e){ toast(e.message); }
+}
+async function importDesktop(btn){
+  btn.disabled = true;
+  try{ const r = await postJSON('/accounts/import/desktop', {});
+       toast('导入 ' + (r.imported||[]).length + ' 个账号');
+       await loadAccounts(); }
+  catch(e){ toast(e.message); }
+  finally{ btn.disabled = false; }
+}
+
+/* -------------------------------- login --------------------------------- */
+let loginState = null, loginTimer = null;
+
+function openLogin(){ document.getElementById('loginModal').classList.add('show'); }
+function closeLogin(){
+  document.getElementById('loginModal').classList.remove('show');
+  if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
+  if(loginState){ postJSON('/accounts/login/cancel', {state: loginState}).catch(()=>{}); loginState = null; }
+}
+
+async function startLogin(){
+  openLogin();
+  document.getElementById('loginLinkBox').innerHTML = '';
+  document.getElementById('loginStatus').textContent = '';
+  document.getElementById('step1').className = 'step active';
+  document.getElementById('step2').className = 'step';
+  document.getElementById('step3').className = 'step';
+  try{
+    const r = await postJSON('/accounts/login/start', {platform: 'CLI'});
+    loginState = r.state;
+    document.getElementById('step1').className = 'step done';
+    document.getElementById('step2').className = 'step active';
+    document.getElementById('loginLinkBox').innerHTML =
+      '<a class="login-link" href="' + esc(r.authUrl) + '" target="_blank" rel="noopener">' + esc(r.authUrl) + '</a>'
+      + '<div class="hint">点上面的链接在浏览器里登录。登录完成后本窗口会自动检测到，不用手动确认。</div>';
+    pollLogin();
+    loginTimer = setInterval(pollLogin, 2500);
+  }catch(e){
+    document.getElementById('loginStatus').textContent = '发起失败: ' + e.message;
+    document.getElementById('step1').className = 'step';
+  }
+}
+
+async function pollLogin(){
+  if(!loginState) return;
+  try{
+    const r = await getJSON('/accounts/login/poll?state=' + encodeURIComponent(loginState));
+    document.getElementById('step3').className = 'step active';
+    document.getElementById('loginStatus').textContent = r.message || r.status;
+    if(r.status === 'ok'){
+      document.getElementById('step3').className = 'step done';
+      document.getElementById('loginStatus').textContent =
+        '登录成功：' + (r.account && r.account.nickname) + ' 已加入账号池';
+      if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
+      loginState = null;
+      await loadAccounts();
+      setTimeout(closeLogin, 1200);
+    }else if(r.status === 'error' || r.status === 'expired' || r.status === 'unknown'){
+      if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
+    }
+  }catch(e){ /* 轮询失败就等下一轮 */ }
+}
+
+/* ------------------------------- dashboard ------------------------------ */
+async function refresh(){
+  let usage, recent, perf;
+  try{
+    [usage, recent, perf] = await Promise.all([
+      getJSON('/usage'), getJSON('/usage/recent?limit=60'), getJSON('/usage/perf'),
+    ]);
+    document.getElementById('statusDot').className = 'dot';
+  }catch(e){
+    document.getElementById('statusDot').className = 'dot err';
+    if(String(e.message) !== 'unauthorized'){
+      document.getElementById('meta').innerHTML = '<b>无法连接反代</b>';
+    }
+    return;
+  }
+
+  const t = usage;
+  document.getElementById('meta').innerHTML =
+    '账号 <b>' + esc((t.account && t.account.uid || '—').slice(0,8)) + '</b>'
+    + (t.accounts ? ' · 池 <b>' + t.accounts_ready + '/' + t.accounts + '</b>' : '')
+    + '<br>统计开始于 <b>' + esc(t.since || '—') + '</b> · 明细 <b>' + fmt(recent.total) + '</b> 条';
+  document.getElementById('logfile').textContent = t.log_file || '';
+  document.getElementById('realm').textContent = t.realm ? ' · ' + t.realm : '';
+
+  // Sum credits across accounts
+  let totRemain = 0, totSize = 0, hasCreds = false;
+  ACCOUNTS.forEach(a => {
+    if(a.credits){
+      totRemain += (a.credits.remain || 0);
+      totSize += (a.credits.size || 0);
+      hasCreds = true;
+    }
+  });
+
+  document.getElementById('cards').innerHTML =
+    card('请求数', fmt(t.requests)) +
+    card('总 token', fmt(t.total_tokens), null, 'accent') +
+    (hasCreds ? card('剩余积分', fmt(totRemain), '总额度 ' + fmt(totSize) + ' 积分', 'accent2') : '') +
+    card('输入 token', fmt(t.prompt_tokens)) +
+    card('输出 token', fmt(t.completion_tokens)) +
+    card('思考 token', fmt(t.reasoning_tokens), '模型内部推理', 'think') +
+    card('缓存命中', fmt(t.cached_tokens),
+         t.prompt_tokens ? pct(t.cached_tokens / t.prompt_tokens * 100) + ' 命中率' : null) +
+    card('失败请求', fmt(perf.errors),
+         perf.success_rate_pct != null ? '成功率 ' + pct(perf.success_rate_pct) : null,
+         perf.errors ? 'err' : '');
+
+  const noAcct = !ACCOUNTS.length;
+  if(noAcct){
+    document.getElementById('perf').innerHTML =
+      '<div class="empty">还没有请求数据</div>';
+    document.getElementById('models').innerHTML =
+      '<div class="empty">还没有请求数据</div>';
+    document.getElementById('recent').innerHTML =
+      '<div class="empty">还没有请求记录</div>';
+    document.getElementById('meta').innerHTML =
+      '<b>等待登录账号</b><br>登录后这里会显示用量统计';
+    return;
+  }
+
+  document.getElementById('perf').innerHTML =
+    '<table><thead><tr><th>指标</th><th>平均</th><th>P50</th><th>P90</th><th>P99</th><th>样本</th></tr></thead><tbody>'
+    + perfRow('首字延迟 (TTFT)', perf.ttft_ms, '', ms)
+    + perfRow('生成耗时', perf.generation_ms, '', ms)
+    + perfRow('端到端延迟', perf.wall_ms, '', ms)
+    + perfRow('生成速度', perf.tokens_per_sec, ' tok/s', v => v.toFixed(1), 'var(--accent2)')
+    + perfRow('缓存命中率', perf.cache_hit_pct, '%', v => v.toFixed(1), 'var(--accent)')
+    + '</tbody></table>'
+    + '<div class="legend"><span>基于最近 <b>' + fmt(perf.sampled) + '</b> 条记录，分位数为最近样本统计</span></div>';
+
+  const models = Object.entries(t.by_model || {})
+    .map(([id, m]) => Object.assign({id: id}, m))
+    .sort((a,b) => b.total_tokens - a.total_tokens);
+  const maxTok = Math.max(1, ...models.map(m => m.total_tokens));
+  document.getElementById('models').innerHTML = models.length ?
+    '<table><thead><tr><th>模型</th><th>请求</th><th>输入</th><th>输出</th><th>思考</th><th>总 token</th><th style="width:120px">占比</th></tr></thead><tbody>'
+    + models.map(m => '<tr>'
+        + '<td class="mono">' + esc(m.id) + '</td>'
+        + '<td>' + fmt(m.requests) + '</td>'
+        + '<td>' + fmt(m.prompt_tokens) + '</td>'
+        + '<td>' + fmt(m.completion_tokens) + '</td>'
+        + '<td style="color:var(--think)">' + fmt(m.reasoning_tokens) + '</td>'
+        + '<td><b>' + fmt(m.total_tokens) + '</b></td>'
+        + '<td><span class="bar-fill" style="width:' + Math.round(m.total_tokens/maxTok*100) + '%"></span></td>'
+      + '</tr>').join('') + '</tbody></table>'
+    + '<div class="legend"><span><i style="background:var(--accent)"></i>总 token 占比</span>'
+    + '<span><i style="background:var(--think)"></i>思考 token（含在输出内）</span></div>'
+    : '<div class="empty">还没有请求</div>';
+
+  const last = (recent.rows || []).slice(-60).reverse();
+  document.getElementById('recent').innerHTML = last.length ?
+    '<table><thead><tr><th>时间</th><th>模型</th><th>账号</th><th>模式</th><th>耗时</th><th>首字</th><th>速度</th><th>输入</th><th>输出</th><th>思考</th><th>缓存</th><th>总 token</th></tr></thead><tbody>'
+    + last.map(r => '<tr>'
+        + '<td class="mono">' + esc((r.iso||'').replace('T',' ').slice(5)) + '</td>'
+        + '<td class="mono">' + esc(r.model) + '</td>'
+        + '<td class="mono" style="font-size:11px;color:var(--dim)">' + esc((r.account||'—').slice(0,8)) + '</td>'
+        + '<td><span class="badge ' + (r.stream?'s':'') + '">' + (r.stream?'流式':'非流式') + '</span></td>'
+        + '<td>' + (r.error ? '<span class="badge bad">失败</span>' : (r.elapsed_ms!=null ? fmt(r.elapsed_ms)+' ms' : '—')) + '</td>'
+        + '<td>' + (r.ttft_ms!=null ? fmt(r.ttft_ms)+' ms' : '—') + '</td>'
+        + '<td>' + (r.tokens_per_sec ? r.tokens_per_sec.toFixed(1) : '—') + '</td>'
+        + '<td>' + fmt(r.prompt_tokens) + '</td>'
+        + '<td>' + fmt(r.completion_tokens) + '</td>'
+        + '<td style="color:var(--think)">' + fmt(r.reasoning_tokens) + '</td>'
+        + '<td>' + (r.cache_hit_pct!=null ? r.cache_hit_pct+'%' : '—') + '</td>'
+        + '<td><b>' + fmt(r.total_tokens) + '</b></td>'
+      + '</tr>').join('') + '</tbody></table>'
+    : '<div class="empty">还没有请求记录</div>';
+}
+
+loadAccounts();
+refresh();
+setInterval(refresh, 5000);
+setInterval(loadAccounts, 15000);
+</script>
+</body>
+</html>

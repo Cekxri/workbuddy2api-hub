@@ -1,0 +1,25 @@
+# 核心机密数据（千万不能上传到公共仓库）
+accounts/*.json
+!accounts/README.txt
+
+# 运行时日志和用量统计
+usage/*.jsonl
+usage/*.json
+!usage/README.txt
+
+# 便携版内置运行时（仓库只保存纯源码，绿色包通过 Release 发布）
+python/
+*.zip
+
+# Python 编译缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 系统与编辑器文件
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
