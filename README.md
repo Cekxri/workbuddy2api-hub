@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Endpoint-www.workbuddy.ai-0DBD8B?style=flat-square" alt="workbuddy.ai">
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License">
+  <img src="https://img.shields.io/badge/Vibe_Coding-100%25-ff69b4?style=flat-square" alt="Vibe Coding">
 </p>
 
 本项目为 **WorkBuddy 国际版多账号反代网关**，将腾讯 **www.workbuddy.ai** 原生服务封装为标准 OpenAI 兼容接口，支持多账号负载轮询、OAuth 一键免客户端登录、Web 监控看板、实时积分查询、以及 Chat Completions 与 Responses API (Codex / Claude Code) 双协议全功能支持。
@@ -15,8 +16,7 @@
 - **两种登录方式**：浏览器 OAuth 自主登录 / 导入已登录的桌面应用凭证
 - **用量与性能统计**：内置看板，按账号、按模型拆分
 
-> **凭证是明文保存的。** 账号文件在 accounts/ 目录下，和桌面应用的做法一致。
-> 不要把该目录放到共享盘或同步盘里。
+> ⚡ **Vibe Coding 产物**：本项目为 100% Vibe Coding 协同产物，从腾讯 WorkBuddy 协议逆向、多账号池调度、WAF 指纹脱敏、Responses API 双向转换到 Web 看板，均由人类开发者提出需求意图、AI 编码助手端到端调试与编写完成。
 
 ---
 
