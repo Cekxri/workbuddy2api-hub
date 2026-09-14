@@ -214,6 +214,29 @@ a{color:var(--accent);text-decoration:none}
     </div>
   </section>
 
+  <!-- 版本模型库与能力清单 -->
+  <section>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <h2 style="margin:0">当前版本模型库与能力清单 <em id="availModelCount"></em></h2>
+      <div style="font-size:12px;color:var(--dim)">展示当前视图下官方对话大模型、上下文容量、推理/视觉能力及在售倍率</div>
+    </div>
+    <div style="overflow-x:auto">
+      <table id="modelsTable">
+        <thead>
+          <tr>
+            <th>模型名称 / ID</th>
+            <th>消费倍率 / 优惠</th>
+            <th>模型能力</th>
+            <th>上下文窗口</th>
+            <th>最大输出</th>
+            <th>思考能力 / 推理档位</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
   <section>
     <h2>最近请求</h2>
     <div id="recent"></div>
@@ -434,17 +457,62 @@ function renderAvailableModels(){
     return;
   }
   tb.innerHTML = MODELS_DATA.map(m => {
-    const isFree = (m.credits === 'x0.00' || m.credits === '0.00x' || m.credits === '0.00');
-    const credBadge = isFree ? '<span class="badge ok">免费</span>' : (m.credits ? '<span class="badge s">' + esc(m.credits) + '</span>' : '-');
-    const ctx = m.context_length ? fmt(m.context_length) : '-';
-    const maxOut = m.max_output_tokens ? fmt(m.max_output_tokens) : '-';
-    const effort = m.reasoning_fixed_effort
-      ? '<span class="badge ok">' + m.reasoning_fixed_effort + '</span>'
-      : (m.reasoning_efforts ? m.reasoning_efforts.map(e => '<span class="badge">' + e + '</span>').join(' ') : '<span style="color:var(--dim)">-</span>');
+    // 1. 倍率与折扣
+    let credBadge = '-';
+    const c = (m.credits || '').toString().toLowerCase().replace('x', '');
+    if(c === '0.00' || c === '0' || m.id === 'hy3' || m.id === 'hy4-preview-f' || (m.id === 'deepseek-v4.1-flash' && window.VIEW_REALM === 'intl')){
+      credBadge = '<span class="badge ok" style="background:rgba(38,187,130,.15);color:#26bb82">限时免费 0.00x</span>';
+    } else if(m.id === 'deepseek-v4.1-flash' && window.VIEW_REALM === 'cn'){
+      credBadge = '<span class="badge" style="background:rgba(255,77,79,.15);color:#ff4d4f;border:1px solid rgba(255,77,79,.3)">独家优惠 0.03x</span>';
+    } else if((m.id === 'glm-5.2' || m.id === 'deepseek-v4-pro') && window.VIEW_REALM === 'cn'){
+      const raw = m.credits ? (m.credits.startsWith('x') ? m.credits.slice(1) + 'x' : m.credits) : '0.79x';
+      credBadge = '<span class="badge s">' + raw + ' <span style="font-size:10px;color:var(--accent)">(夜间0.5x)</span></span>';
+    } else if(m.credits){
+      credBadge = '<span class="badge s">' + esc(m.credits.startsWith('x') ? m.credits.slice(1) + 'x' : m.credits) + '</span>';
+    }
+
+    // 2. 模型能力 (Vision, Tool calls)
+    const caps = [];
+    const hasVis = m.supports_vision || m.vision || m.multimodal || (m.input_modalities && m.input_modalities.includes('image'));
+    if(hasVis){
+      caps.push('<span class="badge ok" style="font-size:11px">👁️ 视觉/多模态</span>');
+    } else {
+      caps.push('<span class="badge" style="color:var(--dim);font-size:11px">文本</span>');
+    }
+    const hasTool = m.supports_tool_calls || (m.capabilities && m.capabilities.tool_calls);
+    if(hasTool){
+      caps.push('<span class="badge ok" style="font-size:11px">🛠️ 工具调用</span>');
+    }
+    const capHtml = caps.join(' ');
+
+    // 3. 上下文窗口
+    let ctx = '-';
+    if(m.context_length){
+      const k = Math.round(m.context_length / 1000);
+      ctx = '<b>' + (k >= 1000 ? (k/1000) + 'M' : k + 'K') + '</b> <span style="font-size:11px;color:var(--dim)">(' + fmt(m.context_length) + ')</span>';
+    } else if(m.context_windows && m.context_windows.length){
+      ctx = '<b>' + m.context_windows.map(w => Math.round(w/1000) + 'K').join(' / ') + '</b>';
+    }
+
+    // 4. 最大输出
+    const maxOut = m.max_output_tokens ? (fmt(m.max_output_tokens) + ' <span style="font-size:11px;color:var(--dim)">tok</span>') : '-';
+
+    // 5. 思考推理能力
+    let effort = '<span style="color:var(--dim)">—</span>';
+    if(m.reasoning_fixed_effort){
+      effort = '<span class="badge ok">原生深度推理 (' + m.reasoning_fixed_effort + ')</span>';
+    } else if(m.reasoning_efforts && m.reasoning_efforts.length){
+      const effBadges = m.reasoning_efforts.map(e => '<span class="badge" style="background:rgba(217,119,6,.15);color:var(--think);font-size:11px">' + e + '</span>').join(' ');
+      const canDis = m.reasoning_can_disable ? ' <span style="font-size:11px;color:var(--dim)">(可关闭)</span>' : ' <span style="font-size:11px;color:var(--think)">(强制思考)</span>';
+      effort = effBadges + canDis;
+    } else if(m.supports_reasoning){
+      effort = '<span class="badge" style="background:rgba(217,119,6,.15);color:var(--think);font-size:11px">支持思考</span>';
+    }
+
     return '<tr>'
-      + '<td class="mono"><b>' + esc(m.id) + '</b></td>'
-      + '<td>' + esc(m.name || m.id) + '</td>'
+      + '<td><b>' + esc(m.name || m.id) + '</b><br><span class="mono" style="font-size:11px;color:var(--dim)">' + esc(m.id) + '</span></td>'
       + '<td>' + credBadge + '</td>'
+      + '<td>' + capHtml + '</td>'
       + '<td>' + ctx + '</td>'
       + '<td>' + maxOut + '</td>'
       + '<td>' + effort + '</td>'

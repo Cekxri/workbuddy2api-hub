@@ -717,6 +717,41 @@ def is_chat_model(mid):
         return False
     return True
 
+CN_UI_ORDER = [
+    "hy4-preview-f",
+    "hy3",
+    "deepseek-v4.1-flash",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "glm-5.2",
+    "glm-5.1",
+    "glm-5v-turbo",
+    "minimax-m3",
+    "kimi-k3-1",
+    "kimi-k2.8-preview",
+    "kimi-k2.7",
+    "kimi-k2.6",
+    "deepseek-v4-pro",
+]
+
+INTL_UI_ORDER = [
+    "deepseek-v4.1-flash",
+    "gpt-6-astra",
+    "hy4-preview-f",
+    "hy4-preview",
+    "hy3",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gemini-3.5-flash",
+    "glm-5.3",
+    "glm-5.2",
+    "kimi-k3",
+    "kimi-k2.6",
+]
 
 def merge_catalog(primary, realm=None):
     r = realm or CURRENT_REALM
@@ -735,7 +770,12 @@ def merge_catalog(primary, realm=None):
             merged[mid] = base
         elif mid not in merged:
             merged[mid] = {}
-    return [(mid, meta) for mid, meta in merged.items()]
+    order = CN_UI_ORDER if r == "cn" else INTL_UI_ORDER
+    out = []
+    for mid in order:
+        if mid in merged:
+            out.append((mid, merged[mid]))
+    return out
 
 def fetch_models(realm=None):
     r = realm or CURRENT_REALM
