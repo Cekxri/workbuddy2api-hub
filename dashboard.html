@@ -224,7 +224,7 @@ a{color:var(--accent);text-decoration:none}
       <table id="modelsTable">
         <thead>
           <tr>
-            <th>模型名称 / ID</th>
+            <th>模型 ID</th>
             <th>消费倍率 / 优惠</th>
             <th>模型能力</th>
             <th>上下文窗口</th>
@@ -475,13 +475,13 @@ function renderAvailableModels(){
     const caps = [];
     const hasVis = m.supports_vision || m.vision || m.multimodal || (m.input_modalities && m.input_modalities.includes('image'));
     if(hasVis){
-      caps.push('<span class="badge ok" style="font-size:11px">👁️ 视觉/多模态</span>');
+      caps.push('<span class="badge ok" style="font-size:11px">视觉</span>');
     } else {
       caps.push('<span class="badge" style="color:var(--dim);font-size:11px">文本</span>');
     }
     const hasTool = m.supports_tool_calls || (m.capabilities && m.capabilities.tool_calls);
     if(hasTool){
-      caps.push('<span class="badge ok" style="font-size:11px">🛠️ 工具调用</span>');
+      caps.push('<span class="badge ok" style="font-size:11px">工具</span>');
     }
     const capHtml = caps.join(' ');
 
@@ -489,18 +489,20 @@ function renderAvailableModels(){
     let ctx = '-';
     if(m.context_length){
       const k = Math.round(m.context_length / 1000);
-      ctx = '<b>' + (k >= 1000 ? (k/1000) + 'M' : k + 'K') + '</b> <span style="font-size:11px;color:var(--dim)">(' + fmt(m.context_length) + ')</span>';
+      ctx = '<b>' + (k >= 1000 ? (k/1000) + 'M' : k + 'K') + '</b>';
     } else if(m.context_windows && m.context_windows.length){
-      ctx = '<b>' + m.context_windows.map(w => Math.round(w/1000) + 'K').join(' / ') + '</b>';
+      ctx = '<b>' + m.context_windows.map(w => { const k = Math.round(w/1000); return k >= 1000 ? (k/1000) + 'M' : k + 'K'; }).join(' / ') + '</b>';
     }
 
     // 4. 最大输出
-    const maxOut = m.max_output_tokens ? (fmt(m.max_output_tokens) + ' <span style="font-size:11px;color:var(--dim)">tok</span>') : '-';
+    const maxOut = m.max_output_tokens ? fmt(m.max_output_tokens) : '-';
 
     // 5. 思考推理能力
     let effort = '<span style="color:var(--dim)">—</span>';
     if(m.reasoning_fixed_effort){
-      effort = '<span class="badge ok">原生深度推理 (' + m.reasoning_fixed_effort + ')</span>';
+      effort = '<span class="badge ok" style="font-size:11px">固定推理 ' + esc(m.reasoning_fixed_effort) + '</span>';
+    } else if(m.reasoning_efforts && m.reasoning_efforts.length === 1){
+      effort = '<span class="badge ok" style="font-size:11px">固定推理 ' + esc(m.reasoning_efforts[0]) + '</span>';
     } else if(m.reasoning_efforts && m.reasoning_efforts.length){
       const effBadges = m.reasoning_efforts.map(e => '<span class="badge" style="background:rgba(217,119,6,.15);color:var(--think);font-size:11px">' + e + '</span>').join(' ');
       const canDis = m.reasoning_can_disable ? ' <span style="font-size:11px;color:var(--dim)">(可关闭)</span>' : ' <span style="font-size:11px;color:var(--think)">(强制思考)</span>';
@@ -510,7 +512,7 @@ function renderAvailableModels(){
     }
 
     return '<tr>'
-      + '<td><b>' + esc(m.name || m.id) + '</b><br><span class="mono" style="font-size:11px;color:var(--dim)">' + esc(m.id) + '</span></td>'
+      + '<td class="mono"><b>' + esc(m.id) + '</b></td>'
       + '<td>' + credBadge + '</td>'
       + '<td>' + capHtml + '</td>'
       + '<td>' + ctx + '</td>'
