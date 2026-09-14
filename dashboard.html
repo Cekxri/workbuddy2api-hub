@@ -516,7 +516,7 @@ async function refresh(){
     + (t.accounts ? ' · 池 <b>' + t.accounts_ready + '/' + t.accounts + '</b>' : '')
     + '<br>统计开始于 <b>' + esc(t.since || '—') + '</b> · 明细 <b>' + fmt(recent.total) + '</b> 条';
   document.getElementById('logfile').textContent = t.log_file || '';
-  document.getElementById('realm').textContent = t.realm ? ' · ' + t.realm : '';
+  const rEl = document.getElementById('realm'); if(rEl) rEl.textContent = t.realm ? ' · ' + t.realm : '';
 
   // Sum credits across accounts
   let totRemain = 0, totSize = 0, hasCreds = false;
