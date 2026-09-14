@@ -14,15 +14,21 @@ from wb_tasks import do_cat_travel
 
 
 class Scheduler:
-    def __init__(self, pool, interval_seconds=1800):
+    def __init__(self, pool):
         self.pool = pool
-        self.interval = interval_seconds
+        # 对齐 Sliverkiss/workbuddy2api 官方默认排程 (CST 24小时制)
+        self.checkin_hours = [9, 21]     # 每日 09:00、21:00 签到
+        self.travel_hours = [9, 21]      # 每日 09:00 派出、21:00 领奖闭环
+        self.keepalive_hours = [22]      # 每日 22:00 集中 Token 保活检查
+        self.cat_hours = [1]             # 每日 01:00 夜猫子专属任务
+        self.all_hours = sorted(list(set(self.checkin_hours + self.travel_hours + self.keepalive_hours + self.cat_hours)))
         self.enabled = True
         self._stop_event = threading.Event()
         self._thread = None
         self.last_run_time = None
         self.next_run_time = None
         self.logs = []
+        self._calc_next_fire()
 
     def log(self, msg):
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -46,23 +52,55 @@ class Scheduler:
     def _run_loop(self):
         # 启动后先休眠 10 秒等待主服务就绪，然后执行初次检查
         time.sleep(10)
+        try:
+            self._execute_cycle("启动初次初始化巡检")
+        except Exception as exc:
+            self.log(f"初次巡检异常: {exc}")
+
         while not self._stop_event.is_set():
+            self._calc_next_fire()
+            # 每 30 秒检查一次当前整点
+            now = time.localtime()
+            cur_hour = now.tm_hour
+            cur_min = now.tm_min
             if self.enabled:
-                try:
-                    self._execute_cycle()
-                except Exception as exc:
-                    self.log(f"调度执行异常: {exc}")
-            self.next_run_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() + self.interval))
-            self._stop_event.wait(self.interval)
+                # 到达设定的整点前 1 分钟内触发
+                if cur_min == 0 and cur_hour in self.all_hours:
+                    reason = f"整点排程命中 ({cur_hour}:00)"
+                    try:
+                        self._execute_cycle(reason)
+                    except Exception as exc:
+                        self.log(f"排程执行异常: {exc}")
+                    time.sleep(65) # 避开当前这一分钟重复触发
+            self._stop_event.wait(30)
+
+    def _calc_next_fire(self):
+        now = time.localtime()
+        cur_h = now.tm_hour
+        next_h = None
+        for h in self.all_hours:
+            if h > cur_h or (h == cur_h and now.tm_min == 0 and now.tm_sec < 10):
+                next_h = h
+                break
+        if next_h is not None:
+            # 今天
+            t_struct = time.struct_time((now.tm_year, now.tm_mon, now.tm_mday, next_h, 0, 0, 0, 0, -1))
+        else:
+            # 明天第一个小时
+            t_tomorrow = time.time() + 86400
+            now_tom = time.localtime(t_tomorrow)
+            first_h = self.all_hours[0]
+            t_struct = time.struct_time((now_tom.tm_year, now_tom.tm_mon, now_tom.tm_mday, first_h, 0, 0, 0, 0, -1))
+        self.next_run_time = time.strftime("%Y-%m-%d %H:%M:%S", t_struct)
 
     def trigger_now(self):
         """手动立即触发一次调度检查。"""
-        threading.Thread(target=self._execute_cycle, daemon=True).start()
+        threading.Thread(target=self._execute_cycle, args=("手动立即触发",), daemon=True).start()
         return {"ok": True, "msg": "已触发后台调度执行"}
 
-    def _execute_cycle(self):
+    def _execute_cycle(self, trigger_reason="周期巡检"):
         self.last_run_time = time.strftime("%Y-%m-%d %H:%M:%S")
-        self.log("开始执行周期性巡检与保活任务...")
+        self.log(f"开始执行任务 ({trigger_reason})...")
         if not self.pool or not self.pool.accounts:
             self.log("暂无可用的活跃账号，跳过本次巡检")
             return
@@ -107,7 +145,7 @@ class Scheduler:
     def status(self):
         return {
             "enabled": self.enabled,
-            "interval_minutes": round(self.interval / 60),
+            "mode": "整点排程 (09:00/21:00 签到旅行 · 22:00 保活 · 01:00 夜猫)",
             "last_run_time": self.last_run_time or "尚未运行",
             "next_run_time": self.next_run_time or "待调度",
             "logs": self.logs[-20:],

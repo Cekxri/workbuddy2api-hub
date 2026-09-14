@@ -703,7 +703,7 @@ async function loadSchedulerStatus(){
     const btn = document.getElementById("btnToggleSched");
 
     if(dot) dot.className = s.enabled ? 'dot' : 'dot off';
-    if(txt) txt.textContent = s.enabled ? ('运行中 (' + s.interval_minutes + '分钟周期保活与巡检)') : '已暂停';
+    if(txt) txt.textContent = s.enabled ? ('运行中 · ' + (s.mode || '整点排程')) : '已暂停';
     if(times) times.textContent = '上次: ' + (s.last_run_time || '-') + ' · 下次: ' + (s.next_run_time || '-');
     if(btn) btn.textContent = s.enabled ? '暂停调度' : '启用调度';
   }catch(e){}
