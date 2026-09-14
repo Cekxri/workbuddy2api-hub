@@ -216,7 +216,6 @@ a{color:var(--accent);text-decoration:none}
     <span id="activeModelCount"></span>
   </div>
     <div id="accounts"></div>
-    <div id="desktopScanResult" style="display:none;margin-top:14px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow-x:auto"></div>
   </section>
 
   <!-- 融合后的：模型性能与用量矩阵 -->
@@ -330,6 +329,26 @@ a{color:var(--accent);text-decoration:none}
     <div class="modal-ft">
       <button class="sec" onclick="closeLogin()">关闭</button>
       <button onclick="restartLogin()">重新生成链接</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-mask" id="desktopScanModal">
+  <div class="modal" role="dialog" aria-modal="true" style="width:min(720px,100%)">
+    <div class="modal-hd">
+      <h2>本机桌面客户端账号</h2>
+      <button class="modal-x" onclick="closeDesktopScan()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint" style="margin-top:0">
+        下面是本机桌面客户端里已登录的账号（只读检测，点击「导入」才会加入网关）。
+        国际版账号归入国际版列表，国内版账号归入国内版列表。
+      </p>
+      <div id="desktopScanBody"><p class="hint">正在检测…</p></div>
+    </div>
+    <div class="modal-ft">
+      <button class="sec" onclick="refreshDesktopScan(this)">重新扫描</button>
+      <button class="sec" onclick="closeDesktopScan()">关闭</button>
     </div>
   </div>
 </div>
@@ -963,67 +982,100 @@ async function deleteAccount(uid, name){
   try{ await postJSON('/accounts/delete', {uid: uid}); await loadAccounts(); }
   catch(e){ toast(e.message); }
 }
+/* 桌面客户端账号：两步确认（先扫描展示弹窗，再逐条导入） */
 async function scanDesktop(btn){
-  btn.disabled = true;
-  const old = btn.textContent;
-  btn.textContent = '扫描中...';
+  if(btn){ btn.disabled = true; btn.textContent = '扫描中...'; }
+  openDesktopScan();
   try{
-    // Step 1: read-only scan. Nothing is imported by this call.
     const r = await postJSON('/accounts/import/desktop', {});
     renderDesktopScan(r.detected || []);
   }catch(e){
-    alert('扫描失败: ' + e.message);
+    const body = document.getElementById('desktopScanBody');
+    if(body) body.innerHTML = '<p class="hint" style="color:var(--warn)">扫描失败: ' + esc(e.message) + '</p>';
   }finally{
-    btn.disabled = false;
-    btn.textContent = old;
+    if(btn){ btn.disabled = false; btn.textContent = '📥 扫描桌面客户端账号'; }
+  }
+}
+
+function openDesktopScan(){
+  const m = document.getElementById('desktopScanModal');
+  const body = document.getElementById('desktopScanBody');
+  if(body) body.innerHTML = '<p class="hint">正在检测本机桌面客户端账号…</p>';
+  if(m) m.classList.add('show');
+}
+
+function closeDesktopScan(){
+  const m = document.getElementById('desktopScanModal');
+  if(m) m.classList.remove('show');
+}
+
+async function refreshDesktopScan(btn){
+  if(btn){ btn.disabled = true; btn.textContent = '扫描中...'; }
+  const body = document.getElementById('desktopScanBody');
+  if(body) body.innerHTML = '<p class="hint">正在检测本机桌面客户端账号…</p>';
+  try{
+    const r = await postJSON('/accounts/import/desktop', {});
+    renderDesktopScan(r.detected || []);
+  }catch(e){
+    if(body) body.innerHTML = '<p class="hint" style="color:var(--warn)">扫描失败: ' + esc(e.message) + '</p>';
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '重新扫描'; }
   }
 }
 
 function renderDesktopScan(list){
-  const box = document.getElementById('desktopScanResult');
-  if(!box) return;
+  const body = document.getElementById('desktopScanBody');
+  if(!body) return;
   const valid = list.filter(d => d.valid);
   const bad = list.filter(d => !d.valid);
   const already = new Set((window.ACCOUNTS || []).map(a => a.uid));
 
   if(!list.length){
-    box.style.display = 'block';
-    box.innerHTML = '<div style="color:var(--dim);font-size:12px;padding:6px 2px">'
-      + '未在本机检测到桌面客户端登录凭证。请确认已安装并登录 WorkBuddy 客户端后重试。</div>';
+    body.innerHTML = '<p class="hint">未在本机检测到桌面客户端登录凭证。<br>'
+      + '请确认已安装并登录 WorkBuddy 客户端后点「重新扫描」。</p>';
     return;
   }
 
-  let html = '<div style="font-size:12px;color:var(--dim);margin-bottom:8px">检测到以下桌面客户端凭证（需再次确认才会导入，不会自动加入账号池）：</div>';
-  html += '<table><thead><tr><th>账号</th><th>区域</th><th>域名</th><th>有效期</th><th></th></tr></thead><tbody>';
-  valid.forEach(d => {
-    const dup = already.has(d.uid);
-    const badge = d.realm === 'cn'
-      ? '<span class="realm-badge-cn">🇨🇳 国内版</span>'
-      : '<span class="realm-badge-intl">🌐 国际版</span>';
-    const act = dup
-      ? '<span class="badge off">已在账号池</span>'
-      : '<button class="primary mini" onclick="doImportDesktop(this,&quot;' + esc(d.path).replace(/&quot;/g, '') + '&quot;,&quot;' + d.realm + '&quot;)">导入此账号</button>';
-    html += '<tr>'
-      + '<td><b>' + esc(d.nickname || (d.uid||'').slice(0,8)) + '</b>'
-      + '<div class="mono" style="font-size:11px;color:var(--dim)">' + esc((d.uid||'').slice(0,8)) + ' · ' + esc(d.file) + '</div></td>'
-      + '<td>' + badge + '</td>'
-      + '<td class="mono" style="font-size:11px">' + esc(d.domain || '-') + '</td>'
-      + '<td>' + esc(d.expiresIn || '未知') + '</td>'
-      + '<td>' + act + '</td>'
-      + '</tr>';
-  });
-  bad.forEach(d => {
-    html += '<tr><td><span style="color:var(--dim)">' + esc(d.file) + '</span></td>'
-      + '<td>' + esc(d.realm) + '</td><td colspan="3"><span style="color:var(--warn);font-size:12px">无法读取: '
-      + esc(d.error || '未知原因') + '</span></td></tr>';
-  });
-  html += '</tbody></table>';
-  if(valid.filter(d => !already.has(d.uid)).length > 1){
-    html += '<div style="margin-top:10px"><button class="sec mini" onclick="doImportDesktopAll(this)">全部导入（'
-      + valid.filter(d => !already.has(d.uid)).length + ' 个）</button></div>';
+  const section = (title, items, cls) => {
+    let html = '<div style="margin:14px 0 6px;font-size:12px;font-weight:600" class="' + cls + '">'
+      + title + ' <span style="color:var(--dim);font-weight:400">(' + items.length + ')</span></div>';
+    if(!items.length){
+      html += '<div class="hint" style="margin:4px 0 10px">未检测到该版本账号</div>';
+      return html;
+    }
+    html += '<table><thead><tr><th>账号</th><th>域名</th><th>有效期</th><th></th></tr></thead><tbody>';
+    items.forEach(d => {
+      const dup = already.has(d.uid);
+      const act = dup
+        ? '<span class="badge off">已导入</span>'
+        : '<button class="primary mini" onclick="doImportDesktop(this,' + JSON.stringify(d.path) + ',' + JSON.stringify(d.realm) + ')">导入</button>';
+      html += '<tr>'
+        + '<td><b>' + esc(d.nickname || (d.uid||'').slice(0,8)) + '</b>'
+        + '<div class="mono" style="font-size:11px;color:var(--dim)">' + esc((d.uid||'').slice(0,8)) + ' · ' + esc(d.file) + '</div></td>'
+        + '<td class="mono" style="font-size:11px">' + esc(d.domain || '-') + '</td>'
+        + '<td>' + esc(d.expiresIn || '未知') + '</td>'
+        + '<td style="text-align:right">' + act + '</td>'
+        + '</tr>';
+    });
+    html += '</tbody></table>';
+    return html;
+  };
+
+  let html = section('🌐 国际版 (Global) · www.workbuddy.ai',
+                     valid.filter(d => d.realm !== 'cn'), '');
+  html += section('🇨🇳 国内版 (China) · copilot.tencent.com',
+                  valid.filter(d => d.realm === 'cn'), '');
+
+  if(bad.length){
+    html += '<div style="margin:14px 0 6px;font-size:12px;font-weight:600;color:var(--warn)">无法读取的凭证</div>';
+    html += '<table><tbody>';
+    bad.forEach(d => {
+      html += '<tr><td class="mono" style="font-size:11px">' + esc(d.file) + '</td>'
+        + '<td style="color:var(--warn);font-size:12px;text-align:right">' + esc(d.error || '未知原因') + '</td></tr>';
+    });
+    html += '</tbody></table>';
   }
-  box.style.display = 'block';
-  box.innerHTML = html;
+  body.innerHTML = html;
 }
 
 async function doImportDesktop(btn, path, realm){
@@ -1032,30 +1084,15 @@ async function doImportDesktop(btn, path, realm){
   try{
     const r = await postJSON('/accounts/import/desktop', {path: path, realm: realm});
     const a = (r.imported || [])[0] || {};
-    toast('已导入 ' + (a.nickname || (a.uid||'').slice(0,8)));
+    toast('已导入 ' + (a.nickname || (a.uid||'').slice(0,8)) + ' 到 ' + (a.realm === 'cn' ? '国内版' : '国际版'));
     await loadAccounts();
     await refresh();
-    renderDesktopScan((await postJSON('/accounts/import/desktop', {})).detected || []);
+    const s = await postJSON('/accounts/import/desktop', {});
+    renderDesktopScan(s.detected || []);
   }catch(e){
     alert('导入失败: ' + e.message);
     btn.disabled = false;
-    btn.textContent = '导入此账号';
-  }
-}
-
-async function doImportDesktopAll(btn){
-  btn.disabled = true;
-  btn.textContent = '导入中...';
-  try{
-    const r = await postJSON('/accounts/import/desktop', {all: true});
-    toast('已导入 ' + (r.imported||[]).length + ' 个账号');
-    await loadAccounts();
-    await refresh();
-    renderDesktopScan((await postJSON('/accounts/import/desktop', {})).detected || []);
-  }catch(e){
-    alert('导入失败: ' + e.message);
-    btn.disabled = false;
-    btn.textContent = '全部导入';
+    btn.textContent = '导入';
   }
 }
 

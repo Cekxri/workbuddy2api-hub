@@ -61,16 +61,17 @@ from urllib.parse import urlparse, parse_qs
 
 
 def _parent_watchdog(seconds=15):
-    """Exit when the console window that launched us disappears.
+    """Exit when the launcher window that started us disappears.
 
-    A .bat launcher spawns python as a child of cmd.exe. Closing the window
+    Only active with --watch-parent, which the bundled .bat launchers pass.
+    A .bat launcher spawns python as a child of cmd.exe; closing the window
     kills cmd but the python child keeps running and keeps the port bound
-    (Windows has no process-group kill on window close), which then makes
-    the next launch say "another proxy is already running".
+    (Windows has no process-group kill on window close), so the next launch
+    would wrongly report "another proxy is already running".
 
-    On Windows we therefore watch the parent pid; once it is gone, shut
-    down. Cheap (one syscall per interval), stdlib only, and harmless on
-    other platforms / when the parent is a normal shell that stays alive.
+    Opt-in on purpose: when python is started from a script/service (no
+    interactive window), the parent dies immediately after spawning and the
+    proxy must keep running.
     """
     if os.name != "nt":
         return
@@ -2439,6 +2440,9 @@ def main():
                     help="where the per-account credential files live (default: ./accounts)")
     ap.add_argument("--import-desktop", action="store_true",
                     help="import the desktop app credential as an account, then exit")
+    ap.add_argument("--watch-parent", action="store_true",
+                    help="exit when the launching console window closes (used by the "
+                         ".bat launchers so the port is released)")
     args = ap.parse_args()
 
     # LAN mode: bind everywhere, and default to the fixed key "qwer.1234".
@@ -2581,7 +2585,8 @@ def main():
         sys.stdout.flush()
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
-    _parent_watchdog(15)
+    if args.watch_parent:
+        _parent_watchdog(15)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
