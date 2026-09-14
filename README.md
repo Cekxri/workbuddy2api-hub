@@ -9,14 +9,15 @@
   <img src="https://img.shields.io/badge/Vibe_Coding-100%25-ff69b4?style=flat-square" alt="Vibe Coding">
 </p>
 
-本项目为 **WorkBuddy 国际版 & 国内版多账号反代网关 (v1.5)**，将腾讯 **www.workbuddy.ai** (国际版) 与 **copilot.tencent.com / codebuddy.cn** (国内版) 原生服务封装为标准 OpenAI 兼容接口，支持多账号负载轮询、稳定物理设备指纹隔离、OAuth 一键免客户端登录、国内成长任务全自动完成 (+1450积分)、后台常驻定时调度器、Web 监控看板、实时积分查询、以及 Chat Completions 与 Responses API (Codex / Claude Code) 双协议全功能支持。
+本项目为 **WorkBuddy 国际版 & 国内版多账号反代网关 (v1.5)**，将腾讯 **www.workbuddy.ai** (国际版) 与 **copilot.tencent.com / codebuddy.cn** (国内版) 原生服务封装为标准 OpenAI 兼容接口，支持多账号负载轮询、稳定物理设备指纹隔离、OAuth 一键免客户端登录、国内成长任务全自动完成、后台常驻定时调度器、Web 监控看板、实时积分查询、以及 Chat Completions 与 Responses API (Codex / Claude Code) 双协议全功能支持。
 
 - **双区域独立路由**：同时支持 🌐 国际版 与 🇨🇳 国内版，严格隔离串号，网页一键切换并永久落盘记忆
-- **统一稳定设备指纹 (`derive_id`)**：基于 UID 稳定派生专属机器特征，每个账号固定一台虚拟物理设备，天然防多号关联风控
-- **国内版成长任务全自动化**：一键接取、上报事件点亮并领取 14 项成长任务（直接到账 +1450 积分），以及猫猫日常旅行与连续打卡
+- **模型列表严格对齐桌面应用**：按官方桌面端主界面 1:1 清洗收敛，剔除内部代码补全通道与底层专线变体
+- **统一稳定设备指纹 (`derive_id`)**：基于 UID 稳定派生专属机器特征，每个账号固定一台专属设备，天然防多号关联风控
+- **国内成长任务全自动完成**：全自动接取任务、上报事件点亮并领取奖励，支持猫猫日常旅行与打卡
 - **后台常驻定时调度器 (Scheduler)**：每日整点排程（09:00/21:00 签到旅行 · 22:00 保活 · 01:00 夜猫），国际版自适应为专属 Token 集中保活
 - **开箱即用**：包内自带 Python 运行时，双击即跑，无需安装任何依赖
-- **全新看板体验**：单行自适应弹性卡片、模型性能指标与用量一览融合大表、1:1 对齐官方客户端 UI 的模型库与能力清单
+- **全新看板体验**：单行自适应弹性卡片、模型性能指标与用量一览融合大表、官方 1:1 对齐的模型库与能力清单
 
 > ⚡ **Vibe Coding 产物**：本项目为 100% Vibe Coding 协同产物，从腾讯 WorkBuddy 协议逆向、多账号池调度、WAF 指纹脱敏、Responses API 双向转换到 Web 看板，均由人类开发者提出需求意图、AI 编码助手端到端调试与编写完成。
 
@@ -144,7 +145,7 @@ Windows 防火墙默认会拦截。首次运行时会弹出"是否允许访问"�
 
 已经装了 WorkBuddy AI 并登录过的，点「**从桌面应用导入**」，一键把它存的凭证拉进来。
 
-国内版凭证（copilot.tencent.com）会被自动跳过，只认国际版。
+支持自动识别并导入国际版或国内版桌面凭证，自动归入对应区域。
 
 ### 多账号怎么工作
 
@@ -166,14 +167,13 @@ Windows 防火墙默认会拦截。首次运行时会弹出"是否允许访问"�
 | 模式 | **Chat Completions** 和 **Responses API** 都支持 |
 | 模型 | 点「获取模型」自动列出，也可手填 |
 
-可用模型（21 个，含完整能力元数据）：
+### 模型列表严格按照桌面应用 1:1 对齐
+为杜绝内部代码补全接口与测试专线变体污染，模型列表严格按照官方桌面端主界面清洗收敛：
 
-    deepseek-v4.1-flash   gpt-6-astra      gpt-5.6-sol     gpt-5.6-terra
-    gpt-5.6-luna          gpt-5.5          gpt-5.4         gpt-5.3-codex
-    gemini-3.5-flash      glm-5.3          glm-5.2         kimi-k3
-    kimi-k2.6             hy4-preview      hy4-preview-f   hy3
-    default-model         fast-model       balanced-model  primary-model
-    deep-model
+- 🌐 国际版官方模型 (16 个)：deepseek-v4.1-flash (限时免费)、gpt-6-astra、hy4-preview-f、hy4-preview、hy3、gpt-5.6-sol/terra/luna、gpt-5.5/5.4/5.3-codex、gemini-3.5-flash、glm-5.3/5.2、kimi-k3/k2.6
+- 🇨🇳 国内版官方模型 (14 个)：hy4-preview-f、hy3、deepseek-v4.1-flash (独家优惠)、deepseek-v4-pro、glm-5.3/5.3-flash/5.2/5.1/5v-turbo、minimax-m3、kimi-k3-1/k2.8-preview/k2.7/k2.6
+
+每个模型均宣告完整的上下文窗口（K/M 规范）、单次最大输出、视觉支持、工具调用以及固定推理档位。
 
 **这份列表已内置在程序里**，所以即使那台机器没装 WorkBuddy 桌面应用
 （也就没有本地模型缓存），列表依然是完整的 21 个 —— 包括
@@ -354,7 +354,7 @@ gpt-6-astra 支持五档并可关闭。GET /v1/models 会说明各自情况。
 本项目在协议兼容、风控规避与链路优化过程中，深度参考并吸纳了开源社区现有项目的经验与逆向成果，特此致谢：
 
 - **[Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)**：
-  - **成长任务全链路逆向 (`task_runner`)**：参考了其对腾讯成长任务中心（`growth/tasks`、`accept`、`claim`、`v2/report`）的事件定义与自动化点亮领奖逻辑，单号可增益 +1450 积分。
+  - **成长任务全链路逆向 (`task_runner`)**：参考了其对腾讯成长任务中心（`growth/tasks`、`accept`、`claim`、`v2/report`）的事件定义与自动化点亮领奖逻辑，实现全流程自动化与奖励领取。
   - **设备指纹稳定派生设计 (`derive_id`)**：吸纳了其以账号 UID 稳定哈希派生固定设备码的思路，彻底解决多账号关联风控与随机机器码被平台封禁的难题。
   - **后台定时调度器与整点排程 (`Scheduler`)**：参考了其每日固定整点排程（09:00/21:00 签到与猫猫旅行、22:00 Token 保活、01:00 深夜夜猫任务）的设计理念。
   - **指纹脱敏管线设计**：吸纳了其出站请求体脱敏策略，彻底解决 Codex CLI / Claude Code 默认系统指令触发上游 WAF `code 11128` 拦截的问题。
