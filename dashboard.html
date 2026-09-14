@@ -140,25 +140,32 @@ a{color:var(--accent);text-decoration:none}
 <main>
   <!-- 版本中枢控制栏 -->
   <div class="realm-banner">
-    <div class="realm-tabs">
-      <div id="tabIntl" class="realm-tab active" onclick="switchRealm('intl')">
-        <span class="tab-icon">🌐</span>
-        <div class="tab-text">
-          <span class="tab-title">国际版 (Global)</span>
-          <span class="tab-desc">www.workbuddy.ai · 海外大模型</span>
+    <div>
+      <div style="font-size:11px;color:var(--dim);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.5px">查看详情 (点击切换视图)</div>
+      <div class="realm-tabs">
+        <div id="tabIntl" class="realm-tab active" onclick="switchViewRealm('intl')">
+          <span class="tab-icon">🌐</span>
+          <div class="tab-text">
+            <span class="tab-title">国际版详情 (Global)</span>
+            <span class="tab-desc">www.workbuddy.ai · 16 个海外模型</span>
+          </div>
         </div>
-      </div>
-      <div id="tabCn" class="realm-tab" onclick="switchRealm('cn')">
-        <span class="tab-icon">🇨🇳</span>
-        <div class="tab-text">
-          <span class="tab-title">国内版 (China)</span>
-          <span class="tab-desc">copilot.tencent.com · 国产大模型</span>
+        <div id="tabCn" class="realm-tab" onclick="switchViewRealm('cn')">
+          <span class="tab-icon">🇨🇳</span>
+          <div class="tab-text">
+            <span class="tab-title">国内版详情 (China)</span>
+            <span class="tab-desc">copilot.tencent.com · 40 个国产模型</span>
+          </div>
         </div>
       </div>
     </div>
-    <div class="realm-banner-right">
-      <button class="toggle-realm-btn" id="btnToggleRealm" onclick="toggleActiveRealm()">⇄ 快速切换为国内版</button>
-      <div class="realm-endpoint-info">当前上游: <span id="activeEndpoint" class="mono" style="color:var(--fg)">https://www.workbuddy.ai</span></div>
+    <div class="realm-banner-right" style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 16px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span id="gatewayDot" class="dot"></span>
+        <span style="font-size:13px">网关当前上游: <b id="activeGatewayName" style="color:var(--accent)">🌐 国际版</b></span>
+      </div>
+      <div style="font-size:11px;color:var(--dim);margin-bottom:8px">出站地址: <span id="activeEndpoint" class="mono" style="color:var(--fg)">https://www.workbuddy.ai/v2</span> (本地已保存)</div>
+      <button class="toggle-realm-btn" id="btnToggleRealm" onclick="toggleActiveGatewayRealm()" style="cursor:pointer;width:100%">⇄ 切换网关上游为【🇨🇳 国内版】</button>
     </div>
   </div>
   <div id="keyBar" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;
@@ -231,47 +238,73 @@ a{color:var(--accent);text-decoration:none}
 </div>
 
 <script>
-let CURRENT_REALM = "intl";
-let REALM_FILTER = "all";
-let MODELS_DATA = [];
-async function initRealm(){
-  try { const r = await getJSON("/realm"); CURRENT_REALM = r.current || "intl"; }catch(e){}
-  updateRealmUI();
-}
-function updateRealmUI(){
-  document.getElementById("btnRealmIntl").className = "realm-pill" + (CURRENT_REALM === "intl" ? " active" : "");
-  document.getElementById("btnRealmCn").className = "realm-pill" + (CURRENT_REALM === "cn" ? " active" : "");
-  const gw = document.getElementById("activeGateway");
-  if(gw) gw.textContent = CURRENT_REALM === "intl" ? "🌐 国际版 (https://www.workbuddy.ai)" : "🇨🇳 国内版 (https://copilot.tencent.com)";
+window.ACTIVE_GATEWAY_REALM = "intl";
+window.window.VIEW_REALM = "intl";
+window.MODELS_DATA = [];
+window.window.ACCOUNTS = [];
+
+window.updateUI = function(){
+  const isIntlView = (window.window.VIEW_REALM === "intl");
+  const tIntl = document.getElementById("tabIntl");
+  const tCn = document.getElementById("tabCn");
+  if(tIntl) tIntl.className = "realm-tab" + (isIntlView ? " active" : "");
+  if(tCn) tCn.className = "realm-tab" + (!isIntlView ? " active" : "");
+
+  const isIntlGw = (window.ACTIVE_GATEWAY_REALM === "intl");
+  const gwName = document.getElementById("activeGatewayName");
+  if(gwName) {
+    gwName.textContent = isIntlGw ? "🌐 国际版" : "🇨🇳 国内版";
+    gwName.style.color = isIntlGw ? "var(--accent)" : "var(--warn)";
+  }
+  const ep = document.getElementById("activeEndpoint");
+  if(ep) ep.textContent = isIntlGw ? "https://www.workbuddy.ai/v2" : "https://copilot.tencent.com/v2";
+
+  const btnToggle = document.getElementById("btnToggleRealm");
+  if(btnToggle) {
+    btnToggle.textContent = isIntlGw ? "⇄ 切换网关上游为【🇨🇳 国内版】" : "⇄ 切换网关上游为【🌐 国际版】";
+  }
+
   const btnCheckin = document.getElementById("btnCheckin");
-  if(btnCheckin) btnCheckin.style.display = (CURRENT_REALM === "cn" ? "inline-block" : "none");
-}
+  if(btnCheckin) btnCheckin.style.display = (window.window.VIEW_REALM === "cn" ? "inline-block" : "none");
+};
 
-async function toggleActiveRealm(){
-  const next = (CURRENT_REALM === 'intl' ? 'cn' : 'intl');
-  await switchRealm(next);
-}
+window.switchViewRealm = async function(r){
+  if(window.window.VIEW_REALM === r) return;
+  window.window.VIEW_REALM = r;
+  window.updateUI();
+  await loadAccounts();
+  await loadModels();
+  await refresh();
+};
 
-function updateRealmUI(){
-  const isIntl = (CURRENT_REALM === 'intl');
-  const tIntl = document.getElementById('tabIntl');
-  const tCn = document.getElementById('tabCn');
-  if(tIntl) tIntl.className = 'realm-tab' + (isIntl ? ' active' : '');
-  if(tCn) tCn.className = 'realm-tab' + (!isIntl ? ' active' : '');
+window.toggleActiveGatewayRealm = async function(){
+  const next = (window.ACTIVE_GATEWAY_REALM === "intl" ? "cn" : "intl");
+  try {
+    const res = await postJSON("/realm", {realm: next});
+    window.ACTIVE_GATEWAY_REALM = res.current || next;
+    toast("网关默认上游已切换并永久保存为: " + (window.ACTIVE_GATEWAY_REALM === "intl" ? "国际版" : "国内版"));
+    window.window.VIEW_REALM = window.ACTIVE_GATEWAY_REALM;
+    window.updateUI();
+    await loadAccounts();
+    await loadModels();
+    await refresh();
+  }catch(e){
+    alert("切换失败: " + e.message);
+  }
+};
 
-  const btnToggle = document.getElementById('btnToggleRealm');
-  if(btnToggle) btnToggle.textContent = isIntl ? '⇄ 快速切换为国内版' : '⇄ 快速切换为国际版';
-
-  const ep = document.getElementById('activeEndpoint');
-  if(ep) ep.textContent = isIntl ? 'https://www.workbuddy.ai/v2' : 'https://copilot.tencent.com/v2';
-
-  const btnCheckin = document.getElementById('btnCheckin');
-  if(btnCheckin) btnCheckin.style.display = isIntl ? 'none' : 'inline-block';
+async function initRealm(){
+  try {
+    const r = await getJSON("/realm");
+    if(r && r.current) window.ACTIVE_GATEWAY_REALM = r.current;
+  } catch(e){}
+  window.window.VIEW_REALM = window.ACTIVE_GATEWAY_REALM;
+  window.updateUI();
 }
 
 async function loadModels(){
   try{
-    const r = await getJSON('/v1/models?realm=' + encodeURIComponent(CURRENT_REALM));
+    const r = await getJSON('/v1/models?realm=' + encodeURIComponent(window.window.VIEW_REALM));
     MODELS_DATA = r.data || [];
     renderAvailableModels();
   }catch(e){
@@ -307,9 +340,17 @@ function renderAvailableModels(){
   }).join('');
 }
 
-async function switchRealm(r){
-  if(CURRENT_REALM === r) return;
-  CURRENT_REALM = r;
+async function switchViewRealm(r){
+  window.VIEW_REALM = r;
+  updateUI();
+  await loadAccounts();
+  await loadModels();
+  await refresh();
+}
+
+async function old_switchRealm(r){
+  if(window.VIEW_REALM === r) return;
+  window.VIEW_REALM = r;
   updateRealmUI();
   try { await postJSON("/realm", {realm: r}); }catch(e){}
   toast("已切换为 " + (r === "intl" ? "国际版" : "国内版"));
@@ -418,7 +459,6 @@ async function postJSON(url, body){
 function toast(msg){ console.log('[wb]', msg); }
 
 /* ------------------------------- accounts ------------------------------- */
-let ACCOUNTS = [];
 let USAGE_BY_ACCOUNT = {};
 
 function accountRow(a){
@@ -456,8 +496,8 @@ function renderAccounts(){
   if(REALM_FILTER === 'cn') list = list.filter(a => a.realm === 'cn');
   const usable = list.filter(a => a.enabled).length;
   document.getElementById('acctCount').textContent =
-    ACCOUNTS.length ? ('共 ' + ACCOUNTS.length + ' 个，启用 ' + usable + ' 个') : '';
-  if(!ACCOUNTS.length){
+    window.ACCOUNTS.length ? ('共 ' + window.ACCOUNTS.length + ' 个，启用 ' + usable + ' 个') : '';
+  if(!window.ACCOUNTS.length){
     box.innerHTML =
       '<div style="text-align:center;padding:30px 16px">'
       + '<div style="font-size:15px;margin-bottom:8px">还没有账号</div>'
@@ -482,15 +522,15 @@ function renderAccounts(){
 
 async function loadAccounts(){
   try{
-    const [acct, byAcct] = await Promise.all([getJSON('/accounts?realm=' + encodeURIComponent(CURRENT_REALM)), getJSON('/usage/by-account')]);
-    ACCOUNTS = acct.accounts || [];
+    const [acct, byAcct] = await Promise.all([getJSON('/accounts?realm=' + encodeURIComponent(window.window.VIEW_REALM)), getJSON('/usage/by-account')]);
+    window.ACCOUNTS = acct.accounts || [];
     USAGE_BY_ACCOUNT = {};
     (byAcct.accounts || []).forEach(a => { USAGE_BY_ACCOUNT[a.account] = a; });
     renderAccounts();
     // Auto-fetch credits once if not present
-    if(ACCOUNTS.length && ACCOUNTS.some(a => !a.credits)){
+    if(window.ACCOUNTS.length && window.ACCOUNTS.some(a => !a.credits)){
       postJSON('/accounts/credits', {}).then(r => {
-        ACCOUNTS = r.accounts || ACCOUNTS;
+        window.ACCOUNTS = r.accounts || ACCOUNTS;
         renderAccounts();
       }).catch(()=>{});
     }
@@ -501,7 +541,7 @@ async function queryCredits(btn){
   btn.disabled = true;
   try{
     const r = await postJSON('/accounts/credits', {});
-    ACCOUNTS = r.accounts || ACCOUNTS;
+    window.ACCOUNTS = r.accounts || ACCOUNTS;
     renderAccounts();
     refresh();
   }catch(e){ toast('积分查询失败: ' + e.message); }
@@ -602,9 +642,9 @@ async function refresh(){
   let usage, recent, perf;
   try{
     [usage, recent, perf] = await Promise.all([
-      getJSON('/usage?realm=' + encodeURIComponent(CURRENT_REALM)),
-      getJSON('/usage/recent?limit=60&realm=' + encodeURIComponent(CURRENT_REALM)),
-      getJSON('/usage/perf?realm=' + encodeURIComponent(CURRENT_REALM)),
+      getJSON('/usage?realm=' + encodeURIComponent(window.window.VIEW_REALM)),
+      getJSON('/usage/recent?limit=60&realm=' + encodeURIComponent(window.window.VIEW_REALM)),
+      getJSON('/usage/perf?realm=' + encodeURIComponent(window.window.VIEW_REALM)),
     ]);
     document.getElementById('statusDot').className = 'dot';
   }catch(e){
@@ -625,7 +665,7 @@ async function refresh(){
 
   // Sum credits across accounts
   let totRemain = 0, totSize = 0, hasCreds = false;
-  ACCOUNTS.forEach(a => {
+  window.ACCOUNTS.forEach(a => {
     if(a.credits){
       totRemain += (a.credits.remain || 0);
       totSize += (a.credits.size || 0);
@@ -646,7 +686,7 @@ async function refresh(){
          perf.success_rate_pct != null ? '成功率 ' + pct(perf.success_rate_pct) : null,
          perf.errors ? 'err' : '');
 
-  const noAcct = !ACCOUNTS.length;
+  const noAcct = !window.ACCOUNTS.length;
   if(noAcct){
     document.getElementById('perf').innerHTML =
       '<div class="empty">还没有请求数据</div>';
@@ -708,8 +748,12 @@ async function refresh(){
     : '<div class="empty">还没有请求记录</div>';
 }
 
-loadAccounts();
-refresh();
+(async function initDashboard(){
+  await initRealm();
+  await loadAccounts();
+  await loadModels();
+  await refresh();
+})();
 setInterval(refresh, 5000);
 setInterval(loadAccounts, 15000);
 </script>

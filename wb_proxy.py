@@ -505,6 +505,35 @@ class Session:
 
 POOL = None
 ACCOUNTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'accounts')
+REALM_STATE_FILE = os.path.join(ACCOUNTS_DIR, "active_realm.json")
+
+def load_persisted_realm():
+    global CURRENT_REALM
+    if os.path.isfile(REALM_STATE_FILE):
+        try:
+            with open(REALM_STATE_FILE, "r", encoding="utf-8") as fh:
+                d = json.load(fh)
+                r = d.get("realm")
+                if r in ("intl", "cn"):
+                    CURRENT_REALM = r
+                    return CURRENT_REALM
+        except Exception as e:
+            log("could not load active realm: %s" % e)
+    return CURRENT_REALM
+
+def save_persisted_realm(realm):
+    global CURRENT_REALM
+    if realm in ("intl", "cn"):
+        CURRENT_REALM = realm
+        try:
+            os.makedirs(ACCOUNTS_DIR, exist_ok=True)
+            with open(REALM_STATE_FILE, "w", encoding="utf-8") as fh:
+                json.dump({"realm": realm, "updated_at": time.time(), "updated_iso": time.strftime("%Y-%m-%d %H:%M:%S")}, fh, indent=2)
+            log("persisted active realm '%s' to disk" % realm)
+        except Exception as exc:
+            log("failed to persist active realm: %s" % exc)
+    return CURRENT_REALM
+
 API_KEY = None
 SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
 
@@ -1899,12 +1928,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"results": results, "accounts": account_views()})
 
         if path == "/realm":
-            global CURRENT_REALM
             new_realm = payload.get("realm")
             if new_realm in ("intl", "cn"):
-                CURRENT_REALM = new_realm
-                log("switched active realm to %s" % CURRENT_REALM)
-            return self._json(200, {"ok": True, "current": CURRENT_REALM})
+                save_persisted_realm(new_realm)
+            return self._json(200, {"ok": True, "current": CURRENT_REALM, "persisted": True})
 
         if path == "/accounts/checkin":
             uid = payload.get("uid")
@@ -2243,6 +2270,7 @@ def main():
 
     POOL = wb_accounts.AccountPool(ACCOUNTS_DIR, log=log)
     POOL.load()
+    load_persisted_realm()
 
     if args.info:
         account = POOL.import_desktop_credential(args.info, source="file")
