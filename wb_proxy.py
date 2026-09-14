@@ -130,6 +130,18 @@ def _extract_usage(usage):
     }
 
 
+def row_matches_realm(row, realm):
+    if not realm: return True
+    r = row.get("realm")
+    if r: return r == realm
+    acct_uid = row.get("account")
+    if acct_uid and POOL:
+        acc = POOL.get(acct_uid)
+        if acc: return acc.realm == realm
+    model = row.get("model")
+    if model: return detect_model_realm(model) == realm
+    return realm == "intl"
+
 def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_ms=None, fp=None,
                  account=None):
     """Accumulate stats, append a JSONL row, and persist the summary."""
@@ -226,7 +238,7 @@ def _pct(values, q):
     return ordered[max(0, min(len(ordered) - 1, idx))]
 
 
-def perf_stats(sample=5000):
+def perf_stats(sample=5000, realm=None):
     """Latency percentiles + derived rates, computed from the JSONL log."""
     ttfts, gens, walls, rates, hits, tok_rates = [], [], [], [], [], []
     total = ok = err = 0
@@ -246,6 +258,8 @@ def perf_stats(sample=5000):
         try:
             r = json.loads(line)
         except Exception:
+            continue
+        if realm and not row_matches_realm(r, realm):
             continue
         total += 1
         if r.get("error"):
@@ -290,13 +304,14 @@ def perf_stats(sample=5000):
     }
 
 
-def usage_snapshot():
-    rep = current_account()
+def usage_snapshot(realm=None):
+    r = realm or CURRENT_REALM
+    rep = POOL.representative(realm=r) if POOL else current_account()
     with _lock:
         snap = json.loads(json.dumps(_usage))
     snap["since"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(snap.get("started", time.time())))
     snap["log_file"] = USAGE_LOG
-    snap["realm"] = "intl (www.workbuddy.ai)"
+    snap["realm"] = r
     snap["account"] = {
         "uid": (rep.uid if rep else ""),
         "domain": (rep.domain if rep else ""),
@@ -309,24 +324,19 @@ def usage_snapshot():
     return snap
 
 
-def recent_usage(limit=100):
-    """Return the last `limit` rows of usage.jsonl (oldest first) plus totals."""
+def recent_usage(limit=100, realm=None):
     rows, total = [], 0
     try:
         with open(USAGE_LOG, encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
-                if not line:
-                    continue
+                if not line: continue
+                try: item = json.loads(line)
+                except Exception: continue
+                if realm and not row_matches_realm(item, realm): continue
                 total += 1
-                try:
-                    rows.append(json.loads(line))
-                except Exception:
-                    continue
-    except FileNotFoundError:
-        pass
-    except Exception as exc:
-        log(f"usage log read failed: {exc}")
+                rows.append(item)
+    except Exception: pass
     return {"total": total, "rows": rows[-limit:]}
 
 
@@ -513,11 +523,11 @@ def import_desktop_accounts(realm=None):
     return imported
 
 
-def account_views():
+def account_views(realm=None):
     """List view of every account, including a live readiness flag."""
     if not POOL:
         return []
-    return POOL.list_public()
+    return POOL.list_public(realm=realm)
 
 
 def usage_by_account():
@@ -1813,7 +1823,8 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/usage", "/v1/usage"):
             if not self._authorized():
                 return
-            return self._json(200, usage_snapshot())
+            req_realm = query.get('realm', [None])[0] or self.headers.get('X-Realm') or CURRENT_REALM
+            return self._json(200, usage_snapshot(realm=req_realm))
         if path == "/usage/recent":
             if not self._authorized():
                 return
@@ -1821,7 +1832,8 @@ class Handler(BaseHTTPRequestHandler):
                 limit = max(1, min(1000, int((query.get("limit") or ["100"])[0])))
             except ValueError:
                 limit = 100
-            return self._json(200, recent_usage(limit))
+            req_realm = query.get('realm', [None])[0] or self.headers.get('X-Realm') or CURRENT_REALM
+            return self._json(200, recent_usage(limit, realm=req_realm))
         if path == "/accounts/credits":
             if not self._authorized():
                 return
@@ -1833,7 +1845,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authorized():
                 return
             return self._json(200, {
-                "accounts": account_views(),
+                "accounts": account_views(realm=query.get('realm', [None])[0] or CURRENT_REALM),
                 "storage": ACCOUNTS_DIR,
                 "usable": POOL.count_ready() if POOL else 0,
             })

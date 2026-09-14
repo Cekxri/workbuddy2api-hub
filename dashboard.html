@@ -139,12 +139,7 @@ a{color:var(--accent);text-decoration:none}
     <button class="sec" onclick="fetchCredits(this)">⚡ 刷新额度/积分</button>
     <button class="sec" onclick="setAll(true)">全部启用</button>
     <button class="sec" onclick="setAll(false)">全部停用</button>
-    <div class="realm-filter" style="margin-left:auto;align-items:center">
-      <span style="color:var(--dim);font-size:12px">筛选:</span>
-      <button id="fltAll" class="active" onclick="filterRealm('all')">全部</button>
-      <button id="fltIntl" onclick="filterRealm('intl')">仅国际版</button>
-      <button id="fltCn" onclick="filterRealm('cn')">仅国内版</button>
-    </div>
+    
   </div>
   <div id="realmNotice" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:14px;font-size:12px;color:var(--dim);display:flex;justify-content:space-between">
     <span>当前活动网关：<b id="activeGateway" style="color:var(--fg)"></b></span>
@@ -210,7 +205,7 @@ async function switchRealm(r){
   updateRealmUI();
   try { await postJSON("/realm", {realm: r}); }catch(e){}
   toast("已切换为 " + (r === "intl" ? "国际版" : "国内版"));
-  await Promise.all([loadAccounts(), refresh()]);
+  await loadAccounts(); await refresh();
 }
 function filterRealm(m){
   REALM_FILTER = m;
@@ -379,7 +374,7 @@ function renderAccounts(){
 
 async function loadAccounts(){
   try{
-    const [acct, byAcct] = await Promise.all([getJSON('/accounts'), getJSON('/usage/by-account')]);
+    const [acct, byAcct] = await Promise.all([getJSON('/accounts?realm=' + encodeURIComponent(CURRENT_REALM)), getJSON('/usage/by-account')]);
     ACCOUNTS = acct.accounts || [];
     USAGE_BY_ACCOUNT = {};
     (byAcct.accounts || []).forEach(a => { USAGE_BY_ACCOUNT[a.account] = a; });
@@ -499,7 +494,9 @@ async function refresh(){
   let usage, recent, perf;
   try{
     [usage, recent, perf] = await Promise.all([
-      getJSON('/usage'), getJSON('/usage/recent?limit=60'), getJSON('/usage/perf'),
+      getJSON('/usage?realm=' + encodeURIComponent(CURRENT_REALM)),
+      getJSON('/usage/recent?limit=60&realm=' + encodeURIComponent(CURRENT_REALM)),
+      getJSON('/usage/perf?realm=' + encodeURIComponent(CURRENT_REALM)),
     ]);
     document.getElementById('statusDot').className = 'dot';
   }catch(e){
