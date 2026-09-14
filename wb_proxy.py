@@ -647,6 +647,11 @@ def import_desktop_accounts(realm=None):
     return imported
 
 
+def desktop_credential_scan():
+    """Read-only scan of the desktop client credentials on this machine."""
+    return wb_accounts.scan_desktop_credentials()
+
+
 def account_views(realm=None):
     """List view of every account, including a live readiness flag."""
     if not POOL:
@@ -2140,9 +2145,31 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"cancelled": POOL.cancel_login(state)})
 
         if path == "/accounts/import/desktop":
-            imported = import_desktop_accounts()
+            # Two ways to call this:
+            #   {}                     -> scan only (read-only, nothing imported)
+            #   {"path": "..."}        -> import that credential
+            #   {"all": true}          -> import everything the scan found
+            target_path = payload.get("path")
+            if target_path:
+                realm = payload.get("realm")
+                try:
+                    account = POOL.import_desktop_credential(
+                        path=target_path, realm=realm, source="desktop-app")
+                except Exception as exc:
+                    return self._error(400, "import failed: %s" % exc)
+                log("imported %s from %s (user confirmed)" % (account.uid[:8], os.path.basename(target_path)))
+                return self._json(200, {
+                    "imported": [account.public()],
+                    "accounts": account_views(),
+                })
+            if payload.get("all"):
+                imported = import_desktop_accounts(payload.get("realm"))
+                return self._json(200, {
+                    "imported": [a.public() for a in imported],
+                    "accounts": account_views(),
+                })
             return self._json(200, {
-                "imported": [a.public() for a in imported],
+                "detected": desktop_credential_scan(),
                 "accounts": account_views(),
             })
 
@@ -2470,8 +2497,19 @@ def main():
 
     first_run = not POOL.accounts
     if first_run:
-        log("no accounts yet - trying the desktop app credential")
-        import_desktop_accounts()
+        # Never adopt the desktop client's login silently: just report what is
+        # available and let the user import it from the dashboard.
+        detected = desktop_credential_scan()
+        usable = [d for d in detected if d.get("valid")]
+        if usable:
+            log("no accounts yet - detected %d desktop credential(s), NOT importing" % len(usable))
+            for d in usable:
+                log("  available: %s  %s  %s" % (
+                    (d.get("uid") or "?")[:8], d.get("nickname") or "(no name)",
+                    d.get("realmName") or d.get("realm")))
+            log("open the dashboard and click [Scan desktop app] to import")
+        else:
+            log("no accounts yet - no desktop credentials found on this machine")
 
     if first_run and not POOL.accounts:
         # Do NOT exit here: the dashboard has to stay reachable so a new

@@ -681,3 +681,52 @@ def desktop_credential_candidates():
     p_cn = os.path.join(base, "workbuddy-desktop.info")
     if os.path.isfile(p_cn): out.append((p_cn, "cn"))
     return out
+
+
+def scan_desktop_credentials():
+    """Describe the desktop-app credentials found on this machine.
+
+    Read-only: nothing is added to the pool. The dashboard shows the result
+    and lets the user decide which ones to import, so the proxy never
+    silently adopts the desktop client's login.
+    """
+    found = []
+    for path, realm in desktop_credential_candidates():
+        cfg = get_realm_config(realm)
+        item = {
+            "path": path,
+            "file": os.path.basename(path),
+            "realm": realm,
+            "realmName": cfg["name"],
+            "domain": cfg["domain"],
+            "readable": False,
+            "valid": False,
+            "uid": "",
+            "nickname": "",
+            "expiresAt": 0,
+            "error": "",
+        }
+        try:
+            with open(path, encoding="utf-8") as fh:
+                blob = json.load(fh)
+            auth = blob.get("auth") or {}
+            profile = blob.get("account") or {}
+            token = str(auth.get("accessToken") or "")
+            item["readable"] = True
+            if not token:
+                item["error"] = "no accessToken inside the file"
+                found.append(item)
+                continue
+            exp = normalize_epoch(auth.get("expiresAt")) or jwt_exp(token) or 0
+            item.update({
+                "valid": True,
+                "uid": profile.get("uid") or jwt_uid(token),
+                "nickname": profile.get("nickname") or "",
+                "domain": auth.get("domain") or cfg["domain"],
+                "expiresAt": exp,
+                "expiresIn": _human_delta(exp - time.time()) if exp else None,
+            })
+        except Exception as exc:
+            item["error"] = str(exc)
+        found.append(item)
+    return found

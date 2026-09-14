@@ -205,7 +205,7 @@ a{color:var(--accent);text-decoration:none}
     <div class="toolbar">
     <button onclick="openLoginModal()">+ 添加账号 (OAuth)</button>
     <button class="sec" id="btnCheckin" onclick="doCheckin(this)" style="display:none">🎁 每日签到 (国内版)</button>
-    <button class="sec" onclick="importDesktop(this)">📥 导入桌面客户端凭证</button>
+    <button class="sec" id="btnScanDesktop" onclick="scanDesktop(this)">📥 扫描桌面客户端账号</button>
     <button class="sec" onclick="fetchCredits(this)">⚡ 刷新额度/积分</button>
     <button class="sec" onclick="setAll(true)">全部启用</button>
     <button class="sec" onclick="setAll(false)">全部停用</button>
@@ -216,6 +216,7 @@ a{color:var(--accent);text-decoration:none}
     <span id="activeModelCount"></span>
   </div>
     <div id="accounts"></div>
+    <div id="desktopScanResult" style="display:none;margin-top:14px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow-x:auto"></div>
   </section>
 
   <!-- 融合后的：模型性能与用量矩阵 -->
@@ -962,13 +963,100 @@ async function deleteAccount(uid, name){
   try{ await postJSON('/accounts/delete', {uid: uid}); await loadAccounts(); }
   catch(e){ toast(e.message); }
 }
-async function importDesktop(btn){
+async function scanDesktop(btn){
   btn.disabled = true;
-  try{ const r = await postJSON('/accounts/import/desktop', {});
-       toast('导入 ' + (r.imported||[]).length + ' 个账号');
-       await loadAccounts(); }
-  catch(e){ toast(e.message); }
-  finally{ btn.disabled = false; }
+  const old = btn.textContent;
+  btn.textContent = '扫描中...';
+  try{
+    // Step 1: read-only scan. Nothing is imported by this call.
+    const r = await postJSON('/accounts/import/desktop', {});
+    renderDesktopScan(r.detected || []);
+  }catch(e){
+    alert('扫描失败: ' + e.message);
+  }finally{
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+function renderDesktopScan(list){
+  const box = document.getElementById('desktopScanResult');
+  if(!box) return;
+  const valid = list.filter(d => d.valid);
+  const bad = list.filter(d => !d.valid);
+  const already = new Set((window.ACCOUNTS || []).map(a => a.uid));
+
+  if(!list.length){
+    box.style.display = 'block';
+    box.innerHTML = '<div style="color:var(--dim);font-size:12px;padding:6px 2px">'
+      + '未在本机检测到桌面客户端登录凭证。请确认已安装并登录 WorkBuddy 客户端后重试。</div>';
+    return;
+  }
+
+  let html = '<div style="font-size:12px;color:var(--dim);margin-bottom:8px">检测到以下桌面客户端凭证（需再次确认才会导入，不会自动加入账号池）：</div>';
+  html += '<table><thead><tr><th>账号</th><th>区域</th><th>域名</th><th>有效期</th><th></th></tr></thead><tbody>';
+  valid.forEach(d => {
+    const dup = already.has(d.uid);
+    const badge = d.realm === 'cn'
+      ? '<span class="realm-badge-cn">🇨🇳 国内版</span>'
+      : '<span class="realm-badge-intl">🌐 国际版</span>';
+    const act = dup
+      ? '<span class="badge off">已在账号池</span>'
+      : '<button class="primary mini" onclick="doImportDesktop(this,&quot;' + esc(d.path).replace(/&quot;/g, '') + '&quot;,&quot;' + d.realm + '&quot;)">导入此账号</button>';
+    html += '<tr>'
+      + '<td><b>' + esc(d.nickname || (d.uid||'').slice(0,8)) + '</b>'
+      + '<div class="mono" style="font-size:11px;color:var(--dim)">' + esc((d.uid||'').slice(0,8)) + ' · ' + esc(d.file) + '</div></td>'
+      + '<td>' + badge + '</td>'
+      + '<td class="mono" style="font-size:11px">' + esc(d.domain || '-') + '</td>'
+      + '<td>' + esc(d.expiresIn || '未知') + '</td>'
+      + '<td>' + act + '</td>'
+      + '</tr>';
+  });
+  bad.forEach(d => {
+    html += '<tr><td><span style="color:var(--dim)">' + esc(d.file) + '</span></td>'
+      + '<td>' + esc(d.realm) + '</td><td colspan="3"><span style="color:var(--warn);font-size:12px">无法读取: '
+      + esc(d.error || '未知原因') + '</span></td></tr>';
+  });
+  html += '</tbody></table>';
+  if(valid.filter(d => !already.has(d.uid)).length > 1){
+    html += '<div style="margin-top:10px"><button class="sec mini" onclick="doImportDesktopAll(this)">全部导入（'
+      + valid.filter(d => !already.has(d.uid)).length + ' 个）</button></div>';
+  }
+  box.style.display = 'block';
+  box.innerHTML = html;
+}
+
+async function doImportDesktop(btn, path, realm){
+  btn.disabled = true;
+  btn.textContent = '导入中...';
+  try{
+    const r = await postJSON('/accounts/import/desktop', {path: path, realm: realm});
+    const a = (r.imported || [])[0] || {};
+    toast('已导入 ' + (a.nickname || (a.uid||'').slice(0,8)));
+    await loadAccounts();
+    await refresh();
+    renderDesktopScan((await postJSON('/accounts/import/desktop', {})).detected || []);
+  }catch(e){
+    alert('导入失败: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '导入此账号';
+  }
+}
+
+async function doImportDesktopAll(btn){
+  btn.disabled = true;
+  btn.textContent = '导入中...';
+  try{
+    const r = await postJSON('/accounts/import/desktop', {all: true});
+    toast('已导入 ' + (r.imported||[]).length + ' 个账号');
+    await loadAccounts();
+    await refresh();
+    renderDesktopScan((await postJSON('/accounts/import/desktop', {})).detected || []);
+  }catch(e){
+    alert('导入失败: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '全部导入';
+  }
 }
 
 /* ------------------------------- dashboard ------------------------------ */
