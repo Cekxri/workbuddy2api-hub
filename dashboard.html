@@ -863,7 +863,27 @@ async function postJSON(url, body){
   if(!r.ok) throw new Error((parsed.error && parsed.error.message) || r.status);
   return parsed;
 }
-function toast(msg){ console.log('[wb]', msg); }
+function toast(msg, kind){
+  // Visible, self-dismissing notification (the old version only wrote to the
+  // console, so actions like "已导入" looked like they did nothing).
+  console.log('[wb]', msg);
+  let box = document.getElementById('toastBox');
+  if(!box){
+    box = document.createElement('div');
+    box.id = 'toastBox';
+    box.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:200;'
+      + 'display:flex;flex-direction:column;gap:8px;align-items:flex-end';
+    document.body.appendChild(box);
+  }
+  const item = document.createElement('div');
+  item.textContent = msg;
+  item.style.cssText = 'background:var(--panel);border:1px solid var(--line);'
+    + 'border-left:3px solid ' + (kind === 'err' ? 'var(--bad)' : 'var(--accent2)') + ';'
+    + 'border-radius:8px;padding:9px 14px;font-size:13px;color:var(--fg);'
+    + 'box-shadow:0 6px 20px rgba(0,0,0,.35);max-width:360px';
+  box.appendChild(item);
+  setTimeout(() => item.remove(), 4200);
+}
 
 /* ------------------------------- accounts ------------------------------- */
 let USAGE_BY_ACCOUNT = {};
@@ -987,6 +1007,8 @@ async function scanDesktop(btn){
   if(btn){ btn.disabled = true; btn.textContent = '扫描中...'; }
   openDesktopScan();
   try{
+    const acct = await getJSON('/accounts?realm=all').catch(() => ({accounts: []}));
+    window.SCAN_POOL = new Set((acct.accounts || []).map(a => a.uid));
     const r = await postJSON('/accounts/import/desktop', {});
     renderDesktopScan(r.detected || []);
   }catch(e){
@@ -1028,7 +1050,11 @@ function renderDesktopScan(list){
   if(!body) return;
   const valid = list.filter(d => d.valid);
   const bad = list.filter(d => !d.valid);
-  const already = new Set((window.ACCOUNTS || []).map(a => a.uid));
+  // Use every account across both realms: the visible list is filtered by the
+  // current view, so an earlier import could otherwise look "not imported".
+  const already = window.SCAN_POOL && window.SCAN_POOL.size
+    ? window.SCAN_POOL
+    : new Set((window.ACCOUNTS || []).map(a => a.uid));
 
   if(!list.length){
     body.innerHTML = '<p class="hint">未在本机检测到桌面客户端登录凭证。<br>'
@@ -1046,9 +1072,14 @@ function renderDesktopScan(list){
     html += '<table><thead><tr><th>账号</th><th>域名</th><th>有效期</th><th></th></tr></thead><tbody>';
     items.forEach(d => {
       const dup = already.has(d.uid);
+      // NOTE: never interpolate the path into an inline onclick - JSON.stringify
+      // emits double quotes, which would terminate the HTML attribute and make
+      // the button silently do nothing. Use a data attribute + delegation.
       const act = dup
         ? '<span class="badge off">已导入</span>'
-        : '<button class="primary mini" onclick="doImportDesktop(this,' + JSON.stringify(d.path) + ',' + JSON.stringify(d.realm) + ')">导入</button>';
+        : '<button class="primary mini btn-import-desktop"'
+          + ' data-path="' + esc(d.path) + '"'
+          + ' data-realm="' + esc(d.realm) + '">导入</button>';
       html += '<tr>'
         + '<td><b>' + esc(d.nickname || (d.uid||'').slice(0,8)) + '</b>'
         + '<div class="mono" style="font-size:11px;color:var(--dim)">' + esc((d.uid||'').slice(0,8)) + ' · ' + esc(d.file) + '</div></td>'
@@ -1076,21 +1107,37 @@ function renderDesktopScan(list){
     html += '</tbody></table>';
   }
   body.innerHTML = html;
+  // Wire the import buttons through event delegation (see renderDesktopScan).
+  body.querySelectorAll('.btn-import-desktop').forEach(btn => {
+    btn.addEventListener('click', () => {
+      doImportDesktop(btn, btn.getAttribute('data-path'), btn.getAttribute('data-realm'));
+    });
+  });
 }
 
 async function doImportDesktop(btn, path, realm){
   btn.disabled = true;
   btn.textContent = '导入中...';
-  try{
+    try{
     const r = await postJSON('/accounts/import/desktop', {path: path, realm: realm});
     const a = (r.imported || [])[0] || {};
     toast('已导入 ' + (a.nickname || (a.uid||'').slice(0,8)) + ' 到 ' + (a.realm === 'cn' ? '国内版' : '国际版'));
+    if(a.uid && window.SCAN_POOL) window.SCAN_POOL.add(a.uid);
     await loadAccounts();
     await refresh();
-    const s = await postJSON('/accounts/import/desktop', {});
-    renderDesktopScan(s.detected || []);
+    try {
+      const s = await postJSON('/accounts/import/desktop', {});
+      if(s.pool_uids) window.SCAN_POOL = new Set(s.pool_uids);
+      renderDesktopScan(s.detected || []);
+    } catch(e2) { /* keep the refreshed toasts; list will refresh on next scan */ }
+    // The scan list is filtered by the current view; tell the user where the
+    // account actually landed so this never looks like a no-op.
+    if(a.realm && a.realm !== window.VIEW_REALM){
+      toast('该账号属于' + (a.realm === 'cn' ? '国内版' : '国际版')
+            + '列表，点击上方选项卡即可查看', 'err');
+    }
   }catch(e){
-    alert('导入失败: ' + e.message);
+    toast('导入失败: ' + e.message, 'err');
     btn.disabled = false;
     btn.textContent = '导入';
   }
