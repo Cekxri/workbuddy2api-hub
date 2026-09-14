@@ -1,12 +1,57 @@
 import base64
 import json
 import os
+import ssl
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from wb_fingerprint import derive_id, generate_request_id
+
+
+def _retryable(exc):
+    """Transient network faults worth another attempt (TLS resets, timeouts, 5xx)."""
+    if isinstance(exc, ssl.SSLError):
+        return True
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code >= 500
+    if isinstance(exc, urllib.error.URLError):
+        return True
+    if isinstance(exc, (TimeoutError, ConnectionResetError, ConnectionAbortedError, OSError)):
+        return True
+    return False
+
+
+def http_json(url, data=None, method=None, headers=None, timeout=30,
+              retries=3, backoff=1.0, log=None):
+    """urlopen + json decode with retries.
+
+    Chinese networks and CDN edges routinely drop a TLS handshake with
+    "SSL: UNEXPECTED_EOF_WHILE_READING"; a single retry almost always
+    succeeds, so every upstream call goes through here.
+    """
+    attempts = max(1, int(retries or 1))
+    last = None
+    for attempt in range(1, attempts + 1):
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method=method or ("POST" if data is not None else "GET"),
+            headers=headers or {},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            last = exc
+            if attempt >= attempts or not _retryable(exc):
+                break
+            if log:
+                log("network retry %d/%d after %s" % (attempt, attempts, exc))
+            time.sleep(backoff * attempt)
+    raise last
 
 REALM_CONFIGS = {
     "intl": {
@@ -233,10 +278,8 @@ class Account(object):
         }
         if self.enterprise_id:
             headers["X-Enterprise-Id"] = self.enterprise_id
-        req = urllib.request.Request(url, data=b"{}", method="POST", headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
+            payload = http_json(url, data=b"{}", method="POST", headers=headers, timeout=30)
         except Exception as exc:
             self.last_error = "refresh failed: %s" % exc
             return False
@@ -261,10 +304,8 @@ class Account(object):
         cfg = get_realm_config("cn")
         url = cfg["billing_upstream"] + CHECKIN_PATH
         headers = self.headers(purpose="billing")
-        req = urllib.request.Request(url, data=b"{}", method="POST", headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                payload = json.loads(resp.read().decode("utf-8") or "{}")
+            payload = http_json(url, data=b"{}", method="POST", headers=headers, timeout=15)
             code = payload.get("code", -1)
             msg = payload.get("msg") or "ok"
             self.last_checkin = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -293,10 +334,8 @@ class Account(object):
         }
         url = cfg["billing_upstream"] + GET_RESOURCE_PATH
         headers = self.headers(purpose="billing")
-        req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                res = json.loads(resp.read().decode("utf-8"))
+            res = http_json(url, data=json.dumps(body).encode(), method="POST", headers=headers, timeout=30)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
         data = res.get("data", {}).get("Response", {}).get("Data", {})
@@ -511,9 +550,8 @@ class AccountPool(object):
             "Origin": cfg["origin"],
             "Referer": cfg["origin"] + "/",
         }
-        req = urllib.request.Request(url, data=b"{}", method="POST", headers=headers)
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+        payload = http_json(url, data=b"{}", method="POST", headers=headers,
+                            timeout=30, retries=3, log=self.log)
         data = payload.get("data") or {}
         state = data.get("state")
         auth_url = data.get("authUrl")
@@ -544,9 +582,7 @@ class AccountPool(object):
             "Referer": cfg["origin"] + "/",
         }
         try:
-            req = urllib.request.Request(url, method="GET", headers=headers)
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
+            payload = http_json(url, method="GET", headers=headers, timeout=30, retries=2)
         except Exception as exc:
             return {"status": "pending", "message": "poll error: %s" % exc}
         code = payload.get("code")

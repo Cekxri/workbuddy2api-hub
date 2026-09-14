@@ -59,6 +59,42 @@ def detect_model_realm(model_id):
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+
+def _parent_watchdog(seconds=15):
+    """Exit when the console window that launched us disappears.
+
+    A .bat launcher spawns python as a child of cmd.exe. Closing the window
+    kills cmd but the python child keeps running and keeps the port bound
+    (Windows has no process-group kill on window close), which then makes
+    the next launch say "another proxy is already running".
+
+    On Windows we therefore watch the parent pid; once it is gone, shut
+    down. Cheap (one syscall per interval), stdlib only, and harmless on
+    other platforms / when the parent is a normal shell that stays alive.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        SYNCHRONIZE = 0x00100000
+        handle = kernel32.OpenProcess(SYNCHRONIZE, False, os.getppid())
+        if not handle:
+            return
+    except Exception:
+        return
+
+    def loop():
+        WAIT_OBJECT_0 = 0
+        while True:
+            rc = kernel32.WaitForSingleObject(handle, seconds * 1000)
+            if rc == WAIT_OBJECT_0:
+                log("launcher window closed - shutting down so the port is released")
+                os._exit(0)
+
+    threading.Thread(target=loop, daemon=True).start()
+
 UPSTREAM = "https://www.workbuddy.ai"
 CHAT_PATH = "/v2/chat/completions"
 MODELS_PATH = "/v2/enterprises/personal/models"
@@ -2507,10 +2543,16 @@ def main():
         sys.stdout.flush()
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
+    _parent_watchdog(15)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         log("bye")
+    finally:
+        try:
+            server.server_close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
