@@ -47,10 +47,13 @@
 ### 1. 模型列表严格按照桌面应用 1:1 对齐
 针对官方本地配置清单（50+ 底层模型）进行了深度清洗，剔除行内代码补全专用模型（如 `codewise-*`、`completion-gf`、`hunyuan-3b/7b`）与底层多云专线变体（如 `*-volc`、`*-lkeap`），严格对齐官方桌面端主界面：
 
-* **🌐 国际版 (16 个)**：`deepseek-v4.1-flash` (限时免费)、`gpt-6-astra`、`hy4-preview-f`、`hy4-preview`、`hy3`、`gpt-5.6-sol/terra/luna`、`gpt-5.5/5.4/5.3-codex`、`gemini-3.5-flash`、`glm-5.3/5.2`、`kimi-k3/k2.6`。
-* **🇨🇳 国内版 (14 个)**：`hy4-preview-f`、`hy3`、`deepseek-v4.1-flash` (独家优惠)、`deepseek-v4-pro`、`glm-5.3/5.3-flash/5.2/5.1/5v-turbo`、`minimax-m3`、`kimi-k3-1/k2.8-preview/k2.7/k2.6`。
+* **🌐 国际版 (16 个)**：`deepseek-v4.1-flash`、`gpt-6-astra`、`hy4-preview-f`、`hy4-preview`、`hy3`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、`gpt-5.3-codex`、`gemini-3.5-flash`、`glm-5.3`、`glm-5.2`、`kimi-k3`、`kimi-k2.6`。
+* **🇨🇳 国内版 (14 个)**：`hy4-preview-f`、`hy3`、`deepseek-v4.1-flash`、`deepseek-v4-pro`、`glm-5.3`、`glm-5.3-flash`、`glm-5.2`、`glm-5.1`、`glm-5v-turbo`、`minimax-m3`、`kimi-k3-1`、`kimi-k2.8-preview`、`kimi-k2.7`、`kimi-k2.6`。
 
-每个模型均宣告完整的上下文窗口（K/M 规范）、单次最大输出、视觉支持、工具调用以及固定推理档位。
+每个模型均宣告完整桌面软件中显示的上下文窗口（K/M 规范）、单次最大输出、视觉支持、工具调用以及推理档位。
+
+> 💡 **关于同模型跨区域混合轮询的说明**：
+> 目前对于同时存在于国内版和国际版的同名模型（如 `deepseek-v4.1-flash` 等），**暂未实现跨国内/国际账号的自动混合轮询**，而是作为两个独立区域分别配置与调度，请求只能走当前所选网关的独立出口。这主要是出于各区域网络环境隔离、出站指纹对齐与账号防风控安全考量；待作者后续实测验证确认长期使用稳定且无封号风险后，会尽快跟进并补齐同名模型的跨区域混合轮询能力。
 
 ### 2. 稳定物理设备指纹隔离 (`derive_id`)
 国际版与国内版统一采用相同的底层算法内核：以账号自身的 UID 结合固定业务盐值单向哈希派生出固定的机器码与会话标识：
