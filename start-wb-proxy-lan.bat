@@ -1,16 +1,19 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 rem ===========================================================
 rem  WorkBuddy proxy - LAN mode
 rem
 rem  Listens on every network interface so phones, laptops and
 rem  other PCs on the same network can use it.
 rem
-rem  An API key is REQUIRED in this mode and is generated
-rem  automatically - copy it from the window that opens.
+rem  An API key is REQUIRED in this mode.
 rem
 rem  ASCII-only on purpose: .bat files are parsed using the
 rem  console code page, so non-ASCII text breaks the parser.
+rem
+rem  NOTE: this script puts no %VAR% inside an if( ... ) block,
+rem  because a path containing ( or ) breaks the cmd.exe parser.
+rem  All checks use if/errorlevel/goto instead.
 rem ===========================================================
 
 set "PORT=%~1"
@@ -20,33 +23,32 @@ if "%KEY%"=="" set "KEY=qwer.1234"
 set "HERE=%~dp0"
 set "SCRIPT=%HERE%wb_proxy.py"
 
-if not exist "%SCRIPT%" (
-    echo [ERROR] wb_proxy.py not found next to this script.
-    echo         expected: %SCRIPT%
-    echo.
-    pause
-    exit /b 1
-)
+if not exist "%SCRIPT%" goto no_script
 
 set "PYEXE="
 
 rem ---- 1) bundled runtime (ships with the zip) ----
-if exist "%HERE%python\python.exe" (
-    "%HERE%python\python.exe" --version >nul 2>nul
-    if not errorlevel 1 set "PYEXE=%HERE%python\python.exe"
-)
-if defined PYEXE goto run
+if not exist "%HERE%python\python.exe" goto try_path
+"%HERE%python\python.exe" --version >nul 2>nul
+if errorlevel 1 goto try_path
+set "PYEXE=%HERE%python\python.exe"
+goto run
 
+:try_path
 rem ---- 2) python on PATH ----
 python --version >nul 2>nul
-if not errorlevel 1 set "PYEXE=python"
-if defined PYEXE goto run
+if errorlevel 1 goto try_py
+set "PYEXE=python"
+goto run
 
+:try_py
 rem ---- 3) py launcher ----
 py --version >nul 2>nul
-if not errorlevel 1 set "PYEXE=py"
-if defined PYEXE goto run
+if errorlevel 1 goto try_codex
+set "PYEXE=py"
+goto run
 
+:try_codex
 rem ---- 4) Codex bundled runtimes ----
 call :find_codex
 if defined PYEXE goto run
@@ -61,18 +63,28 @@ echo.
 pause
 exit /b 1
 
+:no_script
+echo [ERROR] wb_proxy.py not found next to this script.
+echo         expected: %SCRIPT%
+echo.
+pause
+exit /b 1
+
 :find_codex
 if not exist "%USERPROFILE%\.cache\codex-runtimes" goto :eof
-for /d %%D in ("%USERPROFILE%\.cache\codex-runtimes\*") do (
-    if not defined PYEXE (
-        for /f "delims=" %%P in ('dir /b /s "%%~D\python.exe" 2^>nul') do (
-            if not defined PYEXE (
-                "%%~P" --version >nul 2>nul
-                if not errorlevel 1 set "PYEXE=%%~P"
-            )
-        )
-    )
-)
+for /d %%D in ("%USERPROFILE%\.cache\codex-runtimes\*") do call :probe "%%~D"
+goto :eof
+
+:probe
+if defined PYEXE goto :eof
+for /f "delims=" %%P in ('dir /b /s "%~1\python.exe" 2^>nul') do call :probe_one "%%~P"
+goto :eof
+
+:probe_one
+if defined PYEXE goto :eof
+"%~1" --version >nul 2>nul
+if errorlevel 1 goto :eof
+set "PYEXE=%~1"
 goto :eof
 
 :run
@@ -94,4 +106,3 @@ echo.
 echo.
 echo [server exited]
 pause
-

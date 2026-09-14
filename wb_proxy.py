@@ -2461,7 +2461,9 @@ def main():
         log("catalog    : app cache not found - will use the model API instead")
     log(f"account    : {rep.uid if rep else chr(45)} @ {rep.domain if rep else chr(45)}")
     log(f"issuer     : {wb_accounts.jwt_issuer(rep.access_token) if rep else chr(45)}")
-    log("realm      : intl (www.workbuddy.ai only)")
+    log("realm      : %s (%s)" % (
+        CURRENT_REALM,
+        "www.workbuddy.ai" if CURRENT_REALM == "intl" else "copilot.tencent.com"))
     log("user-agent : %s" % wb_accounts.USER_AGENT)
     log(f"listening  : http://{args.host}:{args.port}/v1  (api key: {'on' if API_KEY else 'off'})")
     log(f"dashboard  : http://{args.host}:{args.port}/")
