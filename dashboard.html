@@ -33,11 +33,11 @@ main{padding:20px 24px 60px;max-width:1280px;margin:0 auto}
 .card.accent .v{color:var(--accent)}
 .card.accent2 .v{color:var(--accent2)}
 .card.err .v{color:var(--bad)}
-#cards{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:8px;margin-bottom:20px}
-#cards .card{padding:10px 8px;min-width:0;overflow:hidden;border-radius:10px}
-#cards .card .v{font-size:18px;font-weight:600;white-space:nowrap}
-#cards .card .k{font-size:11px;white-space:nowrap;margin-bottom:3px}
-#cards .card .s{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+#cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+#cards .card{padding:14px 18px;min-width:0;border-radius:12px;background:var(--panel);border:1px solid var(--line)}
+#cards .card .k{font-size:12px;color:var(--dim);margin-bottom:6px;font-weight:500}
+#cards .card .v{font-size:22px;font-weight:700;white-space:nowrap;letter-spacing:-.3px}
+#cards .card .s{font-size:11px;color:var(--dim);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 section{background:var(--panel);border:1px solid var(--line);border-radius:12px;
   padding:16px 18px;margin-bottom:18px}
 section h2{margin:0 0 14px;font-size:13px;font-weight:600;color:var(--dim);
@@ -1278,19 +1278,18 @@ async function refresh(){
     }
   });
 
-  document.getElementById('cards').innerHTML =
-    card('请求数', fmt(t.requests)) +
-    card('总 token', fmt(t.total_tokens), null, 'accent') +
-    (hasCreds ? card('剩余积分', fmt(totRemain), '总额度 ' + fmt(totSize) + ' 积分', 'accent2') : '') +
-    card('输入 token', fmt(t.prompt_tokens)) +
-    card('输出 token', fmt(t.completion_tokens)) +
-    card('思考 token', fmt(t.reasoning_tokens), '模型内部推理', 'think') +
-    card('缓存命中', fmt(t.cached_tokens),
-         t.prompt_tokens ? pct(t.cached_tokens / t.prompt_tokens * 100) + ' 命中率' : null) +
-   card('失败请求', fmt(perf.errors),
-        perf.success_rate_pct != null ? '成功率 ' + pct(perf.success_rate_pct) : null,
-        perf.errors ? 'err' : '');
+  const activeAccts = (window.ACCOUNTS || []).filter(a => a.enabled).length;
+  const totalAccts = (window.ACCOUNTS || []).length;
+  const pctRemain = totSize > 0 ? ((totRemain / totSize) * 100).toFixed(1) + '%' : '';
+  const subCredit = totSize > 0 ? ('总额度 ' + fmt(totSize) + ' · 剩余 ' + pctRemain) : '当前账号正常';
+  const succStr = perf.success_rate_pct != null ? pct(perf.success_rate_pct) : '100.0%';
+  const errSub = perf.errors ? (perf.errors + ' 次异常拦截') : '服务运行平稳';
 
+  document.getElementById('cards').innerHTML =
+    card('可用账号池', activeAccts + ' <span style="font-size:13px;font-weight:400;color:var(--dim)">/ ' + totalAccts + ' 正常</span>', (totalAccts - activeAccts > 0 ? (totalAccts - activeAccts) + ' 个停用' : '全部启用 · 状态健康'), 'accent') +
+    card('积分额度余额', hasCreds ? (fmt(totRemain) + ' <span style="font-size:13px;font-weight:400;color:var(--dim)">积分</span>') : '正常可用', subCredit, 'accent2') +
+    card('网关调用量', fmt(t.requests) + ' <span style="font-size:13px;font-weight:400;color:var(--dim)">次</span>', '累计消耗 ' + fmt(t.total_tokens) + ' Token', '') +
+    card('请求成功率', succStr, errSub, perf.errors ? 'warn' : 'accent2');
 
   const matrixEl = document.getElementById("perfMatrix");
   const bmPerf = (perf && perf.by_model) || {};
