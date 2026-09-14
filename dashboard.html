@@ -176,8 +176,21 @@ a{color:var(--accent);text-decoration:none}
     <input id="keyInput" type="text" placeholder="API Key"
            style="flex:1;min-width:220px;background:var(--panel2);border:1px solid var(--line);
                   border-radius:8px;padding:7px 10px;color:var(--fg);font:inherit">
-    <button onclick="saveKey()">连接</button>
-    <span id="keyStatus" style="color:var(--dim);font-size:12px"></span>
+   <button onclick="saveKey()">连接</button>
+   <span id="keyStatus" style="color:var(--dim);font-size:12px"></span>
+ </div>
+
+  <!-- 后台定时调度器状态栏 -->
+  <div id="schedulerBar" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 14px;margin-bottom:16px;font-size:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="dot" id="schedDot"></span>
+      <span>后台定时调度器: <b id="schedStatusText">运行中</b></span>
+      <span style="color:var(--dim);font-size:11px" id="schedTimes"></span>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="sec mini" onclick="triggerSchedulerNow(this)">⚡ 立即巡检保活</button>
+      <button class="sec mini" id="btnToggleSched" onclick="toggleScheduler(this)">暂停调度</button>
+    </div>
   </div>
 
   <div class="cards" id="cards"></div>
@@ -198,6 +211,43 @@ a{color:var(--accent);text-decoration:none}
     <span id="activeModelCount"></span>
   </div>
     <div id="accounts"></div>
+  </section>
+
+  <!-- 国内版专属成长任务与日常福利 -->
+  <section id="sectionGrowthTasks" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <div>
+        <h2 style="margin:0">国内版成长任务与日常福利</h2>
+        <div style="font-size:12px;color:var(--dim)">全自动批量接取、事件上报点亮并领取官方成长积分 (+1450分)，以及猫猫日常与打卡</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="primary" id="btnRunTasks" onclick="runGrowthTasks(this)">⚡ 一键做任务领积分</button>
+        <button id="btnCatTravel" onclick="triggerCatTravel(this)">🐱 猫猫旅行</button>
+      </div>
+    </div>
+
+    <div class="cards" style="margin-bottom:14px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
+      <div class="card"><div class="val" id="stkDays">-</div><div class="lbl">连续打卡天数</div></div>
+      <div class="card accent"><div class="val" id="nrgBalance">-</div><div class="lbl">成长能量余额</div></div>
+      <div class="card accent2"><div class="val" id="catState">-</div><div class="lbl" id="catDesc">猫猫日常状态</div></div>
+    </div>
+
+    <div style="overflow-x:auto">
+      <table id="growthTable">
+        <thead>
+          <tr>
+            <th>任务名称 / 代码</th>
+            <th>任务说明</th>
+            <th>进度</th>
+            <th>奖励</th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="taskLogBox" style="display:none;margin-top:14px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-size:12px;font-family:ui-monospace,monospace;line-height:1.6;max-height:220px;overflow-y:auto"></div>
   </section>
 
   <!-- 融合后的：模型性能与用量矩阵 -->
@@ -409,6 +459,7 @@ async function switchViewRealm(r){
   window.updateUI();
   await loadAccounts();
   await loadModels();
+  await loadGrowthTasks();
   await refresh();
 };
 
@@ -527,21 +578,160 @@ function renderAvailableModels(){
   }).join('');
 }
 
-async function switchViewRealm(r){
-  window.VIEW_REALM = r;
-  updateUI();
-  await loadAccounts();
-  await loadModels();
-  await refresh();
+async function loadGrowthTasks(){
+  const sec = document.getElementById("sectionGrowthTasks");
+  if(!sec) return;
+  if(window.VIEW_REALM !== 'cn'){
+    sec.style.display = 'none';
+    return;
+  }
+  sec.style.display = 'block';
+  try{
+    const r = await getJSON('/tasks');
+    const tasks = r.tasks || [];
+    const sum = r.summary || {};
+    const streak = sum.streak_days || 0;
+    const energy = sum.energy || 0;
+    const tr = sum.travel || {};
+
+    const elStk = document.getElementById("stkDays");
+    if(elStk) elStk.textContent = streak + ' 天';
+    const elNrg = document.getElementById("nrgBalance");
+    if(elNrg) elNrg.textContent = energy;
+
+    const elCat = document.getElementById("catState");
+    const elCatDesc = document.getElementById("catDesc");
+    if(elCat){
+      if(tr.state === 'arrived') {
+        elCat.innerHTML = '<span style="color:#26bb82">旅行归来！待领奖</span>';
+        if(elCatDesc) elCatDesc.textContent = '奖励待领 +' + (tr.reward_credit || 0) + ' 积分';
+      } else if(tr.state === 'traveling') {
+        elCat.innerHTML = '<span style="color:var(--accent)">旅行中...</span>';
+        if(elCatDesc) elCatDesc.textContent = '预计稍后归来';
+      } else if(tr.daily_limit_reached) {
+        elCat.textContent = '今日旅行已完成';
+        if(elCatDesc) elCatDesc.textContent = '明日 00:00 刷新';
+      } else {
+        elCat.textContent = '家中待命';
+        if(elCatDesc) elCatDesc.textContent = '可随时派出旅行';
+      }
+    }
+
+    const tb = document.querySelector("#growthTable tbody");
+    if(!tb) return;
+    if(!tasks.length){
+      tb.innerHTML = '<tr><td colspan="5" class="empty">暂无任务或未登录国内版账号</td></tr>';
+      return;
+    }
+    tb.innerHTML = tasks.map(t => {
+      let stBadge = '<span class="badge">' + esc(t.status) + '</span>';
+      if(t.status === 'claimed'){
+        stBadge = '<span class="badge off">已领取</span>';
+      } else if(t.status === 'completed' || t.current >= t.target){
+        stBadge = '<span class="badge ok">待领奖</span>';
+      } else if(t.status === 'accepted' || t.status === 'in_progress'){
+        stBadge = '<span class="badge s">进行中</span>';
+      } else if(t.status === 'not_accepted'){
+        stBadge = '<span class="badge">未接取</span>';
+      }
+      const prog = (t.status === 'claimed' || t.status === 'completed') ? '已完成' : (t.current + ' / ' + t.target);
+      const rwd = (t.reward_credit ? ('<b style="color:var(--accent2)">+' + t.reward_credit + '</b> 积分') : '') +
+                  (t.reward_energy ? (' <span style="color:var(--accent)">+' + t.reward_energy + ' 能量</span>') : '');
+      return '<tr>'
+        + '<td><b>' + esc(t.name) + '</b><br><span class="mono" style="font-size:11px;color:var(--dim)">' + esc(t.task_code) + '</span></td>'
+        + '<td style="font-size:12px;color:var(--dim);max-width:300px">' + esc(t.description || '-') + '</td>'
+        + '<td>' + prog + '</td>'
+        + '<td>' + (rwd || '-') + '</td>'
+        + '<td>' + stBadge + '</td>'
+        + '</tr>';
+    }).join('');
+  }catch(e){
+    console.error('loadGrowthTasks error:', e);
+  }
 }
 
-async function old_switchRealm(r){
-  if(window.VIEW_REALM === r) return;
-  window.VIEW_REALM = r;
-  updateRealmUI();
-  try { await postJSON("/realm", {realm: r}); }catch(e){}
-  toast("已切换为 " + (r === "intl" ? "国际版" : "国内版"));
-  await loadAccounts(); await refresh();
+async function runGrowthTasks(btn){
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = '⚡ 任务执行中...';
+  const logBox = document.getElementById("taskLogBox");
+  if(logBox){
+    logBox.style.display = 'block';
+    logBox.innerHTML = '<div style="color:var(--accent)">[task_runner] 正在启动全自动任务接取、事件点亮与奖励到账流水...</div>';
+  }
+  try{
+    const r = await postJSON("/tasks/run", {});
+    const logs = r.logs || [];
+    if(logBox){
+      logBox.innerHTML = logs.map(l => '<div>' + esc(l) + '</div>').join('');
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+    await loadAccounts();
+    await loadGrowthTasks();
+    toast("成长任务执行完成！");
+  }catch(e){
+    if(logBox) logBox.innerHTML += '<div style="color:var(--warn)">执行出错: ' + esc(e.message) + '</div>';
+    alert("任务执行失败: " + e.message);
+  }finally{
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+async function triggerCatTravel(btn){
+  btn.disabled = true;
+  try{
+    const r = await postJSON("/tasks/travel", {});
+    alert(r.msg || (r.ok ? "操作成功" : "操作失败"));
+    await loadAccounts();
+    await loadGrowthTasks();
+  }catch(e){
+    alert("猫猫操作失败: " + e.message);
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+async function loadSchedulerStatus(){
+  try{
+    const s = await getJSON("/scheduler");
+    const bar = document.getElementById("schedulerBar");
+    if(!bar) return;
+    const dot = document.getElementById("schedDot");
+    const txt = document.getElementById("schedStatusText");
+    const times = document.getElementById("schedTimes");
+    const btn = document.getElementById("btnToggleSched");
+
+    if(dot) dot.className = s.enabled ? 'dot' : 'dot off';
+    if(txt) txt.textContent = s.enabled ? ('运行中 (' + s.interval_minutes + '分钟周期保活与巡检)') : '已暂停';
+    if(times) times.textContent = '上次: ' + (s.last_run_time || '-') + ' · 下次: ' + (s.next_run_time || '-');
+    if(btn) btn.textContent = s.enabled ? '暂停调度' : '启用调度';
+  }catch(e){}
+}
+
+async function triggerSchedulerNow(btn){
+  btn.disabled = true;
+  try{
+    const r = await postJSON("/scheduler/trigger", {});
+    toast(r.msg || "已触发巡检");
+    setTimeout(loadSchedulerStatus, 2000);
+  }catch(e){
+    alert("触发失败: " + e.message);
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+async function toggleScheduler(btn){
+  btn.disabled = true;
+  try{
+    await postJSON("/scheduler/toggle", {});
+    await loadSchedulerStatus();
+  }catch(e){
+    alert("切换失败: " + e.message);
+  }finally{
+    btn.disabled = false;
+  }
 }
 function filterRealm(m){
   REALM_FILTER = m;
@@ -662,6 +852,7 @@ function accountRow(a){
   return '<tr>'
     + '<td><div>' + esc(a.nickname) + ' ' + state + ' ' + realmBadge + '</div>'
     + '<div class="mono" style="color:var(--dim);font-size:11px">' + esc(a.uid.slice(0,8)) + ' · ' + esc(a.source) + ' · 到期 ' + esc(a.expiresIn || '?') + '</div>'
+    + (a.machineId ? ('<div class="mono" style="color:var(--dim);font-size:10px;margin-top:2px" title="由账号UID稳定派生的专属设备码，防多号关联风控">设备码: ' + esc(a.machineId.slice(0,14)) + '...</div>') : '')
     + err + '</td>'
     + '<td class="mono" style="font-size:11px">' + esc(a.domain) + '</td>'
     + '<td style="white-space:nowrap">' + credText + '</td>'
@@ -916,9 +1107,12 @@ const bmPerf = (perf && perf.by_model) || {};
   await initRealm();
   await loadAccounts();
   await loadModels();
+  await loadGrowthTasks();
+  await loadSchedulerStatus();
   await refresh();
 })();
 setInterval(refresh, 5000);
+setInterval(loadSchedulerStatus, 30000);
 setInterval(loadAccounts, 15000);
 </script>
 </body>

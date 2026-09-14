@@ -6,6 +6,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+from wb_fingerprint import derive_id, generate_request_id
 
 REALM_CONFIGS = {
     "intl": {
@@ -151,6 +152,8 @@ class Account(object):
             "credits": self.credits,
             "lastCheckin": self.last_checkin,
             "canCheckin": self.realm == "cn",
+            "machineId": derive_id(self.uid, "machine"),
+            "sessionId": derive_id(self.uid, "session"),
         }
 
     def save(self, directory):
@@ -198,6 +201,9 @@ class Account(object):
             "X-User-Id": self.uid,
             "X-Domain": self.domain or cfg["domain"],
         }
+        headers["X-Request-ID"] = generate_request_id(self.uid)
+        headers["X-Machine-ID"] = derive_id(self.uid, "machine")
+        headers["X-Session-ID"] = derive_id(self.uid, "session")
         if self.enterprise_id:
             headers["X-Enterprise-Id"] = self.enterprise_id
             headers["X-Tenant-Id"] = self.enterprise_id

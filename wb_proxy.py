@@ -562,6 +562,7 @@ class Session:
 
 
 POOL = None
+SCHEDULER = None
 ACCOUNTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'accounts')
 REALM_STATE_FILE = os.path.join(ACCOUNTS_DIR, "active_realm.json")
 
@@ -1997,6 +1998,20 @@ class Handler(BaseHTTPRequestHandler):
                 sample = 5000
             req_realm = query.get('realm', [None])[0] or self.headers.get('X-Realm') or CURRENT_REALM
             return self._json(200, perf_stats(sample, realm=req_realm))
+        if path == "/tasks":
+            if not self._authorized():
+                return
+            acc = POOL.representative(realm="cn") if POOL else None
+            if not acc:
+                return self._json(200, {"tasks": [], "summary": {}, "msg": "未找到国内版可用账号"})
+            from wb_tasks import fetch_growth_tasks, fetch_growth_summary
+            tasks = fetch_growth_tasks(acc)
+            summary = fetch_growth_summary(acc)
+            return self._json(200, {"tasks": tasks, "summary": summary, "account": acc.public()})
+        if path == "/scheduler":
+            if not self._authorized():
+                return
+            return self._json(200, SCHEDULER.status() if SCHEDULER else {"enabled": False, "msg": "未启动"})
         return self._error(404, "not found", "invalid_request_error")
 
     def _dashboard(self):
@@ -2028,6 +2043,34 @@ class Handler(BaseHTTPRequestHandler):
                 results.append({"uid": account.uid, "ok": res.get("ok", False),
                                 "credits": account.credits, "error": res.get("error", "")})
             return self._json(200, {"results": results, "accounts": account_views()})
+
+        if path == "/tasks/run":
+            acc = POOL.representative(realm="cn") if POOL else None
+            if not acc:
+                return self._json(200, {"ok": False, "msg": "未找到国内版账号"})
+            from wb_tasks import run_growth_tasks
+            res = run_growth_tasks(acc, gap=1.0)
+            return self._json(200, res)
+
+        if path == "/tasks/travel":
+            acc = POOL.representative(realm="cn") if POOL else None
+            if not acc:
+                return self._json(200, {"ok": False, "msg": "未找到国内版账号"})
+            from wb_tasks import do_cat_travel
+            res = do_cat_travel(acc)
+            return self._json(200, res)
+
+        if path == "/scheduler/trigger":
+            if SCHEDULER:
+                return self._json(200, SCHEDULER.trigger_now())
+            return self._json(200, {"ok": False, "msg": "调度器未初始化"})
+
+        if path == "/scheduler/toggle":
+            if SCHEDULER:
+                SCHEDULER.enabled = not SCHEDULER.enabled
+                SCHEDULER.log(f"用户切换调度器状态为: {'启用' if SCHEDULER.enabled else '暂停'}")
+                return self._json(200, SCHEDULER.status())
+            return self._json(200, {"ok": False, "msg": "调度器未初始化"})
 
         if path == "/realm":
             new_realm = payload.get("realm")
@@ -2179,10 +2222,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
-        is_account_route = path.startswith("/accounts/") or path == "/realm"
+        is_account_route = (
+            path.startswith("/accounts/")
+            or path == "/realm"
+            or path.startswith("/tasks")
+            or path.startswith("/scheduler")
+        )
         if not is_account_route and path not in ("/v1/chat/completions", "/chat/completions",
-                                                 "/v1/completions", "/completions",
-                                                 "/v1/responses", "/responses"):
+                                                "/v1/completions", "/completions",
+                                                "/v1/responses", "/responses"):
             return self._error(404, "not found", "invalid_request_error")
         if not self._authorized():
             return
@@ -2375,6 +2423,10 @@ def main():
     POOL = wb_accounts.AccountPool(ACCOUNTS_DIR, log=log)
     POOL.load()
     load_persisted_realm()
+    global SCHEDULER
+    from wb_scheduler import Scheduler
+    SCHEDULER = Scheduler(POOL)
+    SCHEDULER.start()
 
     if args.info:
         account = POOL.import_desktop_credential(args.info, source="file")
