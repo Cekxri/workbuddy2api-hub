@@ -1119,7 +1119,7 @@ def build_upstream_body(payload):
 
 
 def open_upstream(payload, session_key=None, target_realm=None):
-    realm = target_realm or detect_model_realm(payload.get("model"))
+    realm = target_realm or detect_model_realm(payload.get("model")) or CURRENT_REALM
     body = json.dumps(build_upstream_body(payload), ensure_ascii=False).encode("utf-8")
     total = max(1, POOL.count_ready(realm)) if POOL else 1
     tried = set()
@@ -1128,6 +1128,9 @@ def open_upstream(payload, session_key=None, target_realm=None):
         account = POOL.pick_for_session(realm=realm, session_key=session_key, exclude=tried) if POOL else None
         if account is None:
             break
+        if account.realm != realm:
+            if session_key and POOL: POOL.affinity.unbind(session_key)
+            continue
         tried.add(account.uid)
         cfg = wb_accounts.get_realm_config(account.realm)
         chat_url = cfg["chat_upstream"] + CHAT_PATH
@@ -2017,7 +2020,8 @@ class Handler(BaseHTTPRequestHandler):
         )
 
         try:
-            upstream, account = open_upstream(chat_req, session_key=session_key)
+            req_realm = self.headers.get("X-Realm") or parse_qs(urlparse(self.path).query).get("realm", [None])[0] or CURRENT_REALM
+            upstream, account = open_upstream(chat_req, session_key=session_key, target_realm=req_realm)
         except urllib.error.HTTPError as exc:
             detail = exc.read(600).decode("utf-8", "replace")
             record_error(model, exc.code, detail,
@@ -2118,7 +2122,8 @@ class Handler(BaseHTTPRequestHandler):
         model = payload.get("model") or "hy4-preview"
         t_start = time.time()
         try:
-            upstream, account = open_upstream(payload, session_key=session_key)
+            req_realm = self.headers.get("X-Realm") or parse_qs(urlparse(self.path).query).get("realm", [None])[0] or CURRENT_REALM
+            upstream, account = open_upstream(payload, session_key=session_key, target_realm=req_realm)
         except urllib.error.HTTPError as exc:
             detail = exc.read(600).decode("utf-8", "replace")
             record_error(model, exc.code, detail,

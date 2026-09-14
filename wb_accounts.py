@@ -463,7 +463,7 @@ class AccountPool(object):
             bound_uid = self.affinity.get(session_key)
             if bound_uid and bound_uid not in exclude:
                 account = self.get(bound_uid)
-                if account and (not realm or account.realm == realm) and account.ready():
+                if account and account.realm == realm and account.ready():
                     return account
                 self.affinity.unbind(session_key)
         account = self.pick(realm=realm, exclude=exclude)
