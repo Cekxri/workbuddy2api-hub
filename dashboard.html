@@ -213,43 +213,6 @@ a{color:var(--accent);text-decoration:none}
     <div id="accounts"></div>
   </section>
 
-  <!-- 国内版专属成长任务与日常福利 -->
-  <section id="sectionGrowthTasks" style="display:none">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-      <div>
-        <h2 style="margin:0">国内版成长任务与日常福利</h2>
-        <div style="font-size:12px;color:var(--dim)">全自动批量接取、事件上报点亮并领取官方成长积分 (+1450分)，以及猫猫日常与打卡</div>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="primary" id="btnRunTasks" onclick="runGrowthTasks(this)">⚡ 一键做任务领积分</button>
-        <button id="btnCatTravel" onclick="triggerCatTravel(this)">🐱 猫猫旅行</button>
-      </div>
-    </div>
-
-    <div class="cards" style="margin-bottom:14px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
-      <div class="card"><div class="val" id="stkDays">-</div><div class="lbl">连续打卡天数</div></div>
-      <div class="card accent"><div class="val" id="nrgBalance">-</div><div class="lbl">成长能量余额</div></div>
-      <div class="card accent2"><div class="val" id="catState">-</div><div class="lbl" id="catDesc">猫猫日常状态</div></div>
-    </div>
-
-    <div style="overflow-x:auto">
-      <table id="growthTable">
-        <thead>
-          <tr>
-            <th>任务名称 / 代码</th>
-            <th>任务说明</th>
-            <th>进度</th>
-            <th>奖励</th>
-            <th>状态</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
-
-    <div id="taskLogBox" style="display:none;margin-top:14px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-size:12px;font-family:ui-monospace,monospace;line-height:1.6;max-height:220px;overflow-y:auto"></div>
-  </section>
-
   <!-- 融合后的：模型性能与用量矩阵 -->
   <section>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
@@ -290,6 +253,43 @@ a{color:var(--accent);text-decoration:none}
         <tbody></tbody>
       </table>
     </div>
+  </section>
+
+  <!-- 国内版专属成长任务与日常福利 -->
+  <section id="sectionGrowthTasks" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <div>
+        <h2 style="margin:0">国内版成长任务与日常福利</h2>
+        <div style="font-size:12px;color:var(--dim)">全自动批量接取、事件上报点亮并领取官方成长积分 (+1450分)，以及猫猫日常与打卡</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="primary" id="btnRunTasks" onclick="runGrowthTasks(this)">⚡ 一键做任务领积分</button>
+        <button id="btnCatTravel" onclick="triggerCatTravel(this)">🐱 猫猫旅行</button>
+      </div>
+    </div>
+
+    <div class="cards" style="margin-bottom:14px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
+      <div class="card"><div class="val" id="stkDays">-</div><div class="lbl">连续打卡天数</div></div>
+      <div class="card accent"><div class="val" id="nrgBalance">-</div><div class="lbl">成长能量余额</div></div>
+      <div class="card accent2"><div class="val" id="catState">-</div><div class="lbl" id="catDesc">猫猫日常状态</div></div>
+    </div>
+
+    <div style="overflow-x:auto">
+      <table id="growthTable">
+        <thead>
+          <tr>
+            <th>任务名称 / 代码</th>
+            <th>任务说明</th>
+            <th>进度</th>
+            <th>奖励</th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="taskLogBox" style="display:none;margin-top:14px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-size:12px;font-family:ui-monospace,monospace;line-height:1.6;max-height:220px;overflow-y:auto"></div>
   </section>
 
   <footer>每 5 秒自动刷新 · 数据来自本机反代 <span class="mono" id="logfile"></span></footer>
