@@ -102,20 +102,65 @@ a{color:var(--accent);text-decoration:none}
 .realm-filter{display:inline-flex;gap:6px;margin-left:8px}
 .realm-filter button{background:var(--panel2);border:1px solid var(--line);color:var(--dim);padding:3px 9px;font-size:11px}
 .realm-filter button.active{border-color:var(--accent);color:var(--accent)}
+
+.realm-banner{
+  background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  padding:16px 20px;margin-bottom:20px;display:flex;align-items:center;
+  justify-content:space-between;gap:18px;flex-wrap:wrap;
+}
+.realm-tabs{display:flex;gap:10px;flex-wrap:wrap}
+.realm-tab{
+  display:flex;align-items:center;gap:12px;padding:10px 18px;border-radius:10px;
+  background:var(--panel2);border:1px solid var(--line);color:var(--dim);
+  cursor:pointer;text-align:left;transition:all .15s;
+}
+.realm-tab:hover{border-color:var(--dim);color:var(--fg)}
+.realm-tab.active{
+  background:rgba(79,140,255,.12);border-color:var(--accent);color:var(--fg);
+  box-shadow:0 0 12px rgba(79,140,255,.2);
+}
+.realm-tab .tab-icon{font-size:22px;line-height:1}
+.realm-tab .tab-title{font-size:14px;font-weight:600;display:block;color:var(--fg)}
+.realm-tab .tab-desc{font-size:11px;color:var(--dim);display:block;margin-top:2px}
+.realm-banner-right{display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+.toggle-realm-btn{
+  background:var(--panel2);border:1px solid var(--accent);color:var(--accent);
+  padding:8px 18px;font-size:13px;font-weight:600;border-radius:8px;
+}
+.toggle-realm-btn:hover{background:var(--accent);color:#fff}
+.realm-endpoint-info{font-size:12px;color:var(--dim)}
+
 </style>
 </head>
 <body>
 <header>
-  <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
-    <h1><span class="dot" id="statusDot"></span>WorkBuddy 网关看板</h1>
-    <div class="realm-switch-group">
-      <button id="btnRealmIntl" class="realm-pill active" onclick="switchRealm('intl')">🌐 国际版 (Global)</button>
-      <button id="btnRealmCn" class="realm-pill" onclick="switchRealm('cn')">🇨🇳 国内版 (China)</button>
-    </div>
-  </div>
+  <h1><span class="dot" id="statusDot"></span>WorkBuddy 网关看板</h1>
   <div class="meta" id="meta"></div>
 </header>
 <main>
+  <!-- 版本中枢控制栏 -->
+  <div class="realm-banner">
+    <div class="realm-tabs">
+      <div id="tabIntl" class="realm-tab active" onclick="switchRealm('intl')">
+        <span class="tab-icon">🌐</span>
+        <div class="tab-text">
+          <span class="tab-title">国际版 (Global)</span>
+          <span class="tab-desc">www.workbuddy.ai · 海外大模型</span>
+        </div>
+      </div>
+      <div id="tabCn" class="realm-tab" onclick="switchRealm('cn')">
+        <span class="tab-icon">🇨🇳</span>
+        <div class="tab-text">
+          <span class="tab-title">国内版 (China)</span>
+          <span class="tab-desc">copilot.tencent.com · 国产大模型</span>
+        </div>
+      </div>
+    </div>
+    <div class="realm-banner-right">
+      <button class="toggle-realm-btn" id="btnToggleRealm" onclick="toggleActiveRealm()">⇄ 快速切换为国内版</button>
+      <div class="realm-endpoint-info">当前上游: <span id="activeEndpoint" class="mono" style="color:var(--fg)">https://www.workbuddy.ai</span></div>
+    </div>
+  </div>
   <div id="keyBar" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;
        background:var(--panel);border:1px solid var(--warn);border-radius:12px;
        padding:12px 16px;margin-bottom:18px">
@@ -201,6 +246,67 @@ function updateRealmUI(){
   const btnCheckin = document.getElementById("btnCheckin");
   if(btnCheckin) btnCheckin.style.display = (CURRENT_REALM === "cn" ? "inline-block" : "none");
 }
+
+async function toggleActiveRealm(){
+  const next = (CURRENT_REALM === 'intl' ? 'cn' : 'intl');
+  await switchRealm(next);
+}
+
+function updateRealmUI(){
+  const isIntl = (CURRENT_REALM === 'intl');
+  const tIntl = document.getElementById('tabIntl');
+  const tCn = document.getElementById('tabCn');
+  if(tIntl) tIntl.className = 'realm-tab' + (isIntl ? ' active' : '');
+  if(tCn) tCn.className = 'realm-tab' + (!isIntl ? ' active' : '');
+
+  const btnToggle = document.getElementById('btnToggleRealm');
+  if(btnToggle) btnToggle.textContent = isIntl ? '⇄ 快速切换为国内版' : '⇄ 快速切换为国际版';
+
+  const ep = document.getElementById('activeEndpoint');
+  if(ep) ep.textContent = isIntl ? 'https://www.workbuddy.ai/v2' : 'https://copilot.tencent.com/v2';
+
+  const btnCheckin = document.getElementById('btnCheckin');
+  if(btnCheckin) btnCheckin.style.display = isIntl ? 'none' : 'inline-block';
+}
+
+async function loadModels(){
+  try{
+    const r = await getJSON('/v1/models?realm=' + encodeURIComponent(CURRENT_REALM));
+    MODELS_DATA = r.data || [];
+    renderAvailableModels();
+  }catch(e){
+    console.error('loadModels error:', e);
+  }
+}
+
+function renderAvailableModels(){
+  const tb = document.querySelector('#modelsTable tbody');
+  if(!tb) return;
+  const countEm = document.getElementById('availModelCount');
+  if(countEm) countEm.textContent = '(共 ' + MODELS_DATA.length + ' 个)';
+  if(!MODELS_DATA.length){
+    tb.innerHTML = '<tr><td colspan="6" class="empty">暂无可用模型</td></tr>';
+    return;
+  }
+  tb.innerHTML = MODELS_DATA.map(m => {
+    const isFree = (m.credits === 'x0.00' || m.credits === '0.00x' || m.credits === '0.00');
+    const credBadge = isFree ? '<span class="badge ok">免费</span>' : (m.credits ? '<span class="badge s">' + esc(m.credits) + '</span>' : '-');
+    const ctx = m.context_length ? fmt(m.context_length) : '-';
+    const maxOut = m.max_output_tokens ? fmt(m.max_output_tokens) : '-';
+    const effort = m.reasoning_fixed_effort
+      ? '<span class="badge ok">' + m.reasoning_fixed_effort + '</span>'
+      : (m.reasoning_efforts ? m.reasoning_efforts.map(e => '<span class="badge">' + e + '</span>').join(' ') : '<span style="color:var(--dim)">-</span>');
+    return '<tr>'
+      + '<td class="mono"><b>' + esc(m.id) + '</b></td>'
+      + '<td>' + esc(m.name || m.id) + '</td>'
+      + '<td>' + credBadge + '</td>'
+      + '<td>' + ctx + '</td>'
+      + '<td>' + maxOut + '</td>'
+      + '<td>' + effort + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
 async function switchRealm(r){
   if(CURRENT_REALM === r) return;
   CURRENT_REALM = r;
@@ -225,7 +331,7 @@ async function doCheckin(btn){
     else {
       alert("每日签到结果：\n" + res.map(x => (x.nickname||x.uid.slice(0,6)) + ": " + (x.ok ? "签到成功" : (x.error||x.msg))).join("\n"));
     }
-    await initRealm(); loadAccounts();
+    await initRealm(); loadAccounts(); loadModels();
   }catch(e){ toast("签到失败: " + e.message); }
   finally { btn.disabled = false; btn.textContent = ot; }
 }
