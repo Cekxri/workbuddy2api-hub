@@ -97,7 +97,7 @@ echo   Press Ctrl+C to stop.
 echo ===========================================================
 echo.
 
-"%PYEXE%" "%SCRIPT%" --port %PORT% --watch-parent
+"%PYEXE%" "%SCRIPT%" --port %PORT%
 
 echo.
 echo [server exited]

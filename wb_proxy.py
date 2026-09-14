@@ -60,41 +60,46 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 
-def _parent_watchdog(seconds=15):
-    """Exit when the launcher window that started us disappears.
+def install_console_close_handler():
+    """Release the port when the console window is closed by the user.
 
-    Only active with --watch-parent, which the bundled .bat launchers pass.
-    A .bat launcher spawns python as a child of cmd.exe; closing the window
-    kills cmd but the python child keeps running and keeps the port bound
-    (Windows has no process-group kill on window close), so the next launch
-    would wrongly report "another proxy is already running".
+    Windows does not kill child processes when a console window closes, so
+    the proxy (started by the .bat as a child of cmd.exe) would survive and
+    keep the port bound - the next launch then wrongly reports "another
+    proxy is already running".
 
-    Opt-in on purpose: when python is started from a script/service (no
-    interactive window), the parent dies immediately after spawning and the
-    proxy must keep running.
+    Closing the window raises CTRL_CLOSE_EVENT in every process attached to
+    that console, which is exactly the signal we want. Registering a handler
+    for it is event-driven, so unlike polling a parent pid there is no
+    chance of a false positive. Harmless when started without a console.
     """
     if os.name != "nt":
-        return
+        return None
     try:
         import ctypes
+        from ctypes import wintypes
 
-        kernel32 = ctypes.windll.kernel32
-        SYNCHRONIZE = 0x00100000
-        handle = kernel32.OpenProcess(SYNCHRONIZE, False, os.getppid())
-        if not handle:
-            return
-    except Exception:
-        return
+        PHANDLER_ROUTINE = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+        CTRL_CLOSE_EVENT = 2
+        CTRL_LOGOFF_EVENT = 5
+        CTRL_SHUTDOWN_EVENT = 6
 
-    def loop():
-        WAIT_OBJECT_0 = 0
-        while True:
-            rc = kernel32.WaitForSingleObject(handle, seconds * 1000)
-            if rc == WAIT_OBJECT_0:
-                log("launcher window closed - shutting down so the port is released")
+        def _handler(event):
+            if event in (CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT):
+                try:
+                    sys.stdout.flush()
+                except Exception:
+                    pass
                 os._exit(0)
+            return False
 
-    threading.Thread(target=loop, daemon=True).start()
+        handler = PHANDLER_ROUTINE(_handler)   # keep the callback referenced
+        if not ctypes.windll.kernel32.SetConsoleCtrlHandler(handler, True):
+            return None
+        return handler
+    except Exception:
+        return None
+
 
 UPSTREAM = "https://www.workbuddy.ai"
 CHAT_PATH = "/v2/chat/completions"
@@ -2440,9 +2445,6 @@ def main():
                     help="where the per-account credential files live (default: ./accounts)")
     ap.add_argument("--import-desktop", action="store_true",
                     help="import the desktop app credential as an account, then exit")
-    ap.add_argument("--watch-parent", action="store_true",
-                    help="exit when the launching console window closes (used by the "
-                         ".bat launchers so the port is released)")
     args = ap.parse_args()
 
     # LAN mode: bind everywhere, and default to the fixed key "qwer.1234".
@@ -2585,8 +2587,7 @@ def main():
         sys.stdout.flush()
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
-    if args.watch_parent:
-        _parent_watchdog(15)
+    _ctrl_handler = install_console_close_handler()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

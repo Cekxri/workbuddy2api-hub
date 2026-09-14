@@ -101,7 +101,7 @@ echo   Keep this window open. Closing it stops the server.
 echo ===========================================================
 echo.
 
-"%PYEXE%" "%SCRIPT%" --port %PORT% --lan --api-key %KEY% --watch-parent
+"%PYEXE%" "%SCRIPT%" --port %PORT% --lan --api-key %KEY%
 
 echo.
 echo [server exited]
