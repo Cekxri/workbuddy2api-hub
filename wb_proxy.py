@@ -33,6 +33,29 @@ import uuid
 
 import wb_accounts
 import wb_catalog
+
+CURRENT_REALM = os.environ.get("WB_PROXY_DEFAULT_REALM", "intl")
+
+def detect_model_realm(model_id):
+    if not model_id:
+        return CURRENT_REALM
+    m = str(model_id).lower()
+    intl_only = {
+        "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+        "gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gemini-3.5-flash", "hy4-preview-f"
+    }
+    if m in intl_only or any(m.startswith(p) for p in ("gpt-", "gemini-")):
+        return "intl"
+    cn_only = {
+        "deepseek-v4-pro", "minimax-m3", "minimax-m2.7", "minimax-m2.5",
+        "glm-5.3-flash", "glm-5.1", "glm-5.0-turbo", "glm-4.6v",
+        "kimi-k3-1", "kimi-k2.8-preview", "kimi-k2.7", "kimi-k2-thinking",
+        "hy3-x", "hy4-preview-dev", "hy4-preview-x"
+    }
+    if m in cn_only or any(m.startswith(p) for p in ("minimax-", "deepseek-v4-pro")):
+        return "cn"
+        return intl
+        return cn
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -63,7 +86,7 @@ INTL_ISSUER_MARKER = "workbuddy.ai"
 NOISE_KEYS = ("extra_fields", "refusal", "reasoning_content")
 
 _lock = threading.Lock()
-_models_cache = {"at": 0.0, "data": None}
+_models_cache = {"intl": {"at": 0.0, "data": None}, "cn": {"at": 0.0, "data": None}}
 
 # Usage accounting: every upstream response carries a usage block, and the
 # proxy also records one JSONL line per request. Defaults to a folder next to
@@ -476,22 +499,17 @@ API_KEY = None
 SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
 
 
-def import_desktop_accounts():
-    """Pull every intl credential the desktop app left on disk into the pool."""
+def import_desktop_accounts(realm=None):
     imported = []
-    for path in wb_accounts.desktop_credential_candidates():
+    for p, r in wb_accounts.desktop_credential_candidates():
+        if realm and r != realm:
+            continue
         try:
-            account = POOL.import_desktop_credential(path)
+            account = POOL.import_desktop_credential(path=p, realm=r)
             imported.append(account)
-            log("imported %s from %s" % (account.uid[:8], os.path.basename(path)))
+            log("imported %s (%s) from %s" % (account.uid[:8], account.realm, os.path.basename(p)))
         except Exception as exc:
-            log("skip %s: %s" % (os.path.basename(path), exc))
-    if not imported:
-        candidates = wb_accounts.desktop_credential_candidates()
-        if not candidates:
-            log("no desktop credential found at %s" % wb_accounts.desktop_auth_dir())
-        else:
-            log("found %d credential file(s) but none was usable" % len(candidates))
+            log("skip %s: %s" % (os.path.basename(p), exc))
     return imported
 
 
@@ -578,7 +596,15 @@ def log(msg):
 #: "lite" backs internal helpers (title generation, compaction) and upstream
 #: rejects it with 11102; the codewise/completion entries are text-completion
 #: or IDE-inline models, not chat models.
-NON_CHAT_MODELS = {"lite"}
+# Exclude WorkBuddy virtual aliases / quick presets
+VIRTUAL_ALIAS_MODELS = {
+    "default-model",
+    "fast-model",
+    "balanced-model",
+    "primary-model",
+    "deep-model",
+}
+NON_CHAT_MODELS = {"lite"} | VIRTUAL_ALIAS_MODELS
 NON_CHAT_PREFIXES = ("codewise-", "completion-")
 NON_CHAT_SUFFIXES = ("-image-alpha", "-image-alpha-edit", "-taco-completion")
 
@@ -595,16 +621,11 @@ def is_chat_model(mid):
     return True
 
 
-def merge_catalog(primary):
-    """Overlay live entries on top of the shipped catalog.
-
-    The CLI-facing model endpoint returns a narrower list than the desktop app
-    sees (it omits deepseek-v4.1-flash, gpt-6-astra and others), so a machine
-    without the app has no way to learn about them. The shipped catalog fills
-    those gaps; anything discovered live wins on a per-model basis.
-    """
+def merge_catalog(primary, realm=None):
+    r = realm or CURRENT_REALM
     merged = {}
-    for item in wb_catalog.STATIC_MODELS:
+    source_static = getattr(wb_catalog, "STATIC_CN_MODELS" if r == "cn" else "STATIC_INTL_MODELS", wb_catalog.STATIC_MODELS)
+    for item in source_static:
         mid = item.get("id")
         if mid and is_chat_model(mid):
             merged[mid] = dict(item)
@@ -619,20 +640,19 @@ def merge_catalog(primary):
             merged[mid] = {}
     return [(mid, meta) for mid, meta in merged.items()]
 
-
-def fetch_models():
-    """Return [(model_id, meta_dict), ...] for the intl account."""
+def fetch_models(realm=None):
+    r = realm or CURRENT_REALM
     with _lock:
-        if _models_cache["data"] and time.time() - _models_cache["at"] < 300:
-            return _models_cache["data"]
+        c = _models_cache.get(r) or {"at": 0.0, "data": None}
+        if c["data"] and time.time() - c["at"] < 300:
+            return c["data"]
 
-    live = read_product_config_models()
-    if not live:
+    live = read_product_config_models(realm=r)
+    if not live and r == "intl":
         live = [(m, {}) for m in fetch_endpoint_models()]
-    entries = merge_catalog(live)
+    entries = merge_catalog(live, realm=r)
     with _lock:
-        _models_cache["at"] = time.time()
-        _models_cache["data"] = entries
+        _models_cache[r] = {"at": time.time(), "data": entries}
     return entries
 
 
@@ -745,21 +765,16 @@ def model_entry(mid, meta):
     return item
 
 
-def read_product_config_models():
-    """Read the desktop app's cached catalog: [(id, meta), ...].
-
-    Returns [] when the cache is missing or belongs to a non-intl realm.
-    """
+def read_product_config_models(realm=None):
+    """Read the desktop app's cached catalog: [(id, meta), ...]."""
+    r = realm or CURRENT_REALM
+    home = os.path.expanduser("~")
+    cache_dir = ".workbuddy-ai" if r == "intl" else ".workbuddy"
+    p = os.path.join(home, cache_dir, "cache", "acc-product-config-v3.json")
     try:
-        with open(PRODUCT_CONFIG_CACHE, encoding="utf-8") as fh:
+        with open(p, encoding="utf-8") as fh:
             cfg = json.load(fh)
     except Exception as exc:
-        log(f"product config cache unavailable ({exc}); falling back to API list")
-        return []
-
-    endpoint = str(cfg.get("endpoint") or "")
-    if "workbuddy.ai" not in endpoint:
-        log(f"product config endpoint is {endpoint!r} - not the intl realm, ignoring")
         return []
 
     def find(node):
@@ -1064,47 +1079,45 @@ def build_upstream_body(payload):
     return body
 
 
-def open_upstream(payload, session_key=None):
-    """POST upstream, rotating accounts when one is rejected.
-
-    Respects session affinity so multi-turn conversations stay on the same account.
-    Returns (response, account) so the caller can attribute usage.
-    """
+def open_upstream(payload, session_key=None, target_realm=None):
+    realm = target_realm or detect_model_realm(payload.get("model"))
     body = json.dumps(build_upstream_body(payload), ensure_ascii=False).encode("utf-8")
-    total = max(1, POOL.count_ready()) if POOL else 1
+    total = max(1, POOL.count_ready(realm)) if POOL else 1
     tried = set()
     last_error = None
     for _ in range(total):
-        account = POOL.pick_for_session(session_key=session_key, exclude=tried) if POOL else None
+        account = POOL.pick_for_session(realm=realm, session_key=session_key, exclude=tried) if POOL else None
         if account is None:
             break
         tried.add(account.uid)
-        req = urllib.request.Request(UPSTREAM + CHAT_PATH, data=body, method="POST",
-                                     headers=account.headers())
+        cfg = wb_accounts.get_realm_config(account.realm)
+        chat_url = cfg["chat_upstream"] + CHAT_PATH
+        req = urllib.request.Request(chat_url, data=body, method="POST",
+                                     headers=account.headers(purpose="chat"))
         try:
             resp = urllib.request.urlopen(req, timeout=600)
             account.clear_error()
             return resp, account
         except urllib.error.HTTPError as exc:
-            # 401/403 = stale credential, 429 = throttled: unbind session & rotate
             if exc.code in (401, 403, 429):
                 log("account %s rejected (HTTP %s), rotating" % (account.uid[:8], exc.code))
                 if session_key and POOL:
                     POOL.affinity.unbind(session_key)
                 account.note_error("HTTP %s" % exc.code,
-                                   cooldown=300 if exc.code == 429 else 90)
+                                   cooldown=300 if exc.code == 429 else 60,
+                                   single_account=(total <= 1))
                 last_error = exc
                 continue
             raise
         except Exception as exc:
             if session_key and POOL:
                 POOL.affinity.unbind(session_key)
-            account.note_error(str(exc)[:120], cooldown=60)
+            account.note_error(str(exc)[:120], cooldown=60, single_account=(total <= 1))
             last_error = exc
             continue
     if last_error is not None:
         raise last_error
-    raise RuntimeError("no usable account: all are disabled, cooling down, or expired")
+    raise RuntimeError(f"no usable account for realm '{realm}': all are disabled, cooling down, or expired")
 
 
 def extract_session_key(headers, payload):
@@ -1698,6 +1711,16 @@ def stream_responses_events(upstream, model, holder):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    def handle(self):
+        try:
+            super().handle()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            pass
+    def finish(self):
+        try:
+            super().finish()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            pass
     server_version = "wb-proxy/1.0"
 
     def log_message(self, fmt, *args):
@@ -1775,15 +1798,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, info)
         # Accept the conventional /v1 prefix and the bare path, because clients
         # differ in whether they append "/v1" themselves.
+        if path == "/realm":
+            return self._json(200, {"current": CURRENT_REALM, "options": ["intl", "cn"]})
         if path in ("/v1/models", "/models"):
             if not self._authorized():
                 return
+            req_realm = query.get("realm", [None])[0] or self.headers.get("X-Realm")
             try:
-                entries = fetch_models()
+                entries = fetch_models(realm=req_realm)
             except Exception as exc:
                 return self._error(502, str(exc))
             data = [model_entry(mid, meta) for mid, meta in entries]
-            return self._json(200, {"object": "list", "data": data})
+            return self._json(200, {"object": "list", "data": data, "realm": req_realm or CURRENT_REALM})
         if path in ("/usage", "/v1/usage"):
             if not self._authorized():
                 return
@@ -1860,13 +1886,33 @@ class Handler(BaseHTTPRequestHandler):
                                 "credits": account.credits, "error": res.get("error", "")})
             return self._json(200, {"results": results, "accounts": account_views()})
 
+        if path == "/realm":
+            global CURRENT_REALM
+            new_realm = payload.get("realm")
+            if new_realm in ("intl", "cn"):
+                CURRENT_REALM = new_realm
+                log("switched active realm to %s" % CURRENT_REALM)
+            return self._json(200, {"ok": True, "current": CURRENT_REALM})
+
+        if path == "/accounts/checkin":
+            uid = payload.get("uid")
+            targets = [POOL.get(uid)] if uid else [a for a in (POOL.accounts if POOL else []) if a.realm == "cn"]
+            results = []
+            for account in targets:
+                if account is None:
+                    continue
+                res = account.checkin()
+                results.append({"uid": account.uid, "nickname": account.nickname, **res})
+            return self._json(200, {"results": results, "accounts": account_views()})
+
         if path == "/accounts/login/start":
             platform = payload.get("platform") or "CLI"
+            target_realm = payload.get("realm") or CURRENT_REALM
             try:
-                started = POOL.start_login(platform)
+                started = POOL.start_login(realm=target_realm, platform=platform)
             except Exception as exc:
                 return self._error(502, "could not start login: %s" % exc)
-            log("oauth login started (platform=%s, state=%s)" % (platform, started["state"][:8]))
+            log("oauth login started (realm=%s, platform=%s, state=%s)" % (target_realm, platform, started["state"][:8]))
             return self._json(200, started)
 
         if path == "/accounts/login/cancel":
@@ -1991,7 +2037,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
-        is_account_route = path.startswith("/accounts/")
+        is_account_route = path.startswith("/accounts/") or path == "/realm"
         if not is_account_route and path not in ("/v1/chat/completions", "/chat/completions",
                                                  "/v1/completions", "/completions",
                                                  "/v1/responses", "/responses"):
