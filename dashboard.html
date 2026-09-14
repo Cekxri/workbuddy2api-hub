@@ -134,7 +134,7 @@ a{color:var(--accent);text-decoration:none}
     <h2>账号<em id="acctCount"></em></h2>
     <div class="toolbar">
     <button onclick="openLoginModal()">+ 添加账号 (OAuth)</button>
-    <button class="sec" id="btnCheckin" onclick="doCheckin(this)">🎁 每日签到 (国内版)</button>
+    <button class="sec" id="btnCheckin" onclick="doCheckin(this)" style="display:none">🎁 每日签到 (国内版)</button>
     <button class="sec" onclick="importDesktop(this)">📥 导入桌面客户端凭证</button>
     <button class="sec" onclick="fetchCredits(this)">⚡ 刷新额度/积分</button>
     <button class="sec" onclick="setAll(true)">全部启用</button>
@@ -198,6 +198,8 @@ function updateRealmUI(){
   document.getElementById("btnRealmCn").className = "realm-pill" + (CURRENT_REALM === "cn" ? " active" : "");
   const gw = document.getElementById("activeGateway");
   if(gw) gw.textContent = CURRENT_REALM === "intl" ? "🌐 国际版 (https://www.workbuddy.ai)" : "🇨🇳 国内版 (https://copilot.tencent.com)";
+  const btnCheckin = document.getElementById("btnCheckin");
+  if(btnCheckin) btnCheckin.style.display = (CURRENT_REALM === "cn" ? "inline-block" : "none");
 }
 async function switchRealm(r){
   if(CURRENT_REALM === r) return;
