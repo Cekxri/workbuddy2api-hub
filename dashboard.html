@@ -200,14 +200,18 @@ a{color:var(--accent);text-decoration:none}
     <div id="accounts"></div>
   </section>
 
+  <!-- 融合后的：模型性能与用量矩阵 -->
   <section>
-    <h2>性能指标</h2>
-    <div id="perf"></div>
-  </section>
-
-  <section>
-    <h2>按模型</h2>
-    <div id="models"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <h2 style="margin:0">模型性能指标与用量一览 <em id="matrixModelCount"></em></h2>
+      <div style="font-size:12px;color:var(--dim)">融合首字延迟 (TTFT)、生成速度、耗时与 Token 统计</div>
+    </div>
+    <div id="perfMatrix" style="overflow-x:auto"></div>
+    <div class="legend" style="margin-top:12px">
+      <span><i style="background:var(--accent2)"></i>生成速度：平均每秒吐字数 (tok/s)</span>
+      <span><i style="background:var(--think)"></i>思考 Token：DeepSeek/R1 等推理模型的思考量</span>
+      <span><i style="background:var(--accent)"></i>总 Token 占比进度条</span>
+    </div>
   </section>
 
   <section>
@@ -346,13 +350,13 @@ async function pollLogin(){
 
 
 window.ACTIVE_GATEWAY_REALM = "intl";
-window.window.VIEW_REALM = "intl";
+window.VIEW_REALM = "intl";
 window.REALM_FILTER = "all";
 window.MODELS_DATA = [];
-window.window.ACCOUNTS = [];
+window.ACCOUNTS = [];
 
 function updateUI(){
-  const isIntlView = (window.window.VIEW_REALM === "intl");
+  const isIntlView = (window.VIEW_REALM === "intl");
   const tIntl = document.getElementById("tabIntl");
   const tCn = document.getElementById("tabCn");
   if(tIntl) tIntl.className = "realm-tab" + (isIntlView ? " active" : "");
@@ -373,12 +377,12 @@ function updateUI(){
   }
 
   const btnCheckin = document.getElementById("btnCheckin");
-  if(btnCheckin) btnCheckin.style.display = (window.window.VIEW_REALM === "cn" ? "inline-block" : "none");
+  if(btnCheckin) btnCheckin.style.display = (window.VIEW_REALM === "cn" ? "inline-block" : "none");
 };
 
 async function switchViewRealm(r){
-  if(window.window.VIEW_REALM === r) return;
-  window.window.VIEW_REALM = r;
+  if(window.VIEW_REALM === r) return;
+  window.VIEW_REALM = r;
   window.updateUI();
   await loadAccounts();
   await loadModels();
@@ -391,7 +395,7 @@ async function toggleActiveGatewayRealm(){
     const res = await postJSON("/realm", {realm: next});
     window.ACTIVE_GATEWAY_REALM = res.current || next;
     toast("网关默认上游已切换并永久保存为: " + (window.ACTIVE_GATEWAY_REALM === "intl" ? "国际版" : "国内版"));
-    window.window.VIEW_REALM = window.ACTIVE_GATEWAY_REALM;
+    window.VIEW_REALM = window.ACTIVE_GATEWAY_REALM;
     window.updateUI();
     await loadAccounts();
     await loadModels();
@@ -406,13 +410,13 @@ async function initRealm(){
     const r = await getJSON("/realm");
     if(r && r.current) window.ACTIVE_GATEWAY_REALM = r.current;
   } catch(e){}
-  window.window.VIEW_REALM = window.ACTIVE_GATEWAY_REALM;
+  window.VIEW_REALM = window.ACTIVE_GATEWAY_REALM;
   window.updateUI();
 }
 
 async function loadModels(){
   try{
-    const r = await getJSON('/v1/models?realm=' + encodeURIComponent(window.window.VIEW_REALM));
+    const r = await getJSON('/v1/models?realm=' + encodeURIComponent(window.VIEW_REALM));
     MODELS_DATA = r.data || [];
     renderAvailableModels();
   }catch(e){
@@ -628,7 +632,7 @@ function renderAccounts(){
 
 async function loadAccounts(){
   try{
-    const [acct, byAcct] = await Promise.all([getJSON('/accounts?realm=' + encodeURIComponent(window.window.VIEW_REALM)), getJSON('/usage/by-account')]);
+    const [acct, byAcct] = await Promise.all([getJSON('/accounts?realm=' + encodeURIComponent(window.VIEW_REALM)), getJSON('/usage/by-account')]);
     window.ACCOUNTS = acct.accounts || [];
     USAGE_BY_ACCOUNT = {};
     (byAcct.accounts || []).forEach(a => { USAGE_BY_ACCOUNT[a.account] = a; });
@@ -695,9 +699,9 @@ async function refresh(){
   let usage, recent, perf;
   try{
     [usage, recent, perf] = await Promise.all([
-      getJSON('/usage?realm=' + encodeURIComponent(window.window.VIEW_REALM)),
-      getJSON('/usage/recent?limit=60&realm=' + encodeURIComponent(window.window.VIEW_REALM)),
-      getJSON('/usage/perf?realm=' + encodeURIComponent(window.window.VIEW_REALM)),
+      getJSON('/usage?realm=' + encodeURIComponent(window.VIEW_REALM)),
+      getJSON('/usage/recent?limit=60&realm=' + encodeURIComponent(window.VIEW_REALM)),
+      getJSON('/usage/perf?realm=' + encodeURIComponent(window.VIEW_REALM)),
     ]);
     document.getElementById('statusDot').className = 'dot';
   }catch(e){
@@ -735,51 +739,83 @@ async function refresh(){
     card('思考 token', fmt(t.reasoning_tokens), '模型内部推理', 'think') +
     card('缓存命中', fmt(t.cached_tokens),
          t.prompt_tokens ? pct(t.cached_tokens / t.prompt_tokens * 100) + ' 命中率' : null) +
-    card('失败请求', fmt(perf.errors),
-         perf.success_rate_pct != null ? '成功率 ' + pct(perf.success_rate_pct) : null,
-         perf.errors ? 'err' : '');
+   card('失败请求', fmt(perf.errors),
+        perf.success_rate_pct != null ? '成功率 ' + pct(perf.success_rate_pct) : null,
+        perf.errors ? 'err' : '');
 
-  const noAcct = !window.ACCOUNTS.length;
-  if(noAcct){
-    document.getElementById('perf').innerHTML =
-      '<div class="empty">还没有请求数据</div>';
-    document.getElementById('models').innerHTML =
-      '<div class="empty">还没有请求数据</div>';
-    document.getElementById('recent').innerHTML =
-      '<div class="empty">还没有请求记录</div>';
-    document.getElementById('meta').innerHTML =
-      '<b>等待登录账号</b><br>登录后这里会显示用量统计';
-    return;
-  }
 
-  document.getElementById('perf').innerHTML =
-    '<table><thead><tr><th>指标</th><th>平均</th><th>P50</th><th>P90</th><th>P99</th><th>样本</th></tr></thead><tbody>'
-    + perfRow('首字延迟 (TTFT)', perf.ttft_ms, '', ms)
-    + perfRow('生成耗时', perf.generation_ms, '', ms)
-    + perfRow('端到端延迟', perf.wall_ms, '', ms)
-    + perfRow('生成速度', perf.tokens_per_sec, ' tok/s', v => v.toFixed(1), 'var(--accent2)')
-    + perfRow('缓存命中率', perf.cache_hit_pct, '%', v => v.toFixed(1), 'var(--accent)')
-    + '</tbody></table>'
-    + '<div class="legend"><span>基于最近 <b>' + fmt(perf.sampled) + '</b> 条记录，分位数为最近样本统计</span></div>';
+  const matrixEl = document.getElementById("perfMatrix");
+const bmPerf = (perf && perf.by_model) || {};
+  const modelMap = {};
+  Object.entries(t.by_model || {}).forEach(([id, m]) => {
+    modelMap[id] = Object.assign({id: id}, m);
+  });
+  Object.entries(bmPerf).forEach(([id, p]) => {
+    if(!modelMap[id]){
+      modelMap[id] = {
+        id: id,
+        requests: p.requests || 0,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        reasoning_tokens: 0,
+        cached_tokens: 0,
+        total_tokens: 0
+      };
+    }
+  });
+  const models = Object.values(modelMap)
+    .sort((a,b) => (b.total_tokens || b.requests) - (a.total_tokens || a.requests));
 
-  const models = Object.entries(t.by_model || {})
-    .map(([id, m]) => Object.assign({id: id}, m))
-    .sort((a,b) => b.total_tokens - a.total_tokens);
-  const maxTok = Math.max(1, ...models.map(m => m.total_tokens));
-  document.getElementById('models').innerHTML = models.length ?
-    '<table><thead><tr><th>模型</th><th>请求</th><th>输入</th><th>输出</th><th>思考</th><th>总 token</th><th style="width:120px">占比</th></tr></thead><tbody>'
-    + models.map(m => '<tr>'
-        + '<td class="mono">' + esc(m.id) + '</td>'
+  const countEm = document.getElementById("matrixModelCount");
+  if(countEm) countEm.textContent = models.length ? "(有调用的模型: " + models.length + " 个)" : "";
+
+  if(!models.length){
+    matrixEl.innerHTML = '<div class="empty">当前版本暂无模型请求或性能数据</div>';
+  } else {
+    const maxTok = Math.max(1, ...models.map(m => m.total_tokens));
+    // 汇总行 (Total / All Models)
+    const totTtft = perf.ttft_ms ? (ms(perf.ttft_ms.avg) + " (P50 " + ms(perf.ttft_ms.p50) + ")") : "-";
+    const totTps = perf.tokens_per_sec ? (perf.tokens_per_sec.avg.toFixed(1) + " tok/s") : "-";
+    const totWall = perf.wall_ms ? ms(perf.wall_ms.avg) : "-";
+    const totCache = perf.cache_hit_pct ? (perf.cache_hit_pct.avg.toFixed(1) + "%") : "-";
+    const summaryRow = '<tr style="background:rgba(79,140,255,.08);font-weight:600">'
+      + '<td><b>全部模型合计 (Total)</b></td>'
+      + '<td>' + fmt(t.requests) + '</td>'
+      + '<td><b style="color:var(--accent)">' + fmt(t.total_tokens) + '</b></td>'
+      + '<td>' + fmt(t.prompt_tokens) + ' / ' + fmt(t.completion_tokens) + (t.reasoning_tokens ? (' (<span style="color:var(--think)">' + fmt(t.reasoning_tokens) + '</span>)') : '') + '</td>'
+      + '<td>' + totTtft + '</td>'
+      + '<td><b style="color:var(--accent2)">' + totTps + '</b></td>'
+      + '<td>' + totWall + '</td>'
+      + '<td>' + totCache + '</td>'
+      + '<td>100%</td>'
+      + '</tr>';
+
+    const rows = models.map(m => {
+      const mp = bmPerf[m.id] || {};
+      const m_ttft = mp.ttft_ms ? (ms(mp.ttft_ms.avg) + " <span style='color:var(--dim);font-size:11px'>(P50 " + ms(mp.ttft_ms.p50) + ")</span>") : "-";
+      const m_tps = mp.tokens_per_sec ? ('<b style="color:var(--accent2)">' + mp.tokens_per_sec.avg.toFixed(1) + '</b> <span style="font-size:11px;color:var(--dim)">tok/s</span>') : "-";
+      const m_wall = mp.wall_ms ? ms(mp.wall_ms.avg) : "-";
+      const m_cache = (m.prompt_tokens > 0) ? pct(m.cached_tokens / m.prompt_tokens * 100) : (mp.cache_hit_pct ? mp.cache_hit_pct.avg.toFixed(1) + "%" : "-");
+      const pctTok = Math.round(m.total_tokens / maxTok * 100);
+      const errText = mp.errors ? (' <span class="badge bad" style="font-size:10px">' + mp.errors + ' 失败</span>') : '';
+      return '<tr>'
+        + '<td class="mono"><b>' + esc(m.id) + '</b>' + errText + '</td>'
         + '<td>' + fmt(m.requests) + '</td>'
-        + '<td>' + fmt(m.prompt_tokens) + '</td>'
-        + '<td>' + fmt(m.completion_tokens) + '</td>'
-        + '<td style="color:var(--think)">' + fmt(m.reasoning_tokens) + '</td>'
         + '<td><b>' + fmt(m.total_tokens) + '</b></td>'
-        + '<td><span class="bar-fill" style="width:' + Math.round(m.total_tokens/maxTok*100) + '%"></span></td>'
-      + '</tr>').join('') + '</tbody></table>'
-    + '<div class="legend"><span><i style="background:var(--accent)"></i>总 token 占比</span>'
-    + '<span><i style="background:var(--think)"></i>思考 token（含在输出内）</span></div>'
-    : '<div class="empty">还没有请求</div>';
+        + '<td>' + fmt(m.prompt_tokens) + ' / ' + fmt(m.completion_tokens) + (m.reasoning_tokens ? (' (<span style="color:var(--think)">' + fmt(m.reasoning_tokens) + '</span>)') : '') + '</td>'
+        + '<td>' + m_ttft + '</td>'
+        + '<td>' + m_tps + '</td>'
+        + '<td>' + m_wall + '</td>'
+        + '<td>' + m_cache + '</td>'
+        + '<td style="min-width:90px"><span class="bar-fill" style="width:' + Math.max(3, pctTok) + '%"></span> <span style="font-size:11px;color:var(--dim)">' + pctTok + '%</span></td>'
+        + '</tr>';
+    }).join('');
+
+    matrixEl.innerHTML = '<table><thead><tr>'
+      + '<th>模型名称</th><th>请求数</th><th>总 Token</th><th>输入 / 输出 (思考)</th>'
+      + '<th>首字延迟 (TTFT)</th><th>生成速度</th><th>端到端耗时</th><th>缓存命中率</th><th>用量占比</th>'
+      + '</tr></thead><tbody>' + summaryRow + rows + '</tbody></table>';
+  }
 
   const last = (recent.rows || []).slice(-60).reverse();
   document.getElementById('recent').innerHTML = last.length ?

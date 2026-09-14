@@ -143,7 +143,7 @@ def row_matches_realm(row, realm):
     return realm == "intl"
 
 def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_ms=None, fp=None,
-                 account=None):
+                account=None):
     """Accumulate stats, append a JSONL row, and persist the summary."""
     fields = _extract_usage(usage)
     if not fields:
@@ -163,6 +163,8 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
         row.update(fp)
     if account:
         row["account"] = account
+    acc = POOL.get(account) if (account and POOL) else None
+    row["realm"] = acc.realm if acc else CURRENT_REALM
     # Derived per-request rates (None-safe).
     if gen_ms and gen_ms > 0:
         row["tokens_per_sec"] = round(fields["completion_tokens"] / (gen_ms / 1000.0), 2)
@@ -242,6 +244,8 @@ def perf_stats(sample=5000, realm=None):
     """Latency percentiles + derived rates, computed from the JSONL log."""
     ttfts, gens, walls, rates, hits, tok_rates = [], [], [], [], [], []
     total = ok = err = 0
+    # 按模型聚合性能指标
+    m_buckets = {}
     try:
         with open(USAGE_LOG, encoding="utf-8") as fh:
             rows = fh.readlines()[-sample:]
@@ -278,6 +282,19 @@ def perf_stats(sample=5000, realm=None):
             tok_rates.append(r["tokens_per_sec"])
         if r.get("cache_hit_pct") is not None:
             hits.append(r["cache_hit_pct"])
+        # 模型分桶记录
+        m_id = r.get("model") or "unknown"
+        mb = m_buckets.setdefault(m_id, {"total": 0, "ok": 0, "err": 0, "ttfts": [], "gens": [], "walls": [], "tok_rates": [], "hits": []})
+        mb["total"] += 1
+        if r.get("error"):
+            mb["err"] += 1
+        else:
+            mb["ok"] += 1
+        if r.get("ttft_ms") is not None: mb["ttfts"].append(r["ttft_ms"])
+        if r.get("gen_ms") is not None: mb["gens"].append(r["gen_ms"])
+        if r.get("elapsed_ms") is not None: mb["walls"].append(r["elapsed_ms"])
+        if r.get("tokens_per_sec"): mb["tok_rates"].append(r["tokens_per_sec"])
+        if r.get("cache_hit_pct") is not None: mb["hits"].append(r["cache_hit_pct"])
 
     def block(vals):
         if not vals:
@@ -301,14 +318,55 @@ def perf_stats(sample=5000, realm=None):
         "wall_ms": block(walls),
         "tokens_per_sec": block(tok_rates),
         "cache_hit_pct": block(hits),
+        "by_model": {
+            mid: {
+                "requests": mb["total"],
+                "errors": mb["err"],
+                "success_rate_pct": round(mb["ok"] * 100.0 / mb["total"], 1) if mb["total"] else None,
+                "ttft_ms": block(mb["ttfts"]),
+                "generation_ms": block(mb["gens"]),
+                "wall_ms": block(mb["walls"]),
+                "tokens_per_sec": block(mb["tok_rates"]),
+                "cache_hit_pct": block(mb["hits"]),
+            } for mid, mb in m_buckets.items()
+        }
     }
 
 
 def usage_snapshot(realm=None):
     r = realm or CURRENT_REALM
     rep = POOL.representative(realm=r) if POOL else current_account()
-    with _lock:
-        snap = json.loads(json.dumps(_usage))
+    snap = _empty_stats()
+    snap["started"] = _usage.get("started", time.time())
+    try:
+        with open(USAGE_LOG, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if r and not row_matches_realm(row, r):
+                    continue
+                if row.get("error"):
+                    snap["errors"] += 1
+                else:
+                    snap["requests"] += 1
+                    for k in USAGE_FIELDS:
+                        if k in row:
+                            snap[k] += (row[k] or 0)
+                    m = row.get("model") or "unknown"
+                    per = snap["by_model"].setdefault(m, {"requests": 0, **{k: 0 for k in USAGE_FIELDS}})
+                    per["requests"] += 1
+                    for k in USAGE_FIELDS:
+                        if k in row:
+                            per[k] += (row[k] or 0)
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        log(f"usage snapshot read failed: {exc}")
     snap["since"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(snap.get("started", time.time())))
     snap["log_file"] = USAGE_LOG
     snap["realm"] = r
@@ -1897,7 +1955,8 @@ class Handler(BaseHTTPRequestHandler):
                 sample = max(10, min(20000, int((query.get("sample") or ["5000"])[0])))
             except ValueError:
                 sample = 5000
-            return self._json(200, perf_stats(sample))
+            req_realm = query.get('realm', [None])[0] or self.headers.get('X-Realm') or CURRENT_REALM
+            return self._json(200, perf_stats(sample, realm=req_realm))
         return self._error(404, "not found", "invalid_request_error")
 
     def _dashboard(self):
