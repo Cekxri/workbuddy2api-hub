@@ -33,6 +33,11 @@ main{padding:20px 24px 60px;max-width:1280px;margin:0 auto}
 .card.accent .v{color:var(--accent)}
 .card.accent2 .v{color:var(--accent2)}
 .card.err .v{color:var(--bad)}
+#cards{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:8px;margin-bottom:20px}
+#cards .card{padding:10px 8px;min-width:0;overflow:hidden;border-radius:10px}
+#cards .card .v{font-size:18px;font-weight:600;white-space:nowrap}
+#cards .card .k{font-size:11px;white-space:nowrap;margin-bottom:3px}
+#cards .card .s{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
 section{background:var(--panel);border:1px solid var(--line);border-radius:12px;
   padding:16px 18px;margin-bottom:18px}
 section h2{margin:0 0 14px;font-size:13px;font-weight:600;color:var(--dim);
@@ -147,14 +152,14 @@ a{color:var(--accent);text-decoration:none}
           <span class="tab-icon">🌐</span>
           <div class="tab-text">
             <span class="tab-title">国际版详情 (Global)</span>
-            <span class="tab-desc">www.workbuddy.ai · 16 个海外模型</span>
+            <span class="tab-desc">www.workbuddy.ai</span>
           </div>
         </div>
         <div id="tabCn" class="realm-tab" onclick="switchViewRealm('cn')">
           <span class="tab-icon">🇨🇳</span>
           <div class="tab-text">
             <span class="tab-title">国内版详情 (China)</span>
-            <span class="tab-desc">copilot.tencent.com · 40 个国产模型</span>
+            <span class="tab-desc">copilot.tencent.com</span>
           </div>
         </div>
       </div>
@@ -1017,13 +1022,16 @@ async function refresh(){
 
 
   const matrixEl = document.getElementById("perfMatrix");
-const bmPerf = (perf && perf.by_model) || {};
+  const bmPerf = (perf && perf.by_model) || {};
+  const validModels = new Set(MODELS_DATA.map(m => m.id));
   const modelMap = {};
   Object.entries(t.by_model || {}).forEach(([id, m]) => {
-    modelMap[id] = Object.assign({id: id}, m);
+    if((!validModels.size || validModels.has(id)) && m.requests > 0 && !id.endsWith('-model')){
+      modelMap[id] = Object.assign({id: id}, m);
+    }
   });
   Object.entries(bmPerf).forEach(([id, p]) => {
-    if(!modelMap[id]){
+    if((!validModels.size || validModels.has(id)) && p.requests > 0 && !id.endsWith('-model') && !modelMap[id]){
       modelMap[id] = {
         id: id,
         requests: p.requests || 0,
