@@ -1,7 +1,7 @@
-# WorkBuddy 国际版多账号反代网关
+# WorkBuddy 国际版多账号反代网关（增加国内版）
 
 <p align="center">
-  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-intl/releases"><img src="https://img.shields.io/badge/version-v1.5-2496ED?style=flat-square" alt="Version 1.5"></a>
+  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-intl/releases"><img src="https://img.shields.io/badge/Release-v1.1.0-2496ED?style=flat-square" alt="Version 1.1.0"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Vibe_Coding-100%25-ff69b4?style=flat-square" alt="Vibe Coding">
 </p>
 
-本项目为 **WorkBuddy 国际版 & 国内版多账号反代网关 (v1.5)**，将腾讯 **www.workbuddy.ai** (国际版) 与 **copilot.tencent.com / codebuddy.cn** (国内版) 原生服务封装为标准 OpenAI 兼容接口，支持多账号负载轮询、稳定物理设备指纹隔离、OAuth 一键免客户端登录、国内成长任务全自动完成、后台常驻定时调度器、Web 监控看板、实时积分查询、以及 Chat Completions 与 Responses API (Codex / Claude Code) 双协议全功能支持。
+本项目为 **WorkBuddy 国际版多账号反代网关（增加国内版）(v1.1.0)**，将腾讯 **www.workbuddy.ai** (国际版) 与 **copilot.tencent.com / codebuddy.cn** (国内版) 原生服务封装为标准 OpenAI 兼容接口，支持多账号负载轮询、稳定物理设备指纹隔离、OAuth 一键免客户端登录、国内成长任务全自动完成、后台常驻定时调度器、Web 监控看板、实时积分查询、以及 Chat Completions 与 Responses API (Codex / Claude Code) 双协议全功能支持。
 
 - **双区域独立路由**：同时支持 🌐 国际版 与 🇨🇳 国内版，严格隔离串号，网页一键切换并永久落盘记忆
 - **模型列表严格对齐桌面应用**：按官方桌面端主界面 1:1 清洗收敛，剔除内部代码补全通道与底层专线变体
