@@ -214,6 +214,11 @@ a{color:var(--accent);text-decoration:none}
     </div>
   </section>
 
+  <section>
+    <h2>最近请求</h2>
+    <div id="recent"></div>
+  </section>
+
   <!-- 版本模型库与能力清单 -->
   <section>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
@@ -235,11 +240,6 @@ a{color:var(--accent);text-decoration:none}
         <tbody></tbody>
       </table>
     </div>
-  </section>
-
-  <section>
-    <h2>最近请求</h2>
-    <div id="recent"></div>
   </section>
 
   <footer>每 5 秒自动刷新 · 数据来自本机反代 <span class="mono" id="logfile"></span></footer>
@@ -485,17 +485,22 @@ function renderAvailableModels(){
     }
     const capHtml = caps.join(' ');
 
+    const fmtK = v => {
+      if(!v) return '-';
+      const k = Math.round(v / 1000);
+      return k >= 1000 ? (k / 1000) + 'M' : k + 'K';
+    };
+
     // 3. 上下文窗口
     let ctx = '-';
     if(m.context_length){
-      const k = Math.round(m.context_length / 1000);
-      ctx = '<b>' + (k >= 1000 ? (k/1000) + 'M' : k + 'K') + '</b>';
+      ctx = '<b>' + fmtK(m.context_length) + '</b>';
     } else if(m.context_windows && m.context_windows.length){
-      ctx = '<b>' + m.context_windows.map(w => { const k = Math.round(w/1000); return k >= 1000 ? (k/1000) + 'M' : k + 'K'; }).join(' / ') + '</b>';
+      ctx = '<b>' + m.context_windows.map(fmtK).join(' / ') + '</b>';
     }
 
     // 4. 最大输出
-    const maxOut = m.max_output_tokens ? fmt(m.max_output_tokens) : '-';
+    const maxOut = m.max_output_tokens ? ('<b>' + fmtK(m.max_output_tokens) + '</b>') : '-';
 
     // 5. 思考推理能力
     let effort = '<span style="color:var(--dim)">—</span>';
