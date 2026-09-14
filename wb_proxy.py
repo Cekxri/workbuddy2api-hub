@@ -702,6 +702,155 @@ def usage_by_account():
     return out
 
 
+
+def compute_usage_analytics():
+    """Detailed analytics for Token, Cache, and Reasoning metrics page."""
+    now = time.localtime()
+    today_ts = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, 0, 0, 0, 0, 0, -1))
+
+    def new_stat():
+        return {
+            "requests": 0, "errors": 0,
+            "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0,
+            "cached_tokens": 0, "total_tokens": 0,
+            "ttft_sum": 0.0, "ttft_n": 0,
+            "speed_sum": 0.0, "speed_n": 0,
+            "elapsed_sum": 0.0, "elapsed_n": 0,
+        }
+
+    all_summary = new_stat()
+    today_summary = new_stat()
+    acct_map = {}
+    model_map = {}
+
+    if os.path.exists(USAGE_LOG):
+        try:
+            with open(USAGE_LOG, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        r = json.loads(line)
+                    except Exception:
+                        continue
+
+                    is_err = bool(r.get("error"))
+                    at = r.get("at", 0)
+                    is_today = (at >= today_ts)
+                    acct_uid = r.get("account") or "(unattributed)"
+                    m_id = r.get("model") or "(unknown)"
+
+                    def feed(stat_obj, is_error):
+                        if is_error:
+                            stat_obj["errors"] += 1
+                        else:
+                            stat_obj["requests"] += 1
+                            stat_obj["prompt_tokens"] += (r.get("prompt_tokens") or 0)
+                            stat_obj["completion_tokens"] += (r.get("completion_tokens") or 0)
+                            stat_obj["reasoning_tokens"] += (r.get("reasoning_tokens") or 0)
+                            stat_obj["cached_tokens"] += (r.get("cached_tokens") or 0)
+                            stat_obj["total_tokens"] += (r.get("total_tokens") or 0)
+                            if r.get("ttft_ms"):
+                                stat_obj["ttft_sum"] += r["ttft_ms"]
+                                stat_obj["ttft_n"] += 1
+                            if r.get("tokens_per_sec"):
+                                stat_obj["speed_sum"] += r["tokens_per_sec"]
+                                stat_obj["speed_n"] += 1
+                            if r.get("elapsed_ms"):
+                                stat_obj["elapsed_sum"] += r["elapsed_ms"]
+                                stat_obj["elapsed_n"] += 1
+
+                    feed(all_summary, is_err)
+                    if is_today:
+                        feed(today_summary, is_err)
+
+                    if acct_uid not in acct_map:
+                        acct_map[acct_uid] = {
+                            "uid": acct_uid,
+                            "nickname": acct_uid,
+                            "realm": r.get("realm", ""),
+                            "domain": "",
+                            "today": new_stat(),
+                            "all_time": new_stat(),
+                            "today_models": {},
+                            "all_models": {},
+                        }
+                    feed(acct_map[acct_uid]["all_time"], is_err)
+                    if is_today:
+                        feed(acct_map[acct_uid]["today"], is_err)
+
+                    if not is_err:
+                        tm = acct_map[acct_uid]["all_models"].setdefault(m_id, {"requests": 0, "tokens": 0, "reasoning": 0})
+                        tm["requests"] += 1
+                        tm["tokens"] += (r.get("total_tokens") or 0)
+                        tm["reasoning"] += (r.get("reasoning_tokens") or 0)
+                        if is_today:
+                            tdm = acct_map[acct_uid]["today_models"].setdefault(m_id, {"requests": 0, "tokens": 0, "reasoning": 0})
+                            tdm["requests"] += 1
+                            tdm["tokens"] += (r.get("total_tokens") or 0)
+                            tdm["reasoning"] += (r.get("reasoning_tokens") or 0)
+
+                    if m_id not in model_map:
+                        model_map[m_id] = {"model": m_id, "today": new_stat(), "all_time": new_stat()}
+                    feed(model_map[m_id]["all_time"], is_err)
+                    if is_today:
+                        feed(model_map[m_id]["today"], is_err)
+        except Exception as exc:
+            log("compute_usage_analytics failed: %s" % exc)
+
+    if POOL:
+        for a in POOL.accounts:
+            if a.uid in acct_map:
+                acct_map[a.uid]["nickname"] = a.nickname
+                acct_map[a.uid]["realm"] = a.realm
+                acct_map[a.uid]["domain"] = a.domain
+                acct_map[a.uid]["credits"] = getattr(a, "credits", None) or {}
+            else:
+                acct_map[a.uid] = {
+                    "uid": a.uid,
+                    "nickname": a.nickname,
+                    "realm": a.realm,
+                    "domain": a.domain,
+                    "credits": getattr(a, "credits", None) or {},
+                    "today": new_stat(),
+                    "all_time": new_stat(),
+                    "today_models": {},
+                    "all_models": {},
+                }
+
+    def finalize(stat_obj):
+        p = stat_obj["prompt_tokens"]
+        c = stat_obj["cached_tokens"]
+        out = stat_obj["completion_tokens"]
+        reas = stat_obj["reasoning_tokens"]
+        stat_obj["cache_hit_pct"] = round((c / (p + c) * 100), 1) if (p + c) > 0 else 0.0
+        stat_obj["reasoning_ratio"] = round((reas / out * 100), 1) if out > 0 else 0.0
+        stat_obj["ttft_ms_avg"] = round(stat_obj["ttft_sum"] / stat_obj["ttft_n"]) if stat_obj["ttft_n"] > 0 else 0
+        stat_obj["speed_avg"] = round(stat_obj["speed_sum"] / stat_obj["speed_n"], 1) if stat_obj["speed_n"] > 0 else 0.0
+        stat_obj["elapsed_ms_avg"] = round(stat_obj["elapsed_sum"] / stat_obj["elapsed_n"]) if stat_obj["elapsed_n"] > 0 else 0
+        return stat_obj
+
+    finalize(all_summary)
+    finalize(today_summary)
+    for a in acct_map.values():
+        finalize(a["today"])
+        finalize(a["all_time"])
+    for m in model_map.values():
+        finalize(m["today"])
+        finalize(m["all_time"])
+
+    accts_list = sorted(acct_map.values(), key=lambda a: (-a["today"]["total_tokens"], -a["all_time"]["total_tokens"]))
+    models_list = sorted(model_map.values(), key=lambda m: (-m["today"]["total_tokens"], -m["all_time"]["total_tokens"]))
+
+    return {
+        "today_ts": today_ts,
+        "summary": {"today": today_summary, "all_time": all_summary},
+        "accounts": accts_list,
+        "models": models_list,
+    }
+
+
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
     return POOL.representative() if POOL else None
@@ -2032,6 +2181,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             state = (query.get("state") or [""])[0]
             return self._json(200, POOL.poll_login(state))
+        if path == "/usage/analytics":
+            if not self._authorized():
+                return
+            return self._json(200, compute_usage_analytics())
         if path == "/usage/by-account":
             if not self._authorized():
                 return

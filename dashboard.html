@@ -135,14 +135,39 @@ a{color:var(--accent);text-decoration:none}
 .toggle-realm-btn:hover{background:var(--accent);color:#fff}
 .realm-endpoint-info{font-size:12px;color:var(--dim)}
 
+
+.main-nav{display:inline-flex;gap:4px;background:var(--panel2);padding:4px;border-radius:10px;border:1px solid var(--line)}
+.main-nav-btn{background:transparent;border:1px solid transparent;color:var(--dim);padding:6px 14px;border-radius:7px;font-size:13px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:all .15s ease}
+.main-nav-btn:hover{color:var(--fg);background:rgba(255,255,255,.05)}
+.main-nav-btn.active{background:var(--panel);color:#fff;border-color:var(--line);box-shadow:0 2px 6px rgba(0,0,0,.25)}
+.range-btn{background:transparent;border:none;color:var(--dim);padding:4px 12px;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer;transition:all .15s ease}
+.range-btn:hover{color:var(--fg)}
+.range-btn.active{background:var(--accent);color:#fff}
+#analyticsKpiCards .card{padding:10px 12px;min-width:0;overflow:hidden;border-radius:10px}
+#analyticsKpiCards .card .v{font-size:18px;font-weight:600;white-space:nowrap}
+#analyticsKpiCards .card .k{font-size:11px;white-space:nowrap;margin-bottom:3px}
+#analyticsKpiCards .card .s{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.badge{white-space:nowrap}
+.model-pill{display:inline-flex;align-items:center;gap:4px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:2px 8px;font-size:11px;margin:2px 4px 2px 0;white-space:nowrap}
 </style>
 </head>
 <body>
 <header>
-  <h1><span class="dot" id="statusDot"></span>WorkBuddy 网关看板</h1>
+  <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+    <h1><span class="dot" id="statusDot"></span>WorkBuddy 网关看板</h1>
+    <nav class="main-nav">
+      <button class="main-nav-btn active" id="btnNavGateway" onclick="switchMainTab('gateway')">
+        <span>🖥️</span> 网关与运维
+      </button>
+      <button class="main-nav-btn" id="btnNavAnalytics" onclick="switchMainTab('analytics')">
+        <span>📊</span> 数据指标看板
+      </button>
+    </nav>
+  </div>
   <div class="meta" id="meta"></div>
 </header>
 <main>
+  <div id="pageGateway">
   <!-- 版本中枢控制栏 -->
   <div class="realm-banner">
     <div>
@@ -219,18 +244,7 @@ a{color:var(--accent);text-decoration:none}
   </section>
 
   <!-- 融合后的：模型性能与用量矩阵 -->
-  <section>
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-      <h2 style="margin:0">模型性能指标与用量一览 <em id="matrixModelCount"></em></h2>
-      <div style="font-size:12px;color:var(--dim)">融合首字延迟 (TTFT)、生成速度、耗时与 Token 统计</div>
-    </div>
-    <div id="perfMatrix" style="overflow-x:auto"></div>
-    <div class="legend" style="margin-top:12px">
-      <span><i style="background:var(--accent2)"></i>生成速度：平均每秒吐字数 (tok/s)</span>
-      <span><i style="background:var(--think)"></i>思考 Token：DeepSeek/R1 等推理模型的思考量</span>
-      <span><i style="background:var(--accent)"></i>总 Token 占比进度条</span>
-    </div>
-  </section>
+  
 
   <section>
     <h2>最近请求</h2>
@@ -296,6 +310,90 @@ a{color:var(--accent);text-decoration:none}
 
     <div id="taskLogBox" style="display:none;margin-top:14px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-size:12px;font-family:ui-monospace,monospace;line-height:1.6;max-height:220px;overflow-y:auto"></div>
   </section>
+
+  
+  </div><!-- /pageGateway -->
+  <div id="pageAnalytics" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+      <div>
+        <h2 style="margin:0;font-size:16px;color:var(--fg);display:flex;align-items:center;gap:8px">
+          📊 Token 消耗与推理指标透视
+        </h2>
+        <div style="font-size:12px;color:var(--dim);margin-top:4px">全维度统计输入/输出/推理 Token、缓存节省效益与各账号各模型用量</div>
+      </div>
+      <div style="display:flex;gap:4px;background:var(--panel2);padding:3px;border-radius:8px;border:1px solid var(--line)">
+        <button id="btnRangeToday" class="range-btn active" onclick="setAnalyticsRange('today')">今日数据 (Today)</button>
+        <button id="btnRangeAll" class="range-btn" onclick="setAnalyticsRange('all')">全部历史 (All Time)</button>
+      </div>
+    </div>
+
+    <!-- 顶层核心 KPI 弹性看板 -->
+    <div id="analyticsKpiCards" style="display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:8px;margin-bottom:20px">
+      <div class="card think">
+        <div class="k">今日消耗 Token</div>
+        <div class="v" id="kpiTodayTokens">0</div>
+        <div class="s" id="kpiTodayTokensDetail">输入 0 · 输出 0</div>
+      </div>
+      <div class="card accent">
+        <div class="k">累计消耗 Token</div>
+        <div class="v" id="kpiTotalTokens">0</div>
+        <div class="s" id="kpiTotalTokensDetail">输入 0 · 输出 0</div>
+      </div>
+      <div class="card accent2">
+        <div class="k">网关平均生成速度</div>
+        <div class="v" id="kpiAvgSpeed">0.0 <span style="font-size:12px;font-weight:400;color:var(--dim)">tok/s</span></div>
+        <div class="s" id="kpiAvgLatency">平均首字延迟 0 ms · 耗时 0 s</div>
+      </div>
+      <div class="card">
+        <div class="k">上下文缓存命中率</div>
+        <div class="v" id="kpiCacheRate">0.0%</div>
+        <div class="s">提示词前缀命中复用比</div>
+      </div>
+      <div class="card">
+        <div class="k" id="kpiReqTitle">今日请求数 & 成功率</div>
+        <div class="v" id="kpiReqCount">0 次</div>
+        <div class="s" id="kpiReqSuccess">成功率 100% · 失败 0</div>
+      </div>
+    </div>
+
+    <!-- 表格 1：各账号用量透视与各模型消耗明细 -->
+    <section>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+        <h2 style="margin:0">各账号用量透视与模型消耗分布 <em id="analyticsAcctCount"></em></h2>
+        <div style="font-size:12px;color:var(--dim)">支持查看各账号的总消耗及调用的每个具体模型细分占比</div>
+      </div>
+      <div style="overflow-x:auto">
+        <table id="analyticsAccountTable">
+          <thead>
+            <tr>
+              <th style="text-align:left">账号 (昵称 / UID)</th>
+              <th>所属区域</th>
+              <th>剩余积分 / 额度</th>
+              <th>请求次数</th>
+              <th>消耗总 Token</th>
+              <th style="text-align:left">调用的模型分布明细 (请求数 · 消耗)</th>
+            </tr>
+          </thead>
+          <tbody id="analyticsAccountTbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 表格 2：模型用量透视与响应指标 -->
+    <section>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <h2 style="margin:0">模型性能指标与用量一览 <em id="matrixModelCount"></em></h2>
+      <div style="font-size:12px;color:var(--dim)">融合首字延迟 (TTFT)、生成速度、耗时与 Token 统计</div>
+    </div>
+    <div id="perfMatrix" style="overflow-x:auto"></div>
+    <div class="legend" style="margin-top:12px">
+      <span><i style="background:var(--accent2)"></i>生成速度：平均每秒吐字数 (tok/s)</span>
+      <span><i style="background:var(--think)"></i>思考 Token：DeepSeek/R1 等推理模型的思考量</span>
+      <span><i style="background:var(--accent)"></i>总 Token 占比进度条</span>
+    </div>
+  </section>
+  </div>
+
 
   <footer>每 5 秒自动刷新 · 数据来自本机反代 <span class="mono" id="logfile"></span></footer>
 </main>
@@ -486,6 +584,7 @@ async function switchViewRealm(r){
   await loadModels();
   await loadGrowthTasks();
   await loadSchedulerStatus();
+  await loadAnalytics();
   await refresh();
 };
 
@@ -1297,9 +1396,161 @@ async function refresh(){
   await loadSchedulerStatus();
   await refresh();
 })();
+setInterval(() => {
+  if(currentMainTab === 'analytics') loadAnalytics();
+}, 5000);
 setInterval(refresh, 5000);
 setInterval(loadSchedulerStatus, 30000);
 setInterval(loadAccounts, 15000);
+
+let currentMainTab = 'gateway';
+let analyticsRange = 'today';
+let cachedAnalyticsData = null;
+
+function switchMainTab(tab){
+  currentMainTab = tab;
+  const btnGateway = document.getElementById('btnNavGateway');
+  const btnAnalytics = document.getElementById('btnNavAnalytics');
+  const pageGateway = document.getElementById('pageGateway');
+  const pageAnalytics = document.getElementById('pageAnalytics');
+
+  if(tab === 'analytics'){
+    if(btnGateway) btnGateway.classList.remove('active');
+    if(btnAnalytics) btnAnalytics.classList.add('active');
+    if(pageGateway) pageGateway.style.display = 'none';
+    if(pageAnalytics) pageAnalytics.style.display = 'block';
+    loadAnalytics();
+  } else {
+    if(btnGateway) btnGateway.classList.add('active');
+    if(btnAnalytics) btnAnalytics.classList.remove('active');
+    if(pageGateway) pageGateway.style.display = 'block';
+    if(pageAnalytics) pageAnalytics.style.display = 'none';
+  }
+}
+
+function setAnalyticsRange(range){
+  analyticsRange = range;
+  const btnToday = document.getElementById('btnRangeToday');
+  const btnAll = document.getElementById('btnRangeAll');
+  if(range === 'all'){
+    if(btnToday) btnToday.classList.remove('active');
+    if(btnAll) btnAll.classList.add('active');
+  } else {
+    if(btnToday) btnToday.classList.add('active');
+    if(btnAll) btnAll.classList.remove('active');
+  }
+  if(cachedAnalyticsData){
+    renderAnalytics(cachedAnalyticsData);
+  } else {
+    loadAnalytics();
+  }
+}
+
+async function loadAnalytics(){
+  try {
+    const data = await getJSON('/usage/analytics');
+    cachedAnalyticsData = data;
+    renderAnalytics(data);
+  } catch(err) {
+    console.error('loadAnalytics failed:', err);
+  }
+}
+
+function renderAnalytics(data){
+  if(!data || !data.summary) return;
+  const isToday = (analyticsRange === 'today');
+  const sumToday = data.summary.today || {};
+  const sumAll = data.summary.all_time || {};
+  const currentSum = isToday ? sumToday : sumAll;
+
+  // KPI 1: 今日消耗 Token
+  const elTodayTok = document.getElementById('kpiTodayTokens');
+  const elTodayDetail = document.getElementById('kpiTodayTokensDetail');
+  if(elTodayTok) elTodayTok.textContent = fmt(sumToday.total_tokens || 0);
+  if(elTodayDetail) elTodayDetail.textContent = '输入 ' + fmt(sumToday.prompt_tokens || 0) + ' · 输出 ' + fmt(sumToday.completion_tokens || 0);
+
+  // KPI 2: 累计消耗 Token
+  const elTotalTok = document.getElementById('kpiTotalTokens');
+  const elTotalDetail = document.getElementById('kpiTotalTokensDetail');
+  if(elTotalTok) elTotalTok.textContent = fmt(sumAll.total_tokens || 0);
+  if(elTotalDetail) elTotalDetail.textContent = '输入 ' + fmt(sumAll.prompt_tokens || 0) + ' · 输出 ' + fmt(sumAll.completion_tokens || 0);
+
+  // KPI 3: 网关平均生成速度
+  const elAvgSpeed = document.getElementById('kpiAvgSpeed');
+  const elAvgLatency = document.getElementById('kpiAvgLatency');
+  if(elAvgSpeed) elAvgSpeed.innerHTML = (currentSum.speed_avg ? currentSum.speed_avg.toFixed(1) : '0.0') + ' <span style="font-size:12px;font-weight:400;color:var(--dim)">tok/s</span>';
+  if(elAvgLatency) elAvgLatency.textContent = '平均首字延迟 ' + (currentSum.ttft_ms_avg ? fmt(currentSum.ttft_ms_avg) + ' ms' : '—') + ' · 耗时 ' + (currentSum.elapsed_ms_avg ? (currentSum.elapsed_ms_avg / 1000).toFixed(2) + ' s' : '—');
+
+  // KPI 4: 缓存命中率
+  const elCacheRate = document.getElementById('kpiCacheRate');
+  if(elCacheRate) elCacheRate.textContent = (currentSum.cache_hit_pct != null ? currentSum.cache_hit_pct.toFixed(1) : '0.0') + '%';
+
+  // KPI 5: 请求数与成功率
+  const elReqTitle = document.getElementById('kpiReqTitle');
+  const elReqCount = document.getElementById('kpiReqCount');
+  const elReqSuccess = document.getElementById('kpiReqSuccess');
+  if(elReqTitle) elReqTitle.textContent = (isToday ? '今日' : '累计') + '请求数 & 成功率';
+  const totalReq = (currentSum.requests || 0) + (currentSum.errors || 0);
+  const successPct = totalReq > 0 ? ((currentSum.requests / totalReq) * 100).toFixed(1) : '100.0';
+  if(elReqCount) elReqCount.textContent = fmt(currentSum.requests || 0) + ' 次';
+  if(elReqSuccess) elReqSuccess.textContent = '成功率 ' + successPct + '% · 失败 ' + (currentSum.errors || 0);
+
+  // Table 1: 账号透视表
+  const acctTbody = document.getElementById('analyticsAccountTbody');
+  const acctCountEm = document.getElementById('analyticsAcctCount');
+  let accts = (data.accounts || []).filter(a => {
+    if(a.uid === '(unattributed)' && !(a.today.requests || a.all_time.requests)) return false;
+    return true;
+  });
+  if(acctCountEm) acctCountEm.textContent = accts.length ? '(' + accts.length + ' 个账号)' : '';
+
+  if(acctTbody){
+    if(!accts.length){
+      acctTbody.innerHTML = '<tr><td colspan="6" class="empty">暂无账号用量数据</td></tr>';
+    } else {
+      acctTbody.innerHTML = accts.map(a => {
+        const st = isToday ? a.today : a.all_time;
+        const modelsMap = isToday ? a.today_models : a.all_models;
+        const entries = Object.entries(modelsMap || {}).sort((x, y) => (y[1].tokens || 0) - (x[1].tokens || 0));
+        
+        let pills = '<span style="color:var(--dim)">无调用</span>';
+        if(entries.length){
+          pills = entries.map(([mid, ms]) => {
+            return '<span class="model-pill">'
+              + '<b style="color:var(--fg)">' + esc(mid) + '</b>: '
+              + ms.requests + '次 · <b style="color:var(--accent)">' + fmt(ms.tokens) + '</b> tok'
+              + '</span>';
+          }).join('');
+        }
+
+        const realmBadge = a.realm === 'cn'
+          ? '<span class="badge warn" style="font-size:10px">🇨🇳 国内版</span>'
+          : '<span class="badge s" style="font-size:10px">🌐 国际版</span>';
+
+        let creditStr = '<span style="color:var(--dim)">—</span>';
+        if(a.credits && a.credits.remain != null){
+          if(a.credits.size){
+            creditStr = '<b style="color:var(--accent2)">' + fmt(a.credits.remain) + '</b> <span style="color:var(--dim);font-size:11px">/ ' + fmt(a.credits.size) + ' 积分</span>';
+          } else {
+            creditStr = '<b style="color:var(--accent2)">' + fmt(a.credits.remain) + '</b> <span style="color:var(--dim);font-size:11px">积分</span>';
+          }
+        }
+
+        return '<tr>'
+          + '<td style="text-align:left">'
+          +   '<b>' + esc(a.nickname || a.uid) + '</b>'
+          +   '<div style="color:var(--dim);font-size:11px;font-family:monospace">' + esc((a.uid || '').slice(0, 10)) + '...</div>'
+          + '</td>'
+          + '<td>' + realmBadge + '</td>'
+          + '<td>' + creditStr + '</td>'
+          + '<td>' + fmt(st.requests || 0) + '</td>'
+          + '<td><b style="color:var(--accent)">' + fmt(st.total_tokens || 0) + '</b></td>'
+          + '<td style="text-align:left;max-width:440px">' + pills + '</td>'
+          + '</tr>';
+      }).join('');
+    }
+  }
+}
 </script>
 </body>
 </html>
