@@ -221,29 +221,137 @@ a{color:var(--accent);text-decoration:none}
 <div class="modal-mask" id="loginModal">
   <div class="modal" role="dialog" aria-modal="true">
     <div class="modal-hd">
-      <h2>登录新的 WorkBuddy 账号</h2>
+      <h2>添加 WorkBuddy 账号 (OAuth 授权)</h2>
       <button class="modal-x" onclick="closeLogin()" aria-label="关闭">×</button>
     </div>
     <div class="modal-bd">
-      <div class="step" id="step1"><div class="n">1</div><div class="t">正在向 workbuddy.ai 申请登录链接…</div></div>
-      <div class="step" id="step2"><div class="n">2</div><div class="t">在浏览器里打开下面的链接并登录</div></div>
+      <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:16px">
+        <div style="font-size:12px;color:var(--dim);margin-bottom:8px;font-weight:600">选择要登录的版本：</div>
+        <div style="display:flex;gap:18px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+            <input type="radio" name="loginRealm" value="cn" id="radioCn" onchange="switchLoginRealm(this.value)">
+            <span>🇨🇳 <b>国内版</b> (copilot.tencent.com)</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+            <input type="radio" name="loginRealm" value="intl" id="radioIntl" onchange="switchLoginRealm(this.value)">
+            <span>🌐 <b>国际版</b> (www.workbuddy.ai)</span>
+          </label>
+        </div>
+      </div>
+      <div class="step" id="step1"><div class="n">1</div><div class="t" id="step1Text">正在申请授权登录链接…</div></div>
+      <div class="step" id="step2"><div class="n">2</div><div class="t">在浏览器里打开下方链接并完成登录授权</div></div>
       <div id="loginLinkBox"></div>
-      <div class="step" id="step3"><div class="n">3</div><div class="t">等待浏览器完成登录…</div></div>
-      <p class="hint" id="loginStatus"></p>
+      <div class="step" id="step3"><div class="n">3</div><div class="t">等待授权回调完成（自动检测）</div></div>
+      <p class="hint" id="loginStatus" style="font-weight:500"></p>
     </div>
     <div class="modal-ft">
-      <button class="sec" onclick="closeLogin()">取消</button>
+      <button class="sec" onclick="closeLogin()">关闭</button>
+      <button onclick="restartLogin()">重新生成链接</button>
     </div>
   </div>
 </div>
 
 <script>
+let loginState = null, loginTimer = null;
+
+function openLogin(){
+  const m = document.getElementById("loginModal");
+  if(m) m.classList.add("show");
+}
+
+function closeLogin(){
+  const m = document.getElementById("loginModal");
+  if(m) m.classList.remove("show");
+  if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
+  if(loginState){ postJSON("/accounts/login/cancel", {state: loginState}).catch(()=>{}); loginState = null; }
+}
+
+function openLoginModal(){
+  openLogin();
+  const isCn = (window.VIEW_REALM === "cn");
+  const rCn = document.getElementById("radioCn");
+  const rIntl = document.getElementById("radioIntl");
+  if(rCn) rCn.checked = isCn;
+  if(rIntl) rIntl.checked = !isCn;
+  triggerLoginForSelectedRealm();
+}
+
+function switchLoginRealm(realm){
+  triggerLoginForSelectedRealm();
+}
+
+function restartLogin(){
+  triggerLoginForSelectedRealm();
+}
+
+async function triggerLoginForSelectedRealm(){
+  const checkedRadio = document.querySelector('input[name="loginRealm"]:checked');
+  const realm = checkedRadio ? checkedRadio.value : (window.VIEW_REALM || "intl");
+  const isCn = (realm === "cn");
+
+  if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
+  if(loginState){ postJSON("/accounts/login/cancel", {state: loginState}).catch(()=>{}); loginState = null; }
+
+  const linkBox = document.getElementById("loginLinkBox");
+  const statusBox = document.getElementById("loginStatus");
+  if(linkBox) linkBox.innerHTML = "";
+  if(statusBox) statusBox.textContent = "";
+
+  const s1 = document.getElementById("step1");
+  const s2 = document.getElementById("step2");
+  const s3 = document.getElementById("step3");
+  if(s1) s1.className = "step active";
+  if(s2) s2.className = "step";
+  if(s3) s3.className = "step";
+
+  const s1Text = document.getElementById("step1Text");
+  if(s1Text) s1Text.textContent = isCn ? "正在向 copilot.tencent.com (国内版) 申请授权..." : "正在向 www.workbuddy.ai (国际版) 申请授权...";
+
+  try{
+    const r = await postJSON("/accounts/login/start", {platform: "CLI", realm: realm});
+    loginState = r.state;
+    if(s1) s1.className = "step done";
+    if(s2) s2.className = "step active";
+    if(linkBox) linkBox.innerHTML =
+      '<a class="login-link" href="' + esc(r.authUrl) + '" target="_blank" rel="noopener">' + esc(r.authUrl) + '</a>'
+      + '<div class="hint">点击上方链接在浏览器里完成登录授权。登录完成后本窗口会自动检测并完成入池。</div>';
+    pollLogin();
+    loginTimer = setInterval(pollLogin, 2500);
+  }catch(e){
+    if(statusBox) statusBox.textContent = "发起失败: " + e.message;
+    if(s1) s1.className = "step";
+  }
+}
+
+async function pollLogin(){
+  if(!loginState) return;
+  try{
+    const r = await getJSON("/accounts/login/poll?state=" + encodeURIComponent(loginState));
+    const s3 = document.getElementById("step3");
+    const statusBox = document.getElementById("loginStatus");
+    if(s3) s3.className = "step active";
+    if(statusBox) statusBox.textContent = r.message || r.status;
+    if(r.status === "ok"){
+      if(s3) s3.className = "step done";
+      if(statusBox) statusBox.textContent = "登录成功：" + (r.account && r.account.nickname) + " 已加入账号池";
+      if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
+      loginState = null;
+      await loadAccounts();
+      setTimeout(closeLogin, 1200);
+    }else if(r.status === "error" || r.status === "expired" || r.status === "unknown"){
+      if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
+    }
+  }catch(e){}
+}
+
+
 window.ACTIVE_GATEWAY_REALM = "intl";
 window.window.VIEW_REALM = "intl";
+window.REALM_FILTER = "all";
 window.MODELS_DATA = [];
 window.window.ACCOUNTS = [];
 
-window.updateUI = function(){
+function updateUI(){
   const isIntlView = (window.window.VIEW_REALM === "intl");
   const tIntl = document.getElementById("tabIntl");
   const tCn = document.getElementById("tabCn");
@@ -268,7 +376,7 @@ window.updateUI = function(){
   if(btnCheckin) btnCheckin.style.display = (window.window.VIEW_REALM === "cn" ? "inline-block" : "none");
 };
 
-window.switchViewRealm = async function(r){
+async function switchViewRealm(r){
   if(window.window.VIEW_REALM === r) return;
   window.window.VIEW_REALM = r;
   window.updateUI();
@@ -277,7 +385,7 @@ window.switchViewRealm = async function(r){
   await refresh();
 };
 
-window.toggleActiveGatewayRealm = async function(){
+async function toggleActiveGatewayRealm(){
   const next = (window.ACTIVE_GATEWAY_REALM === "intl" ? "cn" : "intl");
   try {
     const res = await postJSON("/realm", {realm: next});
@@ -376,7 +484,6 @@ async function doCheckin(btn){
   }catch(e){ toast("签到失败: " + e.message); }
   finally { btn.disabled = false; btn.textContent = ot; }
 }
-function openLoginModal(){ startLogin(); }
 
 const fmt = n => (n ?? 0).toLocaleString('en-US');
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -491,9 +598,8 @@ function accountRow(a){
 
 function renderAccounts(){
   const box = document.getElementById('accounts');
-  let list = ACCOUNTS;
-  if(REALM_FILTER === 'intl') list = list.filter(a => a.realm === 'intl');
-  if(REALM_FILTER === 'cn') list = list.filter(a => a.realm === 'cn');
+  const currentView = (window.VIEW_REALM || "intl");
+  let list = (window.ACCOUNTS || []).filter(a => !a.realm || a.realm === currentView);
   const usable = list.filter(a => a.enabled).length;
   document.getElementById('acctCount').textContent =
     window.ACCOUNTS.length ? ('共 ' + window.ACCOUNTS.length + ' 个，启用 ' + usable + ' 个') : '';
@@ -582,59 +688,6 @@ async function importDesktop(btn){
        await loadAccounts(); }
   catch(e){ toast(e.message); }
   finally{ btn.disabled = false; }
-}
-
-/* -------------------------------- login --------------------------------- */
-let loginState = null, loginTimer = null;
-
-function openLogin(){ document.getElementById('loginModal').classList.add('show'); }
-function closeLogin(){
-  document.getElementById('loginModal').classList.remove('show');
-  if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
-  if(loginState){ postJSON('/accounts/login/cancel', {state: loginState}).catch(()=>{}); loginState = null; }
-}
-
-async function startLogin(){
-  openLogin();
-  document.getElementById('loginLinkBox').innerHTML = '';
-  document.getElementById('loginStatus').textContent = '';
-  document.getElementById('step1').className = 'step active';
-  document.getElementById('step2').className = 'step';
-  document.getElementById('step3').className = 'step';
-  try{
-    const r = await postJSON('/accounts/login/start', {platform: 'CLI'});
-    loginState = r.state;
-    document.getElementById('step1').className = 'step done';
-    document.getElementById('step2').className = 'step active';
-    document.getElementById('loginLinkBox').innerHTML =
-      '<a class="login-link" href="' + esc(r.authUrl) + '" target="_blank" rel="noopener">' + esc(r.authUrl) + '</a>'
-      + '<div class="hint">点上面的链接在浏览器里登录。登录完成后本窗口会自动检测到，不用手动确认。</div>';
-    pollLogin();
-    loginTimer = setInterval(pollLogin, 2500);
-  }catch(e){
-    document.getElementById('loginStatus').textContent = '发起失败: ' + e.message;
-    document.getElementById('step1').className = 'step';
-  }
-}
-
-async function pollLogin(){
-  if(!loginState) return;
-  try{
-    const r = await getJSON('/accounts/login/poll?state=' + encodeURIComponent(loginState));
-    document.getElementById('step3').className = 'step active';
-    document.getElementById('loginStatus').textContent = r.message || r.status;
-    if(r.status === 'ok'){
-      document.getElementById('step3').className = 'step done';
-      document.getElementById('loginStatus').textContent =
-        '登录成功：' + (r.account && r.account.nickname) + ' 已加入账号池';
-      if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
-      loginState = null;
-      await loadAccounts();
-      setTimeout(closeLogin, 1200);
-    }else if(r.status === 'error' || r.status === 'expired' || r.status === 'unknown'){
-      if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
-    }
-  }catch(e){ /* 轮询失败就等下一轮 */ }
 }
 
 /* ------------------------------- dashboard ------------------------------ */
