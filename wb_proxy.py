@@ -1862,7 +1862,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/1.0"
+    server_version = "wb-proxy/1.5"
 
     def log_message(self, fmt, *args):
         log(fmt % args)

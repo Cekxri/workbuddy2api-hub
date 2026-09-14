@@ -1,20 +1,22 @@
 # WorkBuddy 国际版多账号反代网关
 
 <p align="center">
-  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-intl/releases"><img src="https://img.shields.io/github/v/release/ardeyouxipianyi/workbuddy2api-intl?color=2496ED&style=flat-square" alt="Release"></a>
+  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-intl/releases"><img src="https://img.shields.io/badge/version-v1.5-2496ED?style=flat-square" alt="Version 1.5"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
-  <img src="https://img.shields.io/badge/Endpoint-www.workbuddy.ai-0DBD8B?style=flat-square" alt="workbuddy.ai">
+  <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/Vibe_Coding-100%25-ff69b4?style=flat-square" alt="Vibe Coding">
 </p>
 
-本项目为 **WorkBuddy 国际版多账号反代网关**，将腾讯 **www.workbuddy.ai** 原生服务封装为标准 OpenAI 兼容接口，支持多账号负载轮询、OAuth 一键免客户端登录、Web 监控看板、实时积分查询、以及 Chat Completions 与 Responses API (Codex / Claude Code) 双协议全功能支持。
+本项目为 **WorkBuddy 国际版 & 国内版多账号反代网关 (v1.5)**，将腾讯 **www.workbuddy.ai** (国际版) 与 **copilot.tencent.com / codebuddy.cn** (国内版) 原生服务封装为标准 OpenAI 兼容接口，支持多账号负载轮询、稳定物理设备指纹隔离、OAuth 一键免客户端登录、国内成长任务全自动完成 (+1450积分)、后台常驻定时调度器、Web 监控看板、实时积分查询、以及 Chat Completions 与 Responses API (Codex / Claude Code) 双协议全功能支持。
 
-- **开箱即用**：包内自带 Python 运行时，不用装任何东西
-- **多账号池**：轮询使用，某个账号被上游拒绝时自动切换
-- **两种登录方式**：浏览器 OAuth 自主登录 / 导入已登录的桌面应用凭证
-- **用量与性能统计**：内置看板，按账号、按模型拆分
+- **双区域独立路由**：同时支持 🌐 国际版 与 🇨🇳 国内版，严格隔离串号，网页一键切换并永久落盘记忆
+- **统一稳定设备指纹 (`derive_id`)**：基于 UID 稳定派生专属机器特征，每个账号固定一台虚拟物理设备，天然防多号关联风控
+- **国内版成长任务全自动化**：一键接取、上报事件点亮并领取 14 项成长任务（直接到账 +1450 积分），以及猫猫日常旅行与连续打卡
+- **后台常驻定时调度器 (Scheduler)**：每日整点排程（09:00/21:00 签到旅行 · 22:00 保活 · 01:00 夜猫），国际版自适应为专属 Token 集中保活
+- **开箱即用**：包内自带 Python 运行时，双击即跑，无需安装任何依赖
+- **全新看板体验**：单行自适应弹性卡片、模型性能指标与用量一览融合大表、1:1 对齐官方客户端 UI 的模型库与能力清单
 
 > ⚡ **Vibe Coding 产物**：本项目为 100% Vibe Coding 协同产物，从腾讯 WorkBuddy 协议逆向、多账号池调度、WAF 指纹脱敏、Responses API 双向转换到 Web 看板，均由人类开发者提出需求意图、AI 编码助手端到端调试与编写完成。
 
@@ -352,12 +354,19 @@ gpt-6-astra 支持五档并可关闭。GET /v1/models 会说明各自情况。
 本项目在协议兼容、风控规避与链路优化过程中，深度参考并吸纳了开源社区现有项目的经验与逆向成果，特此致谢：
 
 - **[Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)**：
-  - **指纹脱敏管线设计**：吸纳了其出站请求体脱敏策略，彻底解决 Codex CLI / Claude Code 默认系统指令触发上游 WAF `code 11128 Illegal API invocation` 拦截的问题。
+  - **成长任务全链路逆向 (`task_runner`)**：参考了其对腾讯成长任务中心（`growth/tasks`、`accept`、`claim`、`v2/report`）的事件定义与自动化点亮领奖逻辑，单号可增益 +1450 积分。
+  - **设备指纹稳定派生设计 (`derive_id`)**：吸纳了其以账号 UID 稳定哈希派生固定设备码的思路，彻底解决多账号关联风控与随机机器码被平台封禁的难题。
+  - **后台定时调度器与整点排程 (`Scheduler`)**：参考了其每日固定整点排程（09:00/21:00 签到与猫猫旅行、22:00 Token 保活、01:00 深夜夜猫任务）的设计理念。
+  - **指纹脱敏管线设计**：吸纳了其出站请求体脱敏策略，彻底解决 Codex CLI / Claude Code 默认系统指令触发上游 WAF `code 11128` 拦截的问题。
   - **DeepSeek 多轮思维链回填**：参考了其关于 `requiresReasoningContentOnAssistantMessages` 的逆向结论，实现了多轮对话历史中自动回填 `reasoning_content`，保证思维链上下文不丢失。
   - **`tool_choice` 归一化**：吸纳了其将复杂对象安全降级为上游 Go 后端原生标量字符串的处理逻辑，规避 `11101` 语法报错。
   - **实时积分接口**：参考了其通过 `POST /v2/billing/meter/get-user-resource` 查询与聚合账户资源包用量的协议实现。
+- **[CangShui/workbuddy-cliproxy-fix](https://github.com/CangShui/workbuddy-cliproxy-fix)**：
+  - 提供了早期关于 WorkBuddy 客户端代理修复与接口差异的参考。
 - **[lovingfish/workbuddy-cliproxy](https://github.com/lovingfish/workbuddy-cliproxy)** 与 **[mmqz/cpa-multi-plugins](https://github.com/mmqz/cpa-multi-plugins)**：
   - 提供了早期关于 WorkBuddy 网关通信与 OAuth 授权流程的原型参考。
+- **[ardeyouxipianyi/workbuddy2api](https://github.com/ardeyouxipianyi/workbuddy2api)**：
+  - 提供了国内版分发包逆向分析与出站 User-Agent 规范参考。
 
 ---
 
