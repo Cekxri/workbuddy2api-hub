@@ -1,7 +1,7 @@
 # WorkBuddy2API-Hub — 国际版、国内版多账号网关中枢
 
 <p align="center">
-  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.1.3-2496ED?style=flat-square" alt="Version 1.1.3"></a>
+  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.1.4-2496ED?style=flat-square" alt="Version 1.1.4"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
@@ -35,7 +35,17 @@
 
 首次启动若无账号，直接打开看板点击 **「+ 添加账号 (OAuth)」**，在浏览器完成授权即可自动加入。
 
-### 2. 局域网共享模式
+### 2. 面板访问密码
+
+打开看板需要先输入**面板访问密码**，默认是 `admin`。它与 API Key 相互独立：
+
+- 面板密码只用于打开网页看板，可在看板的「设置」页随时修改（也可启动时用 `--panel-password` 指定）；
+- 密码以 PBKDF2-SHA256 摘要形式保存在 `accounts/settings.json`，不存明文；
+- 登录状态存放在浏览器会话中，关闭浏览器或重启网关后需要重新输入。
+
+> 首次登录后请立即到「设置」修改默认密码。
+
+### 3. 局域网共享模式
 双击运行 **`start-wb-proxy-lan.bat`**，允许局域网内其他设备（手机、平板、协同电脑）访问：
 - **默认 API Key**：`qwer.1234`
 - **Base URL**：`http://<本机局域网IP>:8788/v1`
@@ -47,7 +57,7 @@
 
 ---
 
-### 3. Docker 容器化部署 (推荐 Linux / NAS / 服务器)
+### 4. Docker 容器化部署 (推荐 Linux / NAS / 服务器)
 自带完整容器配置，零外部依赖，极速启动：
 
 ```bash

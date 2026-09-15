@@ -33,6 +33,7 @@ import uuid
 
 import wb_accounts
 import wb_catalog
+import wb_settings
 
 CURRENT_REALM = os.environ.get("WB_PROXY_DEFAULT_REALM", "intl")
 
@@ -140,6 +141,14 @@ USAGE_SUMMARY = os.path.join(USAGE_DIR, "usage-summary.json")
 DASHBOARD_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "reasoning_tokens",
                 "cached_tokens", "total_tokens", "credit")
+
+# Web-panel access control. The panel is gated by its own password (default
+# "admin"), independent of the /v1 API key. Sessions live in memory only, so a
+# restart forces browsers to log in again.
+# The value start-wb-proxy-lan.bat passes when the user gives no --api-key.
+LAUNCHER_DEFAULT_KEY = "qwer.1234"
+PANEL = wb_settings.PanelSessions()
+API_KEY_FILE_SET = False
 
 
 def _empty_stats():
@@ -853,6 +862,25 @@ def compute_usage_analytics():
         "summary": {"today": today_summary, "all_time": all_summary},
         "accounts": accts_list,
         "models": models_list,
+    }
+
+
+def runtime_settings_view():
+    """Current panel-visible settings (never returns the password or the key)."""
+    key = API_KEY or ""
+    if len(key) > 8:
+        masked = key[:4] + "*" * 6 + key[-4:]
+    else:
+        masked = "*" * len(key)
+    return {
+        "panel_password_is_default": wb_settings.panel_password_is_default(ACCOUNTS_DIR),
+        "api_key_set": bool(key),
+        "api_key_set_by_panel": API_KEY_FILE_SET,
+        "api_key_masked": masked,
+        "accounts_dir": ACCOUNTS_DIR,
+        "usage_dir": USAGE_DIR,
+        "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
+        "version": "1.1.4",
     }
 
 
@@ -2075,7 +2103,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/1.1.3"
+    server_version = "wb-proxy/1.1.4"
 
     def log_message(self, fmt, *args):
         log(fmt % args)
@@ -2094,6 +2122,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _key_ok(self):
         """True when the request carries the right key (or no key is needed)."""
+        # An authenticated panel session also unlocks the management APIs,
+        # so the browser never has to keep the API key in localStorage.
+        if self._panel_ok():
+            return True
         if not API_KEY:
             return True
         supplied = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
@@ -2116,6 +2148,38 @@ class Handler(BaseHTTPRequestHandler):
         self._error(401, "invalid api key", "invalid_request_error")
         return False
 
+    # ---- web panel access ----
+    def _panel_token(self):
+        """Session token from the X-Panel-Token header or ?panel= query."""
+        token = (self.headers.get("X-Panel-Token") or "").strip()
+        if token:
+            return token
+        try:
+            query = parse_qs(urlparse(self.path).query)
+            return (query.get("panel") or [""])[0].strip()
+        except Exception:
+            return ""
+
+    def _panel_ok(self):
+        return PANEL.valid(self._panel_token())
+
+    @staticmethod
+    def _is_panel_route(path):
+        """Management endpoints shown in the web panel.
+
+        Model listings stay reachable with the API key alone so that plain
+        OpenAI clients can keep discovering models.
+        """
+        if path.startswith("/accounts"):
+            return True
+        if path.startswith("/usage") or path.startswith("/v1/usage"):
+            return True
+        if path.startswith("/tasks") or path.startswith("/scheduler"):
+            return True
+        if path in ("/settings", "/settings/save"):
+            return True
+        return False
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -2128,8 +2192,22 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+        if self._is_panel_route(path) and not self._panel_ok():
+            return self._error(401, "panel password required", "invalid_request_error")
         if path in ("/", "/dashboard", "/ui"):
             return self._dashboard()
+        if path == "/panel/status":
+            # Answer without a token: the dashboard needs to know whether to
+            # show the login screen before it can hold a session.
+            info = {
+                "panel_password_required": True,
+                "panel_password_is_default": wb_settings.panel_password_is_default(ACCOUNTS_DIR),
+                "authenticated": self._panel_ok(),
+            }
+            # Whether a key exists is not a secret; its value never leaves the
+            # process, and the settings endpoint only reports a masked form.
+            info["api_key_set"] = bool(API_KEY)
+            return self._json(200, info)
         if path == "/health":
             # Always answer (the launcher uses this to detect a running copy),
             # but only expose account identity to an authorised caller.
@@ -2228,7 +2306,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/scheduler":
             if not self._authorized():
                 return
-            return self._json(200, SCHEDULER.status() if SCHEDULER else {"enabled": False, "msg": "未启动"})
+            return self._json(200, SCHEDULER.status() if SCHEDULER else {"enabled": False, "msg": "未运行"})
+        if path == "/settings":
+            if not self._authorized():
+                return
+            return self._json(200, runtime_settings_view())
         return self._error(404, "not found", "invalid_request_error")
 
     def _dashboard(self):
@@ -2243,6 +2325,83 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _read_payload(self):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except Exception:
+            return {}
+        try:
+            raw = self.rfile.read(length).decode("utf-8") if length else "{}"
+            data = json.loads(raw or "{}")
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _handle_settings_save(self):
+        """Persist panel-managed settings from the web settings tab."""
+        payload = self._read_payload()
+        reply = {}
+
+        new_key = payload.get("api_key")
+        if new_key is not None:
+            new_key = str(new_key).strip()
+            if new_key and len(new_key) < 4:
+                return self._error(400, "api key must be at least 4 characters",
+                                   "invalid_request_error")
+            global API_KEY, API_KEY_FILE_SET
+            wb_settings.set_api_key(ACCOUNTS_DIR, new_key)
+            API_KEY = new_key
+            API_KEY_FILE_SET = True
+            reply["api_key_set"] = bool(new_key)
+
+        if payload.get("restart_scheduler"):
+            if SCHEDULER:
+                SCHEDULER.stop()
+                SCHEDULER.start()
+            reply["scheduler"] = "restarted"
+
+        reply.update(runtime_settings_view())
+        return self._json(200, reply)
+
+    def _handle_panel(self, path):
+        """Panel login, logout and the settings screen (password + API key)."""
+        payload = self._read_payload()
+
+        if path == "/panel/login":
+            password = str(payload.get("password") or "")
+            if not wb_settings.verify_panel_password(ACCOUNTS_DIR, password):
+                return self._error(401, "invalid panel password", "invalid_request_error")
+            token = PANEL.create()
+            return self._json(200, {
+                "ok": True,
+                "token": token,
+                "using_default_password": wb_settings.panel_password_is_default(ACCOUNTS_DIR),
+            })
+
+        if path == "/panel/logout":
+            PANEL.revoke(self._panel_token())
+            return self._json(200, {"ok": True})
+
+        # Everything past this point requires an authenticated panel session.
+        if not self._panel_ok():
+            return self._error(401, "panel password required", "invalid_request_error")
+
+        if path == "/panel/password":
+            current = str(payload.get("current") or "")
+            new = str(payload.get("new") or "")
+            if not wb_settings.verify_panel_password(ACCOUNTS_DIR, current):
+                return self._error(401, "current password is wrong", "invalid_request_error")
+            if len(new) < 4:
+                return self._error(400, "new password must be at least 4 characters", "invalid_request_error")
+            wb_settings.set_panel_password(ACCOUNTS_DIR, new)
+            if new != wb_settings.DEFAULT_PANEL_PASSWORD:
+                # Rotating the password invalidates every other browser session.
+                PANEL.revoke_all()
+            token = PANEL.create()
+            return self._json(200, {"ok": True, "token": token})
+
+        return self._error(404, "not found", "invalid_request_error")
 
     def _handle_accounts(self, path, payload):
         """Account-management endpoints (dashboard uses these)."""
@@ -2462,6 +2621,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
+        if path == "/settings/save":
+            if not self._panel_ok():
+                return self._error(401, "panel password required", "invalid_request_error")
+            return self._handle_settings_save()
+        if path in ("/panel/login", "/panel/logout", "/panel/password"):
+            return self._handle_panel(path)
+        if self._is_panel_route(path) and not self._panel_ok():
+            return self._error(401, "panel password required", "invalid_request_error")
         is_account_route = (
             path.startswith("/accounts/")
             or path == "/realm"
@@ -2614,6 +2781,8 @@ def main():
                     help="where the per-account credential files live (default: ./accounts)")
     ap.add_argument("--import-desktop", action="store_true",
                     help="import the desktop app credential as an account, then exit")
+    ap.add_argument("--panel-password", default=None,
+                    help="set the web panel password on startup (default: admin)")
     args = ap.parse_args()
 
     # LAN mode: bind everywhere, and default to the fixed key "qwer.1234".
@@ -2657,6 +2826,21 @@ def main():
     SYSTEM_PROMPT = args.system_prompt
     if args.accounts_dir:
         ACCOUNTS_DIR = os.path.abspath(args.accounts_dir)
+
+    # Panel-managed settings win over the launcher default so a key change
+    # made in the browser survives a restart of the .bat file. An explicit
+    # --api-key that is not the launcher default still takes precedence.
+    global API_KEY_FILE_SET
+    saved_key, key_from_panel = wb_settings.api_key_override(ACCOUNTS_DIR)
+    if key_from_panel and (not args.api_key or args.api_key == LAUNCHER_DEFAULT_KEY):
+        API_KEY = saved_key
+        API_KEY_FILE_SET = True
+
+    if args.panel_password:
+        wb_settings.set_panel_password(ACCOUNTS_DIR, args.panel_password)
+        log("panel      : password set from --panel-password")
+    elif wb_settings.panel_password_is_default(ACCOUNTS_DIR):
+        log("panel      : password is still the default 'admin' - change it in the panel")
 
     POOL = wb_accounts.AccountPool(ACCOUNTS_DIR, log=log)
     POOL.load()

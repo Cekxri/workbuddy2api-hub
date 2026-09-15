@@ -175,10 +175,30 @@ a:hover{text-decoration:underline}
       <button class="main-nav-btn" id="btnNavAnalytics" onclick="switchMainTab('analytics')">
         数据指标看板
       </button>
+      <button class="main-nav-btn" id="btnNavSettings" onclick="switchMainTab('settings')">
+        设置
+      </button>
     </nav>
   </div>
   <div class="meta" id="meta"></div>
 </header>
+<div id="panelGate" style="position:fixed;inset:0;z-index:600;display:none;
+     align-items:center;justify-content:center;padding:20px;background:var(--bg)">
+  <div style="width:min(380px,100%);background:var(--panel);border:1px solid var(--line);
+              border-radius:14px;padding:26px 24px;box-shadow:0 10px 30px rgba(15,23,42,.12)">
+    <div style="font-size:16px;font-weight:700;margin-bottom:6px">WorkBuddy 网关看板</div>
+    <div style="font-size:12px;color:var(--dim);margin-bottom:18px">请输入面板访问密码</div>
+    <input id="panelPwdInput" type="password" placeholder="面板密码" autocomplete="current-password"
+           onkeydown="if(event.key==='Enter') submitPanelLogin()"
+           style="width:100%;background:var(--panel2);border:1px solid var(--line);
+                  border-radius:8px;padding:9px 12px;color:var(--fg);font:inherit">
+    <div id="panelLoginMsg" style="font-size:12px;color:var(--bad);min-height:17px;margin:8px 0 12px"></div>
+    <button onclick="submitPanelLogin()" style="width:100%;padding:9px 12px;font-size:13px">进入面板</button>
+    <div id="panelDefaultHint" style="display:none;font-size:11px;color:var(--warn);margin-top:12px">
+      当前仍在使用默认密码 <b>admin</b>，登录后请在「设置」中修改。
+    </div>
+  </div>
+</div>
 <main>
   <div id="pageGateway">
   <!-- 版本中枢控制栏 -->
@@ -211,18 +231,6 @@ a:hover{text-decoration:underline}
       <button class="toggle-realm-btn" id="btnToggleRealm" onclick="toggleActiveGatewayRealm()" style="cursor:pointer;width:100%">切换网关上游为【国内版】</button>
     </div>
   </div>
-  <div id="keyBar" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;
-       background:var(--panel);border:1px solid var(--warn);border-radius:12px;
-       padding:12px 16px;margin-bottom:18px">
-    <b style="color:var(--warn)">此服务器需要 API Key</b>
-    <span style="color:var(--dim);font-size:12px">粘贴启动窗口里显示的密钥</span>
-    <input id="keyInput" type="text" placeholder="API Key"
-           style="flex:1;min-width:220px;background:var(--panel2);border:1px solid var(--line);
-                  border-radius:8px;padding:7px 10px;color:var(--fg);font:inherit">
-   <button onclick="saveKey()">连接</button>
-   <span id="keyStatus" style="color:var(--dim);font-size:12px"></span>
- </div>
-
   <!-- 后台定时调度器状态栏 -->
   <div id="schedulerBar" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 14px;margin-bottom:16px;font-size:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
     <div style="display:flex;align-items:center;gap:8px">
@@ -387,6 +395,63 @@ a:hover{text-decoration:underline}
   </section>
   </div>
 
+
+
+  <div id="pageSettings" style="display:none">
+    <div style="margin-bottom:16px">
+      <h2 style="margin:0;font-size:16px;color:var(--fg)">网关设置</h2>
+      <div style="font-size:12px;color:var(--dim);margin-top:4px">面板密码与 API Key 均保存在本机 <span class="mono" id="setSettingsFile">settings.json</span>，重启后依然生效</div>
+    </div>
+
+    <section>
+      <h2>面板访问密码 <em id="setPwdState"></em></h2>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">用于打开本看板。默认密码为 <b>admin</b>，建议立即修改。</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div style="flex:1;min-width:180px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">当前密码</div>
+          <input id="setPwdCurrent" type="password" placeholder="当前密码"
+                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div style="flex:1;min-width:180px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">新密码</div>
+          <input id="setPwdNew" type="password" placeholder="至少 4 位"
+                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <button onclick="savePanelPassword(this)">修改密码</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>API Key <em id="setKeyState"></em></h2>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">客户端调用 /v1 接口时使用的密钥。留空保存表示本机不再校验 API Key。</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div style="flex:1;min-width:220px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">新的 API Key</div>
+          <input id="setKeyInput" type="text" placeholder="例如 qwer.1234"
+                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <button onclick="saveApiKey(this)">保存 API Key</button>
+        <button class="sec" onclick="generateApiKey()">随机生成</button>
+      </div>
+      <div style="font-size:11px;color:var(--dim);margin-top:10px" id="setKeyHint"></div>
+    </section>
+
+    <section>
+      <h2>运行信息</h2>
+      <table>
+        <tbody>
+          <tr><td>当前版本</td><td class="mono" id="setVersion">-</td></tr>
+          <tr><td>账号存储目录</td><td class="mono" id="setAccountsDir">-</td></tr>
+          <tr><td>用量日志目录</td><td class="mono" id="setUsageDir">-</td></tr>
+          <tr><td>设置文件</td><td class="mono" id="setFile">-</td></tr>
+        </tbody>
+      </table>
+      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="sec" onclick="loadSettings(true)">刷新</button>
+        <button class="sec" onclick="panelLogout()">退出面板登录</button>
+      </div>
+    </section>
+  </div>
 
   <footer>每 5 秒自动刷新 · 数据来自本机反代 <span class="mono" id="logfile"></span></footer>
 </main>
@@ -901,7 +966,11 @@ function card(k, v, sub, cls){
 
 /* ---- api key handling ---- */
 const KEY_STORE = 'wb-proxy-api-key';
+const PANEL_STORE = 'wb-proxy-panel-token';
 let API_KEY = '';
+let PANEL_TOKEN = '';
+try { PANEL_TOKEN = sessionStorage.getItem(PANEL_STORE) || ''; } catch(e) { PANEL_TOKEN = ''; }
+let PANEL_STATUS = {};
 (function initKey(){
   try {
     const fromUrl = new URLSearchParams(window.location.search).get('key');
@@ -918,30 +987,13 @@ let API_KEY = '';
 function authHeaders(base){
   const h = Object.assign({}, base || {});
   if(API_KEY) h['Authorization'] = 'Bearer ' + API_KEY;
+  if(PANEL_TOKEN) h['X-Panel-Token'] = PANEL_TOKEN;
   return h;
-}
-function needKey(msg){
-  const bar = document.getElementById('keyBar');
-  if(bar) bar.style.display = 'flex';
-  const st = document.getElementById('keyStatus');
-  if(st) st.textContent = msg || '';
-  const inp = document.getElementById('keyInput');
-  if(inp) inp.value = '';
-  if(inp) inp.focus();
-}
-function saveKey(){
-  const v = (document.getElementById('keyInput').value || '').trim();
-  if(!v) return;
-  API_KEY = v;
-  try { localStorage.setItem(KEY_STORE, v); } catch(e){}
-  document.getElementById('keyBar').style.display = 'none';
-  loadAccounts();
-  refresh();
 }
 
 async function getJSON(url){
   const r = await fetch(url, {cache:'no-store', headers: authHeaders()});
-  if(r.status === 401 || r.status === 403){ needKey('密钥不对，请重试'); throw new Error('unauthorized'); }
+  if(r.status === 401 || r.status === 403){ panelNeedsLogin(); throw new Error('unauthorized'); }
   if(!r.ok) throw new Error(r.status);
   return r.json();
 }
@@ -951,7 +1003,7 @@ async function postJSON(url, body){
   const t = await r.text();
   let parsed = {};
   try { parsed = t ? JSON.parse(t) : {}; } catch(e) { parsed = {raw: t}; }
-  if(r.status === 401 || r.status === 403){ needKey('密钥不对，请重试'); throw new Error('unauthorized'); }
+  if(r.status === 401 || r.status === 403){ panelNeedsLogin(); throw new Error('unauthorized'); }
   if(!r.ok) throw new Error((parsed.error && parsed.error.message) || r.status);
   return parsed;
 }
@@ -1401,23 +1453,186 @@ async function refresh(){
 }
 
 (async function initDashboard(){
+  await bootPanel();
+})();
+
+let currentMainTab = 'gateway';
+let analyticsRange = 'today';
+let cachedAnalyticsData = null;
+
+
+/* ---- panel password gate ---- */
+function panelNeedsLogin(){
+  const gate = document.getElementById('panelGate');
+  if(gate) gate.style.display = 'flex';
+  const input = document.getElementById('panelPwdInput');
+  if(input){ input.focus(); }
+}
+
+function panelHideGate(){
+  const gate = document.getElementById('panelGate');
+  if(gate) gate.style.display = 'none';
+}
+
+async function submitPanelLogin(){
+  const input = document.getElementById('panelPwdInput');
+  const msg = document.getElementById('panelLoginMsg');
+  const password = (input && input.value) || '';
+  if(!password){ if(msg) msg.textContent = '请输入面板密码'; return; }
+  if(msg) msg.textContent = '';
+  try {
+    const r = await fetch('/panel/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: password})
+    });
+    const data = await r.json().catch(() => ({}));
+    if(!r.ok){
+      if(msg) msg.textContent = (data.error && data.error.message) || '密码错误';
+      return;
+    }
+    PANEL_TOKEN = data.token || '';
+    try { sessionStorage.setItem(PANEL_STORE, PANEL_TOKEN); } catch(e) {}
+    if(input) input.value = '';
+    panelHideGate();
+    toast('已进入面板', 'ok');
+    if(data.using_default_password){
+      toast('当前是默认密码 admin，建议到「设置」里修改', 'warn');
+    }
+    await startDashboard();
+  } catch(e) {
+    if(msg) msg.textContent = '登录失败: ' + e.message;
+  }
+}
+
+async function panelLogout(){
+  try { await postJSON('/panel/logout', {}); } catch(e) {}
+  PANEL_READY = false;
+  PANEL_TIMERS.forEach(t => clearInterval(t));
+  PANEL_TIMERS = [];
+  PANEL_TOKEN = '';
+  try { sessionStorage.removeItem(PANEL_STORE); } catch(e) {}
+  location.reload();
+}
+
+async function bootPanel(){
+  try {
+    const r = await fetch('/panel/status', {cache: 'no-store'});
+    PANEL_STATUS = await r.json().catch(() => ({}));
+  } catch(e) { PANEL_STATUS = {}; }
+  const hint = document.getElementById('panelDefaultHint');
+  if(hint && PANEL_STATUS.panel_password_is_default) hint.style.display = 'block';
+  if(PANEL_STATUS.authenticated){
+    panelHideGate();
+    await startDashboard();
+  } else {
+    panelNeedsLogin();
+  }
+}
+
+let PANEL_READY = false;
+let PANEL_TIMERS = [];
+
+async function startDashboard(){
+  if(PANEL_READY) return;
+  PANEL_READY = true;
   await initRealm();
   await loadAccounts();
   await loadModels();
   await loadGrowthTasks();
   await loadSchedulerStatus();
   await refresh();
-})();
-setInterval(() => {
-  if(currentMainTab === 'analytics') loadAnalytics();
-}, 5000);
-setInterval(refresh, 5000);
-setInterval(loadSchedulerStatus, 30000);
-setInterval(loadAccounts, 15000);
+  await loadSettings();
+  // Polling only starts after the panel is unlocked, so a locked browser
+  // never hammers the server with 401s.
+  PANEL_TIMERS.forEach(t => clearInterval(t));
+  PANEL_TIMERS = [
+    setInterval(() => {
+      if(!PANEL_READY) return;
+      if(currentMainTab === 'analytics') loadAnalytics();
+    }, 5000),
+    setInterval(refresh, 5000),
+    setInterval(loadSchedulerStatus, 30000),
+    setInterval(loadAccounts, 15000),
+  ];
+}
 
-let currentMainTab = 'gateway';
-let analyticsRange = 'today';
-let cachedAnalyticsData = null;
+async function loadSettings(showToast){
+  try {
+    const data = await getJSON('/settings');
+    const pwdState = document.getElementById('setPwdState');
+    if(pwdState){
+      pwdState.textContent = data.panel_password_is_default ? '(当前为默认密码)' : '(已自定义)';
+      pwdState.style.color = data.panel_password_is_default ? 'var(--warn)' : 'var(--accent2)';
+    }
+    const keyState = document.getElementById('setKeyState');
+    if(keyState){
+      keyState.textContent = data.api_key_set ? '(已启用)' : '(当前不校验)';
+      keyState.style.color = data.api_key_set ? 'var(--accent2)' : 'var(--dim)';
+    }
+    const keyHint = document.getElementById('setKeyHint');
+    if(keyHint){
+      keyHint.textContent = data.api_key_set
+        ? ('当前: ' + (data.api_key_masked || '') + (data.api_key_set_by_panel ? ' · 由面板管理' : ' · 来自启动参数'))
+        : '当前未设置 API Key，/v1 接口不校验密钥。';
+    }
+    const set = (id, value) => { const el = document.getElementById(id); if(el) el.textContent = value || '-'; };
+    set('setVersion', data.version);
+    set('setAccountsDir', data.accounts_dir);
+    set('setUsageDir', data.usage_dir);
+    set('setFile', data.settings_file);
+    set('setSettingsFile', data.settings_file);
+    if(showToast) toast('设置已刷新', 'ok');
+  } catch(e) {
+    if(showToast) toast('读取设置失败: ' + e.message, 'bad');
+  }
+}
+
+async function savePanelPassword(btn){
+  const cur = (document.getElementById('setPwdCurrent') || {}).value || '';
+  const nw = (document.getElementById('setPwdNew') || {}).value || '';
+  if(!cur || !nw){ toast('请填写当前密码和新密码', 'warn'); return; }
+  btn.disabled = true;
+  try {
+    const data = await postJSON('/panel/password', {current: cur, new: nw});
+    if(data.token){
+      PANEL_TOKEN = data.token;
+      try { sessionStorage.setItem(PANEL_STORE, PANEL_TOKEN); } catch(e) {}
+    }
+    document.getElementById('setPwdCurrent').value = '';
+    document.getElementById('setPwdNew').value = '';
+    toast('面板密码已更新', 'ok');
+    loadSettings();
+  } catch(e) {
+    toast('修改失败: ' + e.message, 'bad');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function saveApiKey(btn){
+  const input = document.getElementById('setKeyInput');
+  const value = (input && input.value || '').trim();
+  btn.disabled = true;
+  try {
+    await postJSON('/settings/save', {api_key: value});
+    if(input) input.value = '';
+    toast(value ? 'API Key 已更新，请同步修改客户端' : '已清空 API Key（不再校验）', 'ok');
+    loadSettings();
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'bad');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function generateApiKey(){
+  const bytes = new Uint8Array(18);
+  (window.crypto || {}).getRandomValues ? crypto.getRandomValues(bytes) : null;
+  const key = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+  const input = document.getElementById('setKeyInput');
+  if(input) input.value = key || 'qwer.1234';
+}
 
 function switchMainTab(tab){
   currentMainTab = tab;
@@ -1425,19 +1640,17 @@ function switchMainTab(tab){
   const btnAnalytics = document.getElementById('btnNavAnalytics');
   const pageGateway = document.getElementById('pageGateway');
   const pageAnalytics = document.getElementById('pageAnalytics');
-
-  if(tab === 'analytics'){
-    if(btnGateway) btnGateway.classList.remove('active');
-    if(btnAnalytics) btnAnalytics.classList.add('active');
-    if(pageGateway) pageGateway.style.display = 'none';
-    if(pageAnalytics) pageAnalytics.style.display = 'block';
-    loadAnalytics();
-  } else {
-    if(btnGateway) btnGateway.classList.add('active');
-    if(btnAnalytics) btnAnalytics.classList.remove('active');
-    if(pageGateway) pageGateway.style.display = 'block';
-    if(pageAnalytics) pageAnalytics.style.display = 'none';
-  }
+  const pageSettings = document.getElementById('pageSettings');
+  const tabs = [['gateway', btnGateway, pageGateway], ['analytics', btnAnalytics, pageAnalytics],
+                ['settings', document.getElementById('btnNavSettings'), pageSettings]];
+  tabs.forEach(([name, btn, page]) => {
+    if(!btn || !page) return;
+    const on = (name === tab);
+    btn.classList.toggle('active', on);
+    page.style.display = on ? 'block' : 'none';
+  });
+  if(tab === 'analytics') loadAnalytics();
+  if(tab === 'settings') loadSettings();
 }
 
 function setAnalyticsRange(range){
