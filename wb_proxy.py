@@ -22,6 +22,7 @@ import hashlib
 import re
 import json
 import os
+MAX_PAYLOAD_BYTES = int(os.environ.get("WB_MAX_PAYLOAD_BYTES", 50 * 1024 * 1024))  # 50MB limit
 import secrets
 import socket
 import sys
@@ -43,7 +44,7 @@ def detect_model_realm(model_id):
     m = str(model_id).lower()
     intl_only = {
         "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
-        "gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gemini-3.5-flash", "hy4-preview-f"
+        "gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gemini-3.5-flash"
     }
     if m in intl_only or any(m.startswith(p) for p in ("gpt-", "gemini-")):
         return "intl"
@@ -55,6 +56,7 @@ def detect_model_realm(model_id):
     }
     if m in cn_only or any(m.startswith(p) for p in ("minimax-", "deepseek-v4-pro")):
         return "cn"
+    return CURRENT_REALM
 
 
 # Models that exist on one side only. Everything else (deepseek-v4.1-flash,
@@ -64,7 +66,7 @@ INTL_EXCLUSIVE_PREFIXES = ("gpt-", "gemini-")
 CN_EXCLUSIVE_PREFIXES = ("minimax-", "deepseek-v4-pro")
 INTL_EXCLUSIVE = {
     "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
-    "gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gemini-3.5-flash", "hy4-preview-f",
+    "gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gemini-3.5-flash",
 }
 CN_EXCLUSIVE = {
     "deepseek-v4-pro", "glm-5.3-flash", "glm-5.1", "glm-5v-turbo",
@@ -155,6 +157,8 @@ INTL_ISSUER_MARKER = "workbuddy.ai"
 NOISE_KEYS = ("extra_fields", "refusal", "reasoning_content")
 
 _lock = threading.Lock()
+_login_lock = threading.Lock()
+_login_attempts = {}  # ip -> list of timestamp
 _models_cache = {"intl": {"at": 0.0, "data": None}, "cn": {"at": 0.0, "data": None}}
 
 # Usage accounting: every upstream response carries a usage block, and the
@@ -302,8 +306,10 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
         os.makedirs(USAGE_DIR, exist_ok=True)
         with open(USAGE_LOG, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-        with open(USAGE_SUMMARY, "w", encoding="utf-8") as fh:
+        tmp_summary = USAGE_SUMMARY + ".tmp"
+        with open(tmp_summary, "w", encoding="utf-8") as fh:
             json.dump(summary, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp_summary, USAGE_SUMMARY)
     except Exception as exc:
         log(f"usage persist failed: {exc}")
     return row
@@ -330,8 +336,10 @@ def record_error(model, status, message, elapsed_ms=None):
         os.makedirs(USAGE_DIR, exist_ok=True)
         with open(USAGE_LOG, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-        with open(USAGE_SUMMARY, "w", encoding="utf-8") as fh:
+        tmp_summary = USAGE_SUMMARY + ".tmp"
+        with open(tmp_summary, "w", encoding="utf-8") as fh:
             json.dump(summary, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp_summary, USAGE_SUMMARY)
     except Exception as exc:
         log(f"error persist failed: {exc}")
     return row
@@ -893,7 +901,7 @@ def compute_usage_analytics():
         c = stat_obj["cached_tokens"]
         out = stat_obj["completion_tokens"]
         reas = stat_obj["reasoning_tokens"]
-        stat_obj["cache_hit_pct"] = round((c / (p + c) * 100), 1) if (p + c) > 0 else 0.0
+        stat_obj["cache_hit_pct"] = round((c / p * 100), 1) if p > 0 else 0.0
         stat_obj["reasoning_ratio"] = round((reas / out * 100), 1) if out > 0 else 0.0
         stat_obj["ttft_ms_avg"] = round(stat_obj["ttft_sum"] / stat_obj["ttft_n"]) if stat_obj["ttft_n"] > 0 else 0
         stat_obj["speed_avg"] = round(stat_obj["speed_sum"] / stat_obj["speed_n"], 1) if stat_obj["speed_n"] > 0 else 0.0
@@ -948,7 +956,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "1.1.5",
+        "version": "1.1.6",
     }
 
 
@@ -1239,17 +1247,19 @@ def read_product_config_models(realm=None):
 
 
 def fetch_endpoint_models():
-    account = POOL.pick() if POOL else None
+    account = POOL.pick(realm="intl") if POOL else None
     if account is None:
         log("model discovery skipped: no usable account")
-        return [m for m, _ in (_models_cache["data"] or [])]
+        cached = _models_cache.get("intl", {}).get("data")
+        return [m for m, _ in (cached or [])]
     req = urllib.request.Request(UPSTREAM + MODELS_PATH, method="GET", headers=account.headers())
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
         log(f"model discovery failed: {exc}")
-        return [m for m, _ in (_models_cache["data"] or [])]
+        cached = _models_cache.get("intl", {}).get("data")
+        return [m for m, _ in (cached or [])]
 
     ids, seen = [], set()
     for agent in (payload.get("data") or {}).get("agents") or []:
@@ -1587,6 +1597,7 @@ def extract_session_key(headers, payload):
 def aggregate_stream(raw_iter, model, resp_id):
     """Fold an SSE stream into one non-streaming chat.completion object."""
     content, reasoning, finish = [], [], "stop"
+    tool_calls_map = {}
     usage = None
     started = time.time()
     first_chunk_at = None
@@ -1612,11 +1623,61 @@ def aggregate_stream(raw_iter, model, resp_id):
                 content.append(delta["content"])
             if delta.get("reasoning_content"):
                 reasoning.append(delta["reasoning_content"])
+            for tc in delta.get("tool_calls") or []:
+                idx = tc.get("index")
+                if idx is None:
+                    idx = len(tool_calls_map)
+                fn = tc.get("function") or {}
+                call_id = tc.get("id")
+                fn_name = fn.get("name") or ""
+                fn_args = fn.get("arguments") or ""
+                if idx not in tool_calls_map:
+                    tool_calls_map[idx] = {
+                        "id": call_id or _new_id("call_"),
+                        "type": tc.get("type") or "function",
+                        "function": {
+                            "name": fn_name,
+                            "arguments": fn_args,
+                        }
+                    }
+                else:
+                    entry = tool_calls_map[idx]
+                    if call_id:
+                        entry["id"] = call_id
+                    if fn_name:
+                        entry["function"]["name"] = (entry["function"]["name"] or "") + fn_name
+                    if fn_args:
+                        entry["function"]["arguments"] = (entry["function"]["arguments"] or "") + fn_args
+            fc = delta.get("function_call")
+            if fc and isinstance(fc, dict):
+                idx = 0
+                if idx not in tool_calls_map:
+                    tool_calls_map[idx] = {
+                        "id": _new_id("call_"),
+                        "type": "function",
+                        "function": {
+                            "name": fc.get("name") or "",
+                            "arguments": fc.get("arguments") or "",
+                        }
+                    }
+                else:
+                    entry = tool_calls_map[idx]
+                    if fc.get("name") and not entry["function"]["name"]:
+                        entry["function"]["name"] = fc["name"]
+                    if fc.get("arguments"):
+                        entry["function"]["arguments"] += fc["arguments"]
             if choice.get("finish_reason"):
                 finish = choice["finish_reason"]
+
     message = {"role": "assistant", "content": "".join(content)}
     if reasoning:
         message["reasoning_content"] = "".join(reasoning)
+    if tool_calls_map:
+        ordered_tcs = [tool_calls_map[k] for k in sorted(tool_calls_map.keys())]
+        message["tool_calls"] = ordered_tcs
+        if finish in ("stop", None):
+            finish = "tool_calls"
+
     out = {
         "id": resp_id or "chatcmpl-wb",
         "object": "chat.completion",
@@ -1903,6 +1964,8 @@ def stream_responses_events(upstream, model, holder):
     finish = "stop"
     usage = None
     tool_calls_map = {}
+    text_buffer = ""
+    dsml_tool_calls = []
 
     def resp_obj(status):
         obj = {
@@ -2045,11 +2108,66 @@ def stream_responses_events(upstream, model, holder):
                         "item_id": msg_id, "output_index": msg_index, "content_index": 0,
                         "part": {"type": "output_text", "text": "", "annotations": []},
                     })
-                text_parts.append(piece)
-                yield ev("response.output_text.delta", {
-                    "item_id": msg_id, "output_index": msg_index,
-                    "content_index": 0, "delta": piece,
-                })
+                
+                # DSML tool call buffering: do not stream raw DSML tags to client
+                text_buffer += piece
+                while text_buffer:
+                    idx = text_buffer.find("<")
+                    if idx == -1:
+                        text_parts.append(text_buffer)
+                        yield ev("response.output_text.delta", {
+                            "item_id": msg_id, "output_index": msg_index,
+                            "content_index": 0, "delta": text_buffer,
+                        })
+                        text_buffer = ""
+                        break
+                    
+                    m = DSML_CALLS_RE.search(text_buffer)
+                    if m and m.start() == idx:
+                        if idx > 0:
+                            lead = text_buffer[:idx]
+                            text_parts.append(lead)
+                            yield ev("response.output_text.delta", {
+                                "item_id": msg_id, "output_index": msg_index,
+                                "content_index": 0, "delta": lead,
+                            })
+                        calls_found, _ = parse_dsml_tool_calls(m.group(0))
+                        if calls_found:
+                            dsml_tool_calls.extend(calls_found)
+                        text_buffer = text_buffer[m.end():]
+                        continue
+                    
+                    cand = text_buffer[idx:idx+30]
+                    is_cand = ("DSML" in cand) or (len(cand) < 10 and not any(c in cand for c in (" ", "\t", "\n", ">")))
+                    if is_cand:
+                        lead = text_buffer[:idx]
+                        text_parts.append(lead)
+                        yield ev("response.output_text.delta", {
+                            "item_id": msg_id, "output_index": msg_index,
+                            "content_index": 0, "delta": lead,
+                        })
+                        text_buffer = text_buffer[idx:]
+                        break
+                    else:
+                        next_lt = text_buffer[idx+1:].find("<")
+                        if next_lt != -1:
+                            flush_len = idx + 1 + next_lt
+                            lead = text_buffer[:flush_len]
+                            text_parts.append(lead)
+                            yield ev("response.output_text.delta", {
+                                "item_id": msg_id, "output_index": msg_index,
+                                "content_index": 0, "delta": lead,
+                            })
+                            text_buffer = text_buffer[flush_len:]
+                        else:
+                            text_parts.append(text_buffer)
+                            yield ev("response.output_text.delta", {
+                                "item_id": msg_id, "output_index": msg_index,
+                                "content_index": 0, "delta": text_buffer,
+                            })
+                            text_buffer = ""
+                            break
+
             if choice.get("finish_reason"):
                 finish = choice["finish_reason"]
 
@@ -2088,9 +2206,28 @@ def stream_responses_events(upstream, model, holder):
             "item": fc_item,
         })
 
-    # 2. DSML fallback: parse DeepSeek raw markup if no structured tool_calls were emitted
+    # Flush remaining buffered text if any
+    if text_buffer:
+        calls_rem, clean_rem = parse_dsml_tool_calls(text_buffer)
+        if calls_rem:
+            dsml_tool_calls.extend(calls_rem)
+        if clean_rem:
+            text_parts.append(clean_rem)
+            if msg_index is not None:
+                yield ev("response.output_text.delta", {
+                    "item_id": msg_id, "output_index": msg_index,
+                    "content_index": 0, "delta": clean_rem,
+                })
+        text_buffer = ""
+
+    # 2. DSML fallback: emit buffered/parsed DSML tool calls if no structured tool_calls were emitted
     full_text = "".join(text_parts)
-    dsml_calls, clean_text = parse_dsml_tool_calls(full_text)
+    dsml_calls = dsml_tool_calls
+    if not dsml_calls:
+        extra_calls, clean_text = parse_dsml_tool_calls(full_text)
+        if extra_calls:
+            dsml_calls = extra_calls
+            full_text = clean_text
     if dsml_calls and not tool_calls_map:
         for dc in dsml_calls:
             out_idx = len(outputs)
@@ -2121,7 +2258,6 @@ def stream_responses_events(upstream, model, holder):
                 "output_index": out_idx,
                 "item": fc_item,
             })
-        full_text = clean_text
 
     # 3. Emit message item only if text was emitted OR no other output item exists
     has_other_items = any(o for o in outputs if o)
@@ -2175,7 +2311,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/1.1.5"
+    server_version = "wb-proxy/1.1.6"
 
     def log_message(self, fmt, *args):
         log(fmt % args)
@@ -2457,11 +2593,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _read_payload(self):
+    def _read_payload(self, max_bytes=MAX_PAYLOAD_BYTES):
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except Exception:
             return {}
+        if length > max_bytes:
+            self._error(413, f"payload too large ({length} bytes > {max_bytes} limit)", "invalid_request_error")
+            return None
         try:
             raw = self.rfile.read(length).decode("utf-8") if length else "{}"
             data = json.loads(raw or "{}")
@@ -2472,6 +2611,8 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_settings_save(self):
         """Persist panel-managed settings from the web settings tab."""
         payload = self._read_payload()
+        if payload is None:
+            return
         reply = {}
 
         if "api_keys" in payload:
@@ -2540,11 +2681,29 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_panel(self, path):
         """Panel login, logout and the settings screen (password + API key)."""
         payload = self._read_payload()
+        if payload is None:
+            return
 
         if path == "/panel/login":
+            client_ip = self.client_address[0] if hasattr(self, "client_address") and self.client_address else "127.0.0.1"
+            now = time.time()
+            with _login_lock:
+                attempts = [t for t in _login_attempts.get(client_ip, []) if now - t < 60]
+                _login_attempts[client_ip] = attempts
+                if len(attempts) >= 5:
+                    wait_sec = int(60 - (now - attempts[0]))
+                    return self._error(429, f"too many login attempts, please wait {max(1, wait_sec)}s", "rate_limit_error")
+
             password = str(payload.get("password") or "")
             if not wb_settings.verify_panel_password(ACCOUNTS_DIR, password):
+                with _login_lock:
+                    _login_attempts.setdefault(client_ip, []).append(now)
+                # Small backoff delay to mitigate automated brute force
+                time.sleep(0.5)
                 return self._error(401, "invalid panel password", "invalid_request_error")
+
+            with _login_lock:
+                _login_attempts.pop(client_ip, None)
             token = PANEL.create()
             return self._json(200, {
                 "ok": True,
@@ -2818,9 +2977,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
 
-        length = int(self.headers.get("Content-Length") or 0)
         try:
-            payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            length = int(self.headers.get("Content-Length") or 0)
+        except Exception:
+            length = 0
+        if length > MAX_PAYLOAD_BYTES:
+            return self._error(413, f"payload too large ({length} bytes > {MAX_PAYLOAD_BYTES} limit)", "invalid_request_error")
+        try:
+            raw = self.rfile.read(length).decode("utf-8") if length else "{}"
+            payload = json.loads(raw or "{}")
         except Exception:
             return self._error(400, "invalid JSON body", "invalid_request_error")
 

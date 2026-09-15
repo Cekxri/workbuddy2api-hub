@@ -245,6 +245,8 @@ class Account(object):
             "Authorization": "Bearer " + self.access_token,
             "X-User-Id": self.uid,
             "X-Domain": self.domain or cfg["domain"],
+            "X-CodeBuddy-Request": "1",
+            "Accept-Language": "en-US" if self.realm == "intl" else "zh-CN",
         }
         headers["X-Request-ID"] = generate_request_id(self.uid)
         headers["X-Machine-ID"] = derive_id(self.uid, "machine")
@@ -254,8 +256,16 @@ class Account(object):
             headers["X-Tenant-Id"] = self.enterprise_id
         else:
             headers["X-No-Enterprise-Id"] = "1"
-        if self.realm == "cn":
-            headers["X-Product"] = "SaaS"
+        if purpose == "chat":
+            client_ver = "5.5.2" if self.realm == "intl" else "5.5.6"
+            headers["X-Agent-Purpose"] = "conversation"
+            headers["X-IDE-Name"] = "WorkBuddy"
+            headers["X-IDE-Type"] = "WorkBuddy"
+            headers["X-IDE-Version"] = client_ver
+            headers["X-Product"] = "WorkBuddy"
+        else:
+            if self.realm == "cn":
+                headers["X-Product"] = "SaaS"
         return headers
 
     def refresh(self):
@@ -275,6 +285,8 @@ class Account(object):
             "X-Auth-Refresh-Source": "workbuddy" if self.realm == "cn" else "plugin",
             "X-User-Id": self.uid,
             "X-Domain": self.domain or cfg["domain"],
+            "X-CodeBuddy-Request": "1",
+            "Accept-Language": "en-US" if self.realm == "intl" else "zh-CN",
         }
         if self.enterprise_id:
             headers["X-Enterprise-Id"] = self.enterprise_id
@@ -297,6 +309,14 @@ class Account(object):
         if self.path and os.path.exists(os.path.dirname(self.path)):
             self.save(os.path.dirname(self.path))
         return True
+
+    def can_checkin(self):
+        if self.realm != "cn":
+            return False
+        if not self.last_checkin:
+            return True
+        today_str = time.strftime("%Y-%m-%d")
+        return not str(self.last_checkin).startswith(today_str)
 
     def checkin(self):
         if self.realm != "cn":
