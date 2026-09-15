@@ -42,6 +42,27 @@
 
 ---
 
+### 3. Docker 容器化部署 (推荐 Linux / NAS / 服务器)
+自带完整容器配置，零外部依赖，极速启动：
+
+```bash
+# 1. 后台启动容器 (自动构建并运行)
+docker compose up -d
+
+# 2. 查看网关日志
+docker compose logs -f
+```
+
+亦可直接使用 `docker run` 启动：
+```bash
+docker run -d   --name wb-proxy   --restart unless-stopped   -p 8788:8788   -v $(pwd)/accounts:/app/accounts   -v $(pwd)/usage:/app/usage   -e API_KEY=qwer.1234   $(docker build -q .)
+```
+
+- **持久化目录**：`./accounts` (账号凭证及活动区域) 与 `./usage` (请求流水与指标快照)；
+- **配置参数**：通过环境变量 `API_KEY`、`PORT` 自定义。
+
+---
+
 ## 二、核心特性详解
 
 ### 1. 模型列表严格按照桌面应用 1:1 对齐

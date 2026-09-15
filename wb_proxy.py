@@ -2586,12 +2586,12 @@ def main():
 
     ap = argparse.ArgumentParser(description="WorkBuddy (workbuddy.ai) -> OpenAI-compatible proxy")
     ap.add_argument("--info", help="path to the WorkBuddy *.info credential file")
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8788)
+    ap.add_argument("--host", default=os.environ.get("HOST") or "127.0.0.1")
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT") or "8788"))
     ap.add_argument("--lan", action="store_true",
                     help="listen on every interface so other devices on the LAN can "
                          "reach it (implies --host 0.0.0.0 and forces an api key)")
-    ap.add_argument("--api-key", default=os.environ.get("WB_PROXY_KEY") or None,
+    ap.add_argument("--api-key", default=os.environ.get("API_KEY") or os.environ.get("WB_PROXY_KEY") or None,
                     help="require this bearer token on /v1/* (optional)")
     ap.add_argument("--system-prompt", default=DEFAULT_SYSTEM_PROMPT,
                     help="system message injected when the request has none (required upstream)")
@@ -2600,7 +2600,7 @@ def main():
                          "WorkBuddy AI client)")
     ap.add_argument("--usage-dir", default=None,
                     help="where to store usage.jsonl / usage-summary.json (default: ./usage)")
-    ap.add_argument("--accounts-dir", default=None,
+    ap.add_argument("--accounts-dir", default=os.environ.get("ACCOUNTS_DIR") or None,
                     help="where the per-account credential files live (default: ./accounts)")
     ap.add_argument("--import-desktop", action="store_true",
                     help="import the desktop app credential as an account, then exit")
