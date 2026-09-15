@@ -119,6 +119,124 @@ def set_api_key(accounts_dir, key):
         save(accounts_dir, data)
 
 
+# --------------------------------------------------------------- API keys
+# Each key can be bound to one upstream realm, so several clients can hit
+# different exits at the same time instead of sharing the global switch.
+
+REALMS = ("", "intl", "cn")
+
+
+def _clean_key_entry(entry):
+    """Normalize one stored key entry; returns None when unusable."""
+    if not isinstance(entry, dict):
+        return None
+    key = str(entry.get("key") or "").strip()
+    if not key:
+        return None
+    realm = str(entry.get("realm") or "").strip().lower()
+    if realm not in REALMS:
+        realm = ""
+    return {
+        "id": str(entry.get("id") or secrets.token_hex(6)),
+        "name": str(entry.get("name") or "").strip() or "未命名",
+        "key": key,
+        "realm": realm,
+        "enabled": entry.get("enabled", True) is not False,
+    }
+
+
+def api_keys(accounts_dir):
+    """Every configured key, newest shape first.
+
+    A settings file written by an older build only has the single
+    `api_key`/`api_key_set` pair; that is surfaced as one unbound entry so
+    upgrades keep working without a migration step.
+    """
+    data = load(accounts_dir)
+    stored = data.get("api_keys")
+    if isinstance(stored, list):
+        out = []
+        seen = set()
+        for raw in stored:
+            entry = _clean_key_entry(raw)
+            if entry and entry["key"] not in seen:
+                seen.add(entry["key"])
+                out.append(entry)
+        return out
+
+    if data.get("api_key_set"):
+        legacy = str(data.get("api_key") or "").strip()
+        if legacy:
+            return [{
+                "id": "legacy",
+                "name": "默认（跟随面板切换）",
+                "key": legacy,
+                "realm": "",
+                "enabled": True,
+            }]
+    return []
+
+
+def set_api_keys(accounts_dir, keys):
+    """Replace the whole key list. Returns the stored list."""
+    with _lock:
+        cleaned = []
+        seen = set()
+        for raw in keys or []:
+            entry = _clean_key_entry(raw)
+            if entry and entry["key"] not in seen:
+                seen.add(entry["key"])
+                cleaned.append(entry)
+        data = load(accounts_dir)
+        data["api_keys"] = cleaned
+        # The single-key fields are now derived; drop them so there is one
+        # source of truth and the list survives a restart.
+        data.pop("api_key", None)
+        data.pop("api_key_set", None)
+        save(accounts_dir, data)
+        return cleaned
+
+
+def match_api_key(accounts_dir, supplied, extra_keys=()):
+    """Find which configured key a request presented, if any.
+
+    Returns a copy of the entry (with a `source` field) so the caller can read
+    the bound realm, or None when nothing matches.
+    """
+    supplied = (supplied or "").strip()
+    if not supplied:
+        return None
+    for entry in api_keys(accounts_dir):
+        if entry["enabled"] and hmac.compare_digest(supplied, entry["key"]):
+            out = dict(entry)
+            out["source"] = "panel"
+            return out
+    for candidate in extra_keys:
+        candidate = (candidate or "").strip()
+        if candidate and hmac.compare_digest(supplied, candidate):
+            return {
+                "id": "launcher",
+                "name": "启动参数",
+                "key": candidate,
+                "realm": "",
+                "enabled": True,
+                "source": "launcher",
+            }
+    return None
+
+
+def auth_disabled(accounts_dir):
+    """True when the operator switched API-key checking off entirely."""
+    return load(accounts_dir).get("auth_disabled") is True
+
+
+def set_auth_disabled(accounts_dir, disabled):
+    with _lock:
+        data = load(accounts_dir)
+        data["auth_disabled"] = bool(disabled)
+        save(accounts_dir, data)
+
+
 class PanelSessions(object):
     """In-memory bearer tokens handed out after a successful panel login.
 

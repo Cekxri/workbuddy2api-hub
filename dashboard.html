@@ -422,16 +422,15 @@ a:hover{text-decoration:underline}
     </section>
 
     <section>
-      <h2>API Key <em id="setKeyState"></em></h2>
-      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">客户端调用 /v1 接口时使用的密钥。留空保存表示本机不再校验 API Key。</div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
-        <div style="flex:1;min-width:220px">
-          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">新的 API Key</div>
-          <input id="setKeyInput" type="text" placeholder="例如 qwer.1234"
-                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
-        </div>
-        <button onclick="saveApiKey(this)">保存 API Key</button>
-        <button class="sec" onclick="generateApiKey()">随机生成</button>
+      <h2>API Key 与出口绑定 <em id="setKeyState"></em></h2>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:14px">
+        可以配置多个 Key，并给每个 Key 指定一个上游出口。绑定后，用该 Key 发起的请求会固定走对应出口，
+        两个出口可同时对外服务，无需再切换全局网关。
+      </div>
+      <div id="keyList"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+        <button class="sec" onclick="addApiKeyRow()">+ 添加一个 Key</button>
+        <button onclick="saveApiKeys(this)">保存全部</button>
       </div>
       <div style="font-size:11px;color:var(--dim);margin-top:10px" id="setKeyHint"></div>
     </section>
@@ -975,18 +974,27 @@ let PANEL_STATUS = {};
   try {
     const fromUrl = new URLSearchParams(window.location.search).get('key');
     if(fromUrl){
-      API_KEY = fromUrl;
-      localStorage.setItem(KEY_STORE, fromUrl);
+      API_KEY = fromUrl.trim();
+      localStorage.setItem(KEY_STORE, API_KEY);
       history.replaceState(null, '', window.location.pathname);
     } else {
-      API_KEY = localStorage.getItem(KEY_STORE) || '';
+      API_KEY = (localStorage.getItem(KEY_STORE) || '').trim();
     }
   } catch(e){ API_KEY = ''; }
 })();
 
+// A key with non-ASCII characters cannot go into an HTTP header at all: fetch
+// throws "String contains non ISO-8859-1 code point" before the request is
+// sent. Such a value is never a real gateway key, so drop it and let the panel
+// session carry the request.
+function usableKey(value){
+  return value && /^[\x20-\x7e]+$/.test(value) ? value : '';
+}
+
 function authHeaders(base){
   const h = Object.assign({}, base || {});
-  if(API_KEY) h['Authorization'] = 'Bearer ' + API_KEY;
+  const key = usableKey(API_KEY);
+  if(key) h['Authorization'] = 'Bearer ' + key;
   if(PANEL_TOKEN) h['X-Panel-Token'] = PANEL_TOKEN;
   return h;
 }
@@ -1567,15 +1575,39 @@ async function loadSettings(showToast){
     }
     const keyState = document.getElementById('setKeyState');
     if(keyState){
-      keyState.textContent = data.api_key_set ? '(已启用)' : '(当前不校验)';
-      keyState.style.color = data.api_key_set ? 'var(--accent2)' : 'var(--dim)';
+      const count = (data.api_keys || []).filter(k => k.enabled).length;
+      keyState.textContent = count ? ('(' + count + ' 个生效)') : '(当前不校验)';
+      keyState.style.color = count ? 'var(--accent2)' : 'var(--dim)';
     }
     const keyHint = document.getElementById('setKeyHint');
     if(keyHint){
-      keyHint.textContent = data.api_key_set
-        ? ('当前: ' + (data.api_key_masked || '') + (data.api_key_set_by_panel ? ' · 由面板管理' : ' · 来自启动参数'))
-        : '当前未设置 API Key，/v1 接口不校验密钥。';
+      const bound = (data.api_keys || []).filter(k => k.enabled && k.realm);
+      if(!(data.api_keys || []).length){
+        keyHint.textContent = data.api_key_set
+          ? ('当前仅使用启动参数中的 Key: ' + (data.api_key_masked || '') + '（保存后将改由面板管理）')
+          : '当前未设置 API Key，/v1 接口不校验密钥。';
+      } else if(!bound.length){
+        keyHint.textContent = '目前没有 Key 绑定出口，所有请求跟随「网关与运维」页的全局切换。';
+      } else {
+        keyHint.textContent = bound.map(k =>
+          (k.name || '未命名') + ' → ' + (k.realm === 'cn' ? '国内版' : '国际版')
+        ).join(' · ');
+      }
     }
+    // Rebuild the editable rows, keeping stored values so an untouched field
+    // is not accidentally blanked.
+    API_KEY_ROWS = (data.api_keys || []).map(k => ({
+      id: k.id || '',
+      name: k.name || '',
+      key: '',
+      // The server keeps the stored value when a row comes back blank, so
+      // leaving the field untouched will not wipe an existing key.
+      stored_key: '',
+      masked: k.masked || '',
+      realm: k.realm || '',
+      enabled: k.enabled !== false,
+    }));
+    renderKeyRows();
     const set = (id, value) => { const el = document.getElementById(id); if(el) el.textContent = value || '-'; };
     set('setVersion', data.version);
     set('setAccountsDir', data.accounts_dir);
@@ -1610,28 +1642,102 @@ async function savePanelPassword(btn){
   }
 }
 
-async function saveApiKey(btn){
-  const input = document.getElementById('setKeyInput');
-  const value = (input && input.value || '').trim();
+/* ---- API key list: several keys, each bound to an upstream exit ---- */
+let API_KEY_ROWS = [];
+
+function randomKeyValue(){
+  const bytes = new Uint8Array(18);
+  if(window.crypto && crypto.getRandomValues) crypto.getRandomValues(bytes);
+  const raw = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+  return raw || 'qwer.1234';
+}
+
+const REALM_CHOICES = [
+  ['', '跟随面板切换'],
+  ['intl', '固定国际版出口'],
+  ['cn', '固定国内版出口'],
+];
+
+function renderKeyRows(){
+  const box = document.getElementById('keyList');
+  if(!box) return;
+  if(!API_KEY_ROWS.length){
+    box.innerHTML = '<div class="empty" style="padding:14px 0">还没有配置 Key，点击下方按钮添加。</div>';
+    return;
+  }
+  box.innerHTML = API_KEY_ROWS.map((row, i) => {
+    const options = REALM_CHOICES.map(([value, label]) =>
+      '<option value="' + value + '"' + (row.realm === value ? ' selected' : '') + '>' + label + '</option>'
+    ).join('');
+    const maskedHint = row.masked
+      ? '<span style="color:var(--dim);font-size:11px">已保存: ' + esc(row.masked) + '</span>'
+      : '';
+    return '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;'
+      + 'background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px">'
+      + '<input type="text" value="' + esc(row.name || '') + '" placeholder="备注名" '
+      +   'oninput="updateKeyRow(' + i + ',\'name\', this.value)" '
+      +   'style="width:130px;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:6px 9px;color:var(--fg);font:inherit">'
+      + '<input type="text" value="' + esc(row.key || '') + '" placeholder="API Key（留空表示不改）" '
+      +   'oninput="updateKeyRow(' + i + ',\'key\', this.value)" '
+      +   'style="flex:1;min-width:190px;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:6px 9px;color:var(--fg);font:inherit">'
+      + '<select onchange="updateKeyRow(' + i + ',\'realm\', this.value)" '
+      +   'style="background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:6px 9px;color:var(--fg);font:inherit">'
+      + options + '</select>'
+      + '<label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--dim)">'
+      +   '<input type="checkbox"' + (row.enabled ? ' checked' : '') + ' onchange="updateKeyRow(' + i + ',\'enabled\', this.checked)">启用</label>'
+      + '<button class="sec mini" onclick="generateKeyRow(' + i + ')">随机生成</button>'
+      + '<button class="danger mini" onclick="removeKeyRow(' + i + ')">删除</button>'
+      + maskedHint
+      + '</div>';
+  }).join('');
+}
+
+function updateKeyRow(index, field, value){
+  if(!API_KEY_ROWS[index]) return;
+  API_KEY_ROWS[index][field] = value;
+  if(field === 'enabled' || field === 'realm') renderKeyRows();
+}
+
+function generateKeyRow(index){
+  if(!API_KEY_ROWS[index]) return;
+  API_KEY_ROWS[index].key = randomKeyValue();
+  renderKeyRows();
+}
+
+function addApiKeyRow(){
+  API_KEY_ROWS.push({id: '', name: '', key: '', realm: '', enabled: true, masked: ''});
+  renderKeyRows();
+}
+
+function removeKeyRow(index){
+  API_KEY_ROWS.splice(index, 1);
+  renderKeyRows();
+}
+
+async function saveApiKeys(btn){
+  const payload = API_KEY_ROWS.map(row => ({
+    id: row.id || '',
+    name: row.name || '',
+    realm: row.realm || '',
+    enabled: row.enabled !== false,
+    // Blank means "keep the stored key", which the server honours per row.
+    key: (row.key || '').trim(),
+  }));
+  const newRow = API_KEY_ROWS.find(row => !row.masked && !(row.key || '').trim());
+  if(newRow){
+    toast('新增的行还没有填写 Key', 'warn');
+    return;
+  }
   btn.disabled = true;
   try {
-    await postJSON('/settings/save', {api_key: value});
-    if(input) input.value = '';
-    toast(value ? 'API Key 已更新，请同步修改客户端' : '已清空 API Key（不再校验）', 'ok');
+    await postJSON('/settings/save', {api_keys: payload});
+    toast('已保存 ' + payload.length + ' 个 Key', 'ok');
     loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');
   } finally {
     btn.disabled = false;
   }
-}
-
-function generateApiKey(){
-  const bytes = new Uint8Array(18);
-  (window.crypto || {}).getRandomValues ? crypto.getRandomValues(bytes) : null;
-  const key = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-  const input = document.getElementById('setKeyInput');
-  if(input) input.value = key || 'qwer.1234';
 }
 
 function switchMainTab(tab){

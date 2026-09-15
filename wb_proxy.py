@@ -55,8 +55,34 @@ def detect_model_realm(model_id):
     }
     if m in cn_only or any(m.startswith(p) for p in ("minimax-", "deepseek-v4-pro")):
         return "cn"
-        return intl
-        return cn
+
+
+# Models that exist on one side only. Everything else (deepseek-v4.1-flash,
+# hy3, glm-5.3 ...) is served by both exits, so it must not be treated as a
+# conflict.
+INTL_EXCLUSIVE_PREFIXES = ("gpt-", "gemini-")
+CN_EXCLUSIVE_PREFIXES = ("minimax-", "deepseek-v4-pro")
+INTL_EXCLUSIVE = {
+    "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+    "gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gemini-3.5-flash", "hy4-preview-f",
+}
+CN_EXCLUSIVE = {
+    "deepseek-v4-pro", "glm-5.3-flash", "glm-5.1", "glm-5v-turbo",
+    "kimi-k3-1", "kimi-k2.8-preview", "kimi-k2.7", "minimax-m3",
+    "hy3-x", "hy4-preview-dev", "hy4-preview-x",
+}
+
+
+def exclusive_realm(model_id):
+    """"intl"/"cn" when only that exit serves the model, else ""."""
+    if not model_id:
+        return ""
+    m = str(model_id).lower()
+    if m in INTL_EXCLUSIVE or m.startswith(INTL_EXCLUSIVE_PREFIXES):
+        return "intl"
+    if m in CN_EXCLUSIVE or m.startswith(CN_EXCLUSIVE_PREFIXES):
+        return "cn"
+    return ""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -149,6 +175,35 @@ USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "reasoning_tokens",
 LAUNCHER_DEFAULT_KEY = "qwer.1234"
 PANEL = wb_settings.PanelSessions()
 API_KEY_FILE_SET = False
+
+
+def configured_keys():
+    """Panel-managed API keys, always read fresh so panel edits apply at once."""
+    try:
+        return wb_settings.api_keys(ACCOUNTS_DIR)
+    except Exception as exc:
+        log("could not read api keys: %s" % exc)
+        return []
+
+
+def auth_required():
+    """Whether /v1 calls must present a key at all."""
+    if wb_settings.auth_disabled(ACCOUNTS_DIR):
+        return False
+    if any(entry.get("enabled") for entry in configured_keys()):
+        return True
+    return bool(API_KEY)
+
+
+def identify_key(supplied):
+    """Return the key entry a caller used, or None when nothing matches.
+
+    Once the panel has at least one key, those keys are the only accepted
+    credentials - otherwise a launcher key left in a .bat file would silently
+    keep working after the panel was locked down.
+    """
+    extra = () if configured_keys() else (API_KEY,)
+    return wb_settings.match_api_key(ACCOUNTS_DIR, supplied, extra_keys=extra)
 
 
 def _empty_stats():
@@ -872,11 +927,24 @@ def runtime_settings_view():
         masked = key[:4] + "*" * 6 + key[-4:]
     else:
         masked = "*" * len(key)
+    keys = []
+    for entry in configured_keys():
+        raw = entry.get("key") or ""
+        keys.append({
+            "id": entry.get("id") or "",
+            "name": entry.get("name") or "",
+            "realm": entry.get("realm") or "",
+            "enabled": entry.get("enabled", True) is not False,
+            "masked": (raw[:4] + "*" * 6 + raw[-4:]) if len(raw) > 8 else "*" * len(raw),
+            "source": entry.get("source") or "panel",
+        })
     return {
         "panel_password_is_default": wb_settings.panel_password_is_default(ACCOUNTS_DIR),
         "api_key_set": bool(key),
         "api_key_set_by_panel": API_KEY_FILE_SET,
         "api_key_masked": masked,
+        "auth_required": auth_required(),
+        "api_keys": keys,
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
@@ -2093,6 +2161,10 @@ def stream_responses_events(upstream, model, holder):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    # Which configured API key the caller used, set by _key_ok(). Its bound
+    # realm decides the upstream exit for this request alone.
+    key_entry = None
+
     def handle(self):
         try:
             super().handle()
@@ -2120,27 +2192,76 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, code, message, err_type="server_error"):
         self._json(code, {"error": {"message": message, "type": err_type, "code": code}})
 
-    def _key_ok(self):
-        """True when the request carries the right key (or no key is needed)."""
-        # An authenticated panel session also unlocks the management APIs,
-        # so the browser never has to keep the API key in localStorage.
-        if self._panel_ok():
-            return True
-        if not API_KEY:
-            return True
+    def _supplied_key(self):
+        """The key the caller presented, from the header or the ?key= query."""
         supplied = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
-        if supplied == API_KEY:
-            return True
+        if supplied:
+            return supplied
         # Browsers cannot set headers on a top-level navigation, so accept the
         # key as a query parameter too - the dashboard uses this when opened
         # from another device.
         try:
             query = parse_qs(urlparse(self.path).query)
-            if (query.get("key") or [""])[0] == API_KEY:
-                return True
+            return (query.get("key") or [""])[0].strip()
         except Exception:
-            pass
+            return ""
+
+    def _key_ok(self):
+        """True when the request carries a right key (or no key is needed)."""
+        # An authenticated panel session also unlocks the management APIs,
+        # so the browser never has to keep the API key in localStorage.
+        if self._panel_ok():
+            return True
+        self.key_entry = identify_key(self._supplied_key())
+        if self.key_entry:
+            return True
+        if not auth_required():
+            return True
         return False
+
+    def _key_realm(self):
+        """Realm bound to the key this request used, or "" when unbound."""
+        return (self.key_entry or {}).get("realm") or ""
+
+    def _cross_realm_error(self, model, realm):
+        """Explain a model/exit mismatch instead of letting upstream reject it.
+
+        Sending gpt-6-astra to the domestic exit (or deepseek-v4-pro to the
+        international one) earns an opaque 403 from upstream, so catch it here
+        and say which key is bound where.
+        """
+        if not realm or not model:
+            return ""
+        owner = exclusive_realm(model)
+        if not owner or owner == realm:
+            return ""
+        name = (self.key_entry or {}).get("name") or "当前 Key"
+        served = "国内版" if owner == "cn" else "国际版"
+        used = "国内版" if realm == "cn" else "国际版"
+        return ("模型 %s 只在%s提供，但「%s」绑定的是%s出口。"
+                "请改用对应出口的 Key，或把该 Key 的出口改为「跟随面板切换」。"
+                % (model, served, name, used))
+
+    def _request_realm(self, explicit=None):
+        """Pick the upstream exit for this request.
+
+        Priority: an explicit ?realm= argument, then the realm bound to the
+        API key, then the X-Realm header / ?realm= query, and finally the
+        global switch. Returning None lets open_upstream() fall back to
+        model-based detection.
+        """
+        if explicit:
+            return explicit
+        bound = self._key_realm()
+        if bound:
+            return bound
+        header = self.headers.get("X-Realm")
+        if header:
+            return header
+        try:
+            return parse_qs(urlparse(self.path).query).get("realm", [None])[0]
+        except Exception:
+            return None
 
     def _authorized(self):
         if self._key_ok():
@@ -2235,7 +2356,7 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/v1/models", "/models"):
             if not self._authorized():
                 return
-            req_realm = query.get("realm", [None])[0] or self.headers.get("X-Realm")
+            req_realm = self._request_realm() or CURRENT_REALM
             try:
                 entries = fetch_models(realm=req_realm)
             except Exception as exc:
@@ -2342,6 +2463,48 @@ class Handler(BaseHTTPRequestHandler):
         """Persist panel-managed settings from the web settings tab."""
         payload = self._read_payload()
         reply = {}
+
+        if "api_keys" in payload:
+            raw = payload.get("api_keys")
+            if not isinstance(raw, list):
+                return self._error(400, "api_keys must be a list", "invalid_request_error")
+            # The panel only ever shows a masked key, so a blank value means
+            # "keep what is stored" for that row rather than "clear it".
+            existing = {entry.get("id"): entry for entry in configured_keys()}
+            cleaned = []
+            for index, item in enumerate(raw):
+                if not isinstance(item, dict):
+                    return self._error(400, "each api key must be an object",
+                                       "invalid_request_error")
+                entry_id = str(item.get("id") or "").strip()
+                value = str(item.get("key") or "").strip()
+                if not value and entry_id and entry_id in existing:
+                    value = existing[entry_id].get("key") or ""
+                if not entry_id:
+                    entry_id = "k%d" % index
+                if value and len(value) < 4:
+                    return self._error(400, "api key must be at least 4 characters",
+                                       "invalid_request_error")
+                if not value:
+                    return self._error(400, "a key entry is empty - fill it in or remove the row",
+                                       "invalid_request_error")
+                realm = str(item.get("realm") or "").strip().lower()
+                if realm not in ("", "intl", "cn"):
+                    return self._error(400, "realm must be intl, cn or empty",
+                                       "invalid_request_error")
+                cleaned.append({
+                    "id": entry_id,
+                    "name": str(item.get("name") or "").strip(),
+                    "key": value,
+                    "realm": realm,
+                    "enabled": item.get("enabled", True) is not False,
+                })
+            wb_settings.set_api_keys(ACCOUNTS_DIR, cleaned)
+            reply["api_keys_saved"] = len(cleaned)
+
+        if "auth_disabled" in payload:
+            wb_settings.set_auth_disabled(ACCOUNTS_DIR, payload.get("auth_disabled"))
+            reply["auth_disabled"] = bool(payload.get("auth_disabled"))
 
         new_key = payload.get("api_key")
         if new_key is not None:
@@ -2561,7 +2724,10 @@ class Handler(BaseHTTPRequestHandler):
         )
 
         try:
-            req_realm = self.headers.get("X-Realm") or parse_qs(urlparse(self.path).query).get("realm", [None])[0] or CURRENT_REALM
+            req_realm = self._request_realm() or CURRENT_REALM
+            blocked = self._cross_realm_error(chat_req.get("model"), req_realm)
+            if blocked:
+                return self._error(400, blocked, "invalid_request_error")
             upstream, account = open_upstream(chat_req, session_key=session_key, target_realm=req_realm)
         except urllib.error.HTTPError as exc:
             detail = exc.read(600).decode("utf-8", "replace")
@@ -2676,7 +2842,10 @@ class Handler(BaseHTTPRequestHandler):
         model = payload.get("model") or "hy4-preview"
         t_start = time.time()
         try:
-            req_realm = self.headers.get("X-Realm") or parse_qs(urlparse(self.path).query).get("realm", [None])[0] or CURRENT_REALM
+            req_realm = self._request_realm() or CURRENT_REALM
+            blocked = self._cross_realm_error(payload.get("model"), req_realm)
+            if blocked:
+                return self._error(400, blocked, "invalid_request_error")
             upstream, account = open_upstream(payload, session_key=session_key, target_realm=req_realm)
         except urllib.error.HTTPError as exc:
             detail = exc.read(600).decode("utf-8", "replace")
