@@ -400,11 +400,15 @@ def usage_snapshot(realm=None):
                         if k in row:
                             snap[k] += (row[k] or 0)
                     m = row.get("model") or "unknown"
-                    per = snap["by_model"].setdefault(m, {"requests": 0, **{k: 0 for k in USAGE_FIELDS}})
+                    per = snap["by_model"].setdefault(m, {"requests": 0, "accounts": {}, **{k: 0 for k in USAGE_FIELDS}})
                     per["requests"] += 1
                     for k in USAGE_FIELDS:
                         if k in row:
                             per[k] += (row[k] or 0)
+                    acct_id = row.get("account")
+                    if acct_id:
+                        per.setdefault("accounts", {})
+                        per["accounts"][acct_id] = per["accounts"].get(acct_id, 0) + 1
     except FileNotFoundError:
         pass
     except Exception as exc:
@@ -412,6 +416,7 @@ def usage_snapshot(realm=None):
     snap["since"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(snap.get("started", time.time())))
     snap["log_file"] = USAGE_LOG
     snap["realm"] = r
+    snap["accounts_map"] = {a.uid: {"nickname": a.nickname, "realm": a.realm} for a in POOL.accounts} if POOL else {}
     snap["account"] = {
         "uid": (rep.uid if rep else ""),
         "domain": (rep.domain if rep else ""),

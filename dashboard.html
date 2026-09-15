@@ -357,27 +357,7 @@ a{color:var(--accent);text-decoration:none}
     </div>
 
     <!-- 表格 1：各账号用量透视与各模型消耗明细 -->
-    <section>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
-        <h2 style="margin:0">各账号用量透视与模型消耗分布 <em id="analyticsAcctCount"></em></h2>
-        <div style="font-size:12px;color:var(--dim)">支持查看各账号的总消耗及调用的每个具体模型细分占比</div>
-      </div>
-      <div style="overflow-x:auto">
-        <table id="analyticsAccountTable">
-          <thead>
-            <tr>
-              <th style="text-align:left">账号 (昵称 / UID)</th>
-              <th>所属区域</th>
-              <th>剩余积分 / 额度</th>
-              <th>请求次数</th>
-              <th>消耗总 Token</th>
-              <th style="text-align:left">调用的模型分布明细 (请求数 · 消耗)</th>
-            </tr>
-          </thead>
-          <tbody id="analyticsAccountTbody"></tbody>
-        </table>
-      </div>
-    </section>
+    
 
     <!-- 表格 2：模型用量透视与响应指标 -->
     <section>
@@ -1330,6 +1310,7 @@ async function refresh(){
     const totCache = perf.cache_hit_pct ? (perf.cache_hit_pct.avg.toFixed(1) + "%") : "-";
     const summaryRow = '<tr style="background:rgba(79,140,255,.08);font-weight:600">'
       + '<td><b>全部模型合计 (Total)</b></td>'
+      + '<td><span style="color:var(--dim)">全部账号</span></td>'
       + '<td>' + fmt(t.requests) + '</td>'
       + '<td><b style="color:var(--accent)">' + fmt(t.total_tokens) + '</b></td>'
       + '<td>' + fmt(t.prompt_tokens) + ' / ' + fmt(t.completion_tokens) + (t.reasoning_tokens ? (' (<span style="color:var(--think)">' + fmt(t.reasoning_tokens) + '</span>)') : '') + '</td>'
@@ -1348,8 +1329,27 @@ async function refresh(){
       const m_cache = (m.prompt_tokens > 0) ? pct(m.cached_tokens / m.prompt_tokens * 100) : (mp.cache_hit_pct ? mp.cache_hit_pct.avg.toFixed(1) + "%" : "-");
       const pctTok = Math.round(m.total_tokens / maxTok * 100);
       const errText = mp.errors ? (' <span class="badge bad" style="font-size:10px">' + mp.errors + ' 失败</span>') : '';
+      const acctsMap = t.accounts_map || {};
+      const mAccts = m.accounts || {};
+      const acctEntries = Object.entries(mAccts);
+      let acctCell = '<span style="color:var(--dim)">—</span>';
+      if(acctEntries.length === 1){
+        const [uid, count] = acctEntries[0];
+        const info = acctsMap[uid] || {};
+        const name = esc(info.nickname || uid.slice(0, 8));
+        const flag = info.realm === 'cn' ? '<span class="badge warn mini">🇨🇳</span>' : '<span class="badge s mini">🌐</span>';
+        acctCell = '<b>' + name + '</b> ' + flag;
+      } else if(acctEntries.length > 1){
+        acctCell = acctEntries.map(([uid, count]) => {
+          const info = acctsMap[uid] || {};
+          const name = esc(info.nickname || uid.slice(0, 6));
+          const flag = info.realm === 'cn' ? '🇨🇳' : '🌐';
+          return '<span class="badge mini" style="margin:1px 2px">' + flag + ' ' + name + ' <span style="color:var(--dim)">(' + count + ')</span></span>';
+        }).join('');
+      }
       return '<tr>'
         + '<td class="mono"><b>' + esc(m.id) + '</b>' + errText + '</td>'
+        + '<td>' + acctCell + '</td>'
         + '<td>' + fmt(m.requests) + '</td>'
         + '<td><b>' + fmt(m.total_tokens) + '</b></td>'
         + '<td>' + fmt(m.prompt_tokens) + ' / ' + fmt(m.completion_tokens) + (m.reasoning_tokens ? (' (<span style="color:var(--think)">' + fmt(m.reasoning_tokens) + '</span>)') : '') + '</td>'
@@ -1362,7 +1362,7 @@ async function refresh(){
     }).join('');
 
     matrixEl.innerHTML = '<table><thead><tr>'
-      + '<th>模型名称</th><th>请求数</th><th>总 Token</th><th>输入 / 输出 (思考)</th>'
+      + '<th>模型名称</th><th>账号</th><th>请求数</th><th>总 Token</th><th>输入 / 输出 (思考)</th>'
       + '<th>首字延迟 (TTFT)</th><th>生成速度</th><th>端到端耗时</th><th>缓存命中率</th><th>用量占比</th>'
       + '</tr></thead><tbody>' + summaryRow + rows + '</tbody></table>';
   }
