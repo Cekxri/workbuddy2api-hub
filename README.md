@@ -47,28 +47,25 @@
 
 ### 3. 局域网共享模式
 双击运行 **`start-wb-proxy-lan.bat`**，允许局域网内其他设备（手机、平板、协同电脑）访问：
-- **默认 API Key**：`qwer.1234`
 - **Base URL**：`http://<本机局域网IP>:8788/v1`
-
-> 🔑 **修改 API Key**：
-> - **脚本方式**：记事本打开 `start-wb-proxy-lan.bat`，将第 20 行的 `qwer.1234` 改为自定义 Key（或执行 `start-wb-proxy-lan.bat 8788 你的Key`）；
-> - **Docker 方式**：修改 `docker-compose.yml` 中的 `API_KEY: 你的Key`；
-> - **命令行**：运行 `python wb_proxy.py --lan --api-key 你的Key`。
+- **首次自动生成 Key**：为了内网安全，若面板未配置任何 Key，启动时终端会自动随机生成一个 24 位安全 API Key，并在控制台高亮输出；同时支持带密钥直达面板：`http://<IP>:8788/?key=生成的Key`。
 
 ---
 
-### 4. 多个 API Key 与出口绑定
+### 4. 多 API Key 管理与出口绑定 (核心推荐)
 
-可以同时配置多个 API Key，并给每个 Key 指定上游出口，两个出口并行对外服务，不再需要切换全局网关。
+网关支持**多 API Key 并行管理**，并可为每个 Key 指定独立出口。不同客户端使用各自绑定的 Key，国内/国外流量互不干扰，完全无需在看板上手动频繁切换网关全局出口：
 
-在「设置」页的「API Key 与出口绑定」区域：
-
-- 每个 Key 可选 **固定国际版出口**、**固定国内版出口**，或 **跟随面板切换**；
-- 使用某个 Key 发起的请求会固定走它绑定的出口，与看板上的全局开关无关；
-- 可单独启用 / 停用某个 Key，删除后该 Key 立即失效；
-- 一旦面板里保存了 Key，启动参数中的 `--api-key` 就不再生效，避免旧密钥漏网。
-
-> 模型与出口不匹配时（例如用国际版出口的 Key 调用 `deepseek-v4-pro`），网关会返回明确提示，而不是上游的报错码。
+在 Web 看板的「设置」页面中进行管理：
+- **添加与在线生成**：输入 Key 名称，点击「生成随机 Key」即可一键生成高强度密钥，支持随时复制；
+- **出口自由绑定**：
+  - **🌐 国际版出口**：该 Key 的调用流量强制固定走腾讯国际版官方出口（`www.workbuddy.ai`）；
+  - **🇨🇳 国内版出口**：该 Key 的调用流量强制固定走腾讯国内版官方出口（`copilot.tencent.com`）；
+  - **跟随面板切换**：未绑定特定出口的 Key，请求将实时跟随看板顶部的全局出口开关分流。
+- **状态管理**：可单独开启/停用某个 Key，支持一键删除，删除即刻失效；
+- **配置持久化**：所有 Key 均保存在本地 `accounts/settings.json` 中，重启保持生效；
+- **安全防冲突机制**：一旦在面板配置保存过 API Key，启动命令或脚本中的旧参数（如 `--api-key`）会自动失效，彻底避免旧密钥在后台漏网继续使用；
+- **模型区域自检防护**：当某个 Key 绑定的出口与其请求的模型不匹配时（例如用国际版 Key 去调国内独占的 `deepseek-v4-pro`），网关会直接返回通俗易懂的 400 校验错误，杜绝上游 WAF 晦涩的拒流报错。
 
 ### 5. Docker 容器化部署 (推荐 Linux / NAS / 服务器)
 自带完整容器配置，零外部依赖，极速启动：
@@ -83,7 +80,7 @@ docker compose logs -f
 
 亦可直接使用 `docker run` 启动：
 ```bash
-docker run -d   --name wb-proxy   --restart unless-stopped   -p 8788:8788   -v $(pwd)/accounts:/app/accounts   -v $(pwd)/usage:/app/usage   -e API_KEY=qwer.1234   $(docker build -q .)
+docker run -d   --name wb-proxy   --restart unless-stopped   -p 8788:8788   -v $(pwd)/accounts:/app/accounts   -v $(pwd)/usage:/app/usage   -e API_KEY=your_secret_key   $(docker build -q .)
 ```
 
 - **持久化目录**：`./accounts` (账号凭证及活动区域) 与 `./usage` (请求流水与指标快照)；
@@ -146,15 +143,17 @@ docker run -d   --name wb-proxy   --restart unless-stopped   -p 8788:8788   -v $
 ## 四、客户端配置与接入
 
 ### OpenAI 兼容客户端 (Chatbox / NextChat / Cherry Studio / Kelivo 等)
-- **API 接口地址 (Base URL)**：`http://127.0.0.1:8788/v1`
-- **API Key**：未开启 LAN 模式可留空；LAN 模式默认填 `qwer.1234`
+- **API 接口地址 (Base URL)**：`http://127.0.0.1:8788/v1`（局域网为 `http://<局域网IP>:8788/v1`）
+- **API Key**：
+  - 本机单机模式（未配置 Key 且未开 LAN）：可留空或填任意字符；
+  - 已在看板配置 Key 或 LAN 模式：在看板「设置」页面添加或复制已绑好出口的 API Key（如固定走国际版的 Key 或国内版的 Key）。
 - **模型名称**：填入 `/v1/models` 中列出的任意官方对齐模型 ID（如 `deepseek-v4.1-flash`、`gpt-6-astra`、`glm-5.3` 等）
 
 ### Codex CLI / Claude Code (Responses API)
 网关原生内置 Responses 协议双向转换与 WAF 指纹脱敏：
 ```bash
 export OPENAI_BASE_URL="http://127.0.0.1:8788/v1"
-export OPENAI_API_KEY="qwer.1234"
+export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 ```
 
 ---
