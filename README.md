@@ -40,6 +40,11 @@
 - **默认 API Key**：`qwer.1234`
 - **Base URL**：`http://<本机局域网IP>:8788/v1`
 
+> 🔑 **修改 API Key**：
+> - **脚本方式**：记事本打开 `start-wb-proxy-lan.bat`，将第 20 行的 `qwer.1234` 改为自定义 Key（或执行 `start-wb-proxy-lan.bat 8788 你的Key`）；
+> - **Docker 方式**：修改 `docker-compose.yml` 中的 `API_KEY: 你的Key`；
+> - **命令行**：运行 `python wb_proxy.py --lan --api-key 你的Key`。
+
 ---
 
 ### 3. Docker 容器化部署 (推荐 Linux / NAS / 服务器)
