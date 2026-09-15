@@ -1678,8 +1678,9 @@ function renderKeyRows(){
       +   'oninput="updateKeyRow(' + i + ',\'name\', this.value)" '
       +   'style="width:130px;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:6px 9px;color:var(--fg);font:inherit">'
       + '<input type="text" value="' + esc(row.key || '') + '" placeholder="API Key（留空表示不改）" '
-      +   'oninput="updateKeyRow(' + i + ',\'key\', this.value)" '
+     +   'oninput="updateKeyRow(' + i + ',\'key\', this.value)" '
       +   'style="flex:1;min-width:190px;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:6px 9px;color:var(--fg);font:inherit">'
+      + '<button class="sec mini" id="copyBtn' + i + '" onclick="copyKeyRow(' + i + ')">复制</button>'
       + '<select onchange="updateKeyRow(' + i + ',\'realm\', this.value)" '
       +   'style="background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:6px 9px;color:var(--fg);font:inherit">'
       + options + '</select>'
@@ -1702,6 +1703,53 @@ function generateKeyRow(index){
   if(!API_KEY_ROWS[index]) return;
   API_KEY_ROWS[index].key = randomKeyValue();
   renderKeyRows();
+}
+
+/* Copy the key in a row, fetching the stored value when the field is blank
+   (the panel only ever displays a masked key). */
+async function copyKeyRow(index){
+  const row = API_KEY_ROWS[index];
+  if(!row) return;
+  const btn = document.getElementById('copyBtn' + index);
+  let value = (row.key || '').trim();
+  try {
+    if(!value && row.id){
+      const data = await getJSON('/settings/reveal?id=' + encodeURIComponent(row.id));
+      value = data.key || '';
+    }
+    if(!value){
+      toast('这一行还没有 Key，点「随机生成」或直接填写', 'warn');
+      return;
+    }
+    await writeClipboard(value);
+    if(btn){
+      const old = btn.textContent;
+      btn.textContent = '已复制';
+      setTimeout(() => { btn.textContent = old; }, 1600);
+    }
+    toast('已复制到剪贴板', 'ok');
+  } catch(e) {
+    toast('复制失败: ' + e.message, 'bad');
+  }
+}
+
+async function writeClipboard(text){
+  // navigator.clipboard needs a secure context; plain http on a LAN address
+  // does not qualify, so fall back to a temporary textarea.
+  if(navigator.clipboard && window.isSecureContext){
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+  document.body.appendChild(area);
+  area.select();
+  area.setSelectionRange(0, area.value.length);
+  const ok = document.execCommand('copy');
+  document.body.removeChild(area);
+  if(!ok) throw new Error('浏览器拒绝了复制操作');
 }
 
 function addApiKeyRow(){

@@ -2297,7 +2297,7 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if path.startswith("/tasks") or path.startswith("/scheduler"):
             return True
-        if path in ("/settings", "/settings/save"):
+        if path.startswith("/settings"):
             return True
         return False
 
@@ -2432,6 +2432,16 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authorized():
                 return
             return self._json(200, runtime_settings_view())
+        if path == "/settings/reveal":
+            # The panel only ever draws masked keys, so copying one needs an
+            # explicit request. Panel session required, API key is not enough.
+            if not self._panel_ok():
+                return self._error(401, "panel password required", "invalid_request_error")
+            wanted = (query.get("id") or [""])[0]
+            for entry in configured_keys():
+                if entry.get("id") == wanted:
+                    return self._json(200, {"id": wanted, "key": entry.get("key") or ""})
+            return self._error(404, "no such key", "invalid_request_error")
         return self._error(404, "not found", "invalid_request_error")
 
     def _dashboard(self):
