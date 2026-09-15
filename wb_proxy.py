@@ -948,7 +948,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "1.1.4",
+        "version": "1.1.5",
     }
 
 
@@ -2175,7 +2175,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/1.1.4"
+    server_version = "wb-proxy/1.1.5"
 
     def log_message(self, fmt, *args):
         log(fmt % args)
