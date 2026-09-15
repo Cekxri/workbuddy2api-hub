@@ -170,10 +170,10 @@ a:hover{text-decoration:underline}
     <h1><span class="dot" id="statusDot"></span>WorkBuddy 网关看板</h1>
     <nav class="main-nav">
       <button class="main-nav-btn active" id="btnNavGateway" onclick="switchMainTab('gateway')">
-        <span>🖥️</span> 网关与运维
+        网关与运维
       </button>
       <button class="main-nav-btn" id="btnNavAnalytics" onclick="switchMainTab('analytics')">
-        <span>📊</span> 数据指标看板
+        数据指标看板
       </button>
     </nav>
   </div>
@@ -187,14 +187,14 @@ a:hover{text-decoration:underline}
       <div style="font-size:11px;color:var(--dim);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.5px">查看详情 (点击切换视图)</div>
       <div class="realm-tabs">
         <div id="tabIntl" class="realm-tab active" onclick="switchViewRealm('intl')">
-          <span class="tab-icon">🌐</span>
+          
           <div class="tab-text">
             <span class="tab-title">国际版详情 (Global)</span>
             <span class="tab-desc">www.workbuddy.ai</span>
           </div>
         </div>
         <div id="tabCn" class="realm-tab" onclick="switchViewRealm('cn')">
-          <span class="tab-icon">🇨🇳</span>
+          
           <div class="tab-text">
             <span class="tab-title">国内版详情 (China)</span>
             <span class="tab-desc">copilot.tencent.com</span>
@@ -205,10 +205,10 @@ a:hover{text-decoration:underline}
     <div class="realm-banner-right" style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 16px">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
         <span id="gatewayDot" class="dot"></span>
-        <span style="font-size:13px">网关当前上游: <b id="activeGatewayName" style="color:var(--accent)">🌐 国际版</b></span>
+        <span style="font-size:13px">网关当前上游: <b id="activeGatewayName" style="color:var(--accent)">国际版</b></span>
       </div>
       <div style="font-size:11px;color:var(--dim);margin-bottom:8px">出站地址: <span id="activeEndpoint" class="mono" style="color:var(--fg)">https://www.workbuddy.ai/v2</span> (本地已保存)</div>
-      <button class="toggle-realm-btn" id="btnToggleRealm" onclick="toggleActiveGatewayRealm()" style="cursor:pointer;width:100%">⇄ 切换网关上游为【🇨🇳 国内版】</button>
+      <button class="toggle-realm-btn" id="btnToggleRealm" onclick="toggleActiveGatewayRealm()" style="cursor:pointer;width:100%">切换网关上游为【国内版】</button>
     </div>
   </div>
   <div id="keyBar" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;
@@ -231,7 +231,7 @@ a:hover{text-decoration:underline}
       <span style="color:var(--dim);font-size:11px" id="schedTimes"></span>
     </div>
     <div style="display:flex;gap:8px">
-      <button class="sec mini" id="btnTriggerSched" onclick="triggerSchedulerNow(this)">⚡ 立即巡检保活</button>
+      <button class="sec mini" id="btnTriggerSched" onclick="triggerSchedulerNow(this)">立即巡检保活</button>
       <button class="sec mini" id="btnToggleSched" onclick="toggleScheduler(this)">暂停调度</button>
     </div>
   </div>
@@ -242,9 +242,9 @@ a:hover{text-decoration:underline}
     <h2>账号<em id="acctCount"></em></h2>
     <div class="toolbar">
     <button onclick="openLoginModal()">+ 添加账号 (OAuth)</button>
-    <button class="sec" id="btnCheckin" onclick="doCheckin(this)" style="display:none">🎁 每日签到 (国内版)</button>
-    <button class="sec" id="btnScanDesktop" onclick="scanDesktop(this)">📥 扫描桌面客户端账号</button>
-    <button class="sec" onclick="fetchCredits(this)">⚡ 刷新额度/积分</button>
+    <button class="sec" id="btnCheckin" onclick="doCheckin(this)" style="display:none">每日签到 (国内版)</button>
+    <button class="sec" id="btnScanDesktop" onclick="scanDesktop(this)">扫描桌面客户端账号</button>
+    <button class="sec" onclick="fetchCredits(this)">刷新额度/积分</button>
     <button class="sec" onclick="setAll(true)">全部启用</button>
     <button class="sec" onclick="setAll(false)">全部停用</button>
     
@@ -295,8 +295,8 @@ a:hover{text-decoration:underline}
         <div style="font-size:12px;color:var(--dim)">全自动批量接取、事件上报点亮并领取官方成长积分 (+1450分)，以及猫猫日常与打卡</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="primary" id="btnRunTasks" onclick="runGrowthTasks(this)">⚡ 一键做任务领积分</button>
-        <button id="btnCatTravel" onclick="triggerCatTravel(this)">🐱 猫猫旅行</button>
+        <button class="primary" id="btnRunTasks" onclick="runGrowthTasks(this)">一键做任务领积分</button>
+        <button id="btnCatTravel" onclick="triggerCatTravel(this)">猫猫旅行</button>
       </div>
     </div>
 
@@ -330,7 +330,7 @@ a:hover{text-decoration:underline}
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px">
       <div>
         <h2 style="margin:0;font-size:16px;color:var(--fg);display:flex;align-items:center;gap:8px">
-          📊 Token 消耗与推理指标透视
+          Token 消耗与推理指标透视
         </h2>
         <div style="font-size:12px;color:var(--dim);margin-top:4px">全维度统计输入/输出/推理 Token、缓存节省效益与各账号各模型用量</div>
       </div>
@@ -403,11 +403,11 @@ a:hover{text-decoration:underline}
         <div style="display:flex;gap:18px;flex-wrap:wrap">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
             <input type="radio" name="loginRealm" value="cn" id="radioCn" onchange="switchLoginRealm(this.value)">
-            <span>🇨🇳 <b>国内版</b> (copilot.tencent.com)</span>
+            <span><b>国内版</b> (copilot.tencent.com)</span>
           </label>
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
             <input type="radio" name="loginRealm" value="intl" id="radioIntl" onchange="switchLoginRealm(this.value)">
-            <span>🌐 <b>国际版</b> (www.workbuddy.ai)</span>
+            <span><b>国际版</b> (www.workbuddy.ai)</span>
           </label>
         </div>
       </div>
@@ -554,7 +554,7 @@ function updateUI(){
   const isIntlGw = (window.ACTIVE_GATEWAY_REALM === "intl");
   const gwName = document.getElementById("activeGatewayName");
   if(gwName) {
-    gwName.textContent = isIntlGw ? "🌐 国际版" : "🇨🇳 国内版";
+    gwName.textContent = isIntlGw ? "国际版" : "国内版";
     gwName.style.color = isIntlGw ? "var(--accent)" : "var(--warn)";
   }
   const ep = document.getElementById("activeEndpoint");
@@ -562,7 +562,7 @@ function updateUI(){
 
   const btnToggle = document.getElementById("btnToggleRealm");
   if(btnToggle) {
-    btnToggle.textContent = isIntlGw ? "⇄ 切换网关上游为【🇨🇳 国内版】" : "⇄ 切换网关上游为【🌐 国际版】";
+    btnToggle.textContent = isIntlGw ? "切换网关上游为【国内版】" : "切换网关上游为【国际版】";
   }
 
   const btnCheckin = document.getElementById("btnCheckin");
@@ -771,7 +771,7 @@ async function loadGrowthTasks(){
 async function runGrowthTasks(btn){
   btn.disabled = true;
   const oldText = btn.textContent;
-  btn.textContent = '⚡ 任务执行中...';
+  btn.textContent = '任务执行中...';
   const logBox = document.getElementById("taskLogBox");
   if(logBox){
     logBox.style.display = 'block';
@@ -828,7 +828,7 @@ async function loadSchedulerStatus(){
     if(txt) txt.textContent = s.enabled ? ('运行中 · ' + modeText) : '已暂停';
     if(times) times.textContent = '上次: ' + (s.last_run_time || '-') + ' · 下次: ' + (s.next_run_time || '-');
     if(btn) btn.textContent = s.enabled ? '暂停调度' : '启用调度';
-    if(btnTrig) btnTrig.textContent = (window.VIEW_REALM === 'intl') ? '⚡ 立即保活刷新' : '⚡ 立即巡检保活';
+    if(btnTrig) btnTrig.textContent = (window.VIEW_REALM === 'intl') ? '立即保活刷新' : '立即巡检保活';
   }catch(e){}
 }
 
@@ -982,8 +982,8 @@ let USAGE_BY_ACCOUNT = {};
 
 function accountRow(a){
   const realmBadge = a.realm === 'cn'
-    ? '<span class="realm-badge-cn">🇨🇳 国内版</span>'
-    : '<span class="realm-badge-intl">🌐 国际版</span>';
+    ? '<span class="realm-badge-cn">国内版</span>'
+    : '<span class="realm-badge-intl">国际版</span>';
   const usage = USAGE_BY_ACCOUNT[a.uid] || {};
   const state = !a.enabled ? '<span class="badge off">已停用</span>'
               : a.inCooldown ? '<span class="badge warn">冷却 ' + (a.cooldownFor||0) + 's</span>'
@@ -1107,7 +1107,7 @@ async function scanDesktop(btn){
     const body = document.getElementById('desktopScanBody');
     if(body) body.innerHTML = '<p class="hint" style="color:var(--warn)">扫描失败: ' + esc(e.message) + '</p>';
   }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '📥 扫描桌面客户端账号'; }
+    if(btn){ btn.disabled = false; btn.textContent = '扫描桌面客户端账号'; }
   }
 }
 
@@ -1184,9 +1184,9 @@ function renderDesktopScan(list){
     return html;
   };
 
-  let html = section('🌐 国际版 (Global) · www.workbuddy.ai',
+  let html = section('国际版 (Global) · www.workbuddy.ai',
                      valid.filter(d => d.realm !== 'cn'), '');
-  html += section('🇨🇳 国内版 (China) · copilot.tencent.com',
+  html += section('国内版 (China) · copilot.tencent.com',
                   valid.filter(d => d.realm === 'cn'), '');
 
   if(bad.length){
@@ -1356,7 +1356,7 @@ async function refresh(){
         acctCell = acctEntries.map(([uid, count]) => {
           const info = acctsMap[uid] || {};
           const name = esc(info.nickname || uid.slice(0, 6));
-          const flag = info.realm === 'cn' ? '🇨🇳' : '🌐';
+          const flag = info.realm === 'cn' ? '' : '';
           return '<span class="badge mini" style="margin:1px 2px">' + flag + ' ' + name + ' <span style="color:var(--dim)">(' + count + ')</span></span>';
         }).join('');
       }
@@ -1536,8 +1536,8 @@ function renderAnalytics(data){
         }
 
         const realmBadge = a.realm === 'cn'
-          ? '<span class="badge warn" style="font-size:10px">🇨🇳 国内版</span>'
-          : '<span class="badge s" style="font-size:10px">🌐 国际版</span>';
+          ? '<span class="badge warn" style="font-size:10px">国内版</span>'
+          : '<span class="badge s" style="font-size:10px">国际版</span>';
 
         let creditStr = '<span style="color:var(--dim)">—</span>';
         if(a.credits && a.credits.remain != null){
