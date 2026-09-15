@@ -1160,8 +1160,14 @@ def fetch_endpoint_models():
 
 def strip_data_prefix(line):
     line = line.strip()
+    # SSE comment / heartbeat / keepalive / empty line
+    if not line or line.startswith(":"):
+        return ""
     while line.startswith("data:"):
         line = line[5:].strip()
+    # Handle possible "data: : heartbeat"
+    if not line or line.startswith(":"):
+        return ""
     return line
 
 
@@ -2526,9 +2532,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     for line in upstream:
                         data = strip_data_prefix(line.decode("utf-8", "replace"))
-                        if data == "[DONE]":
-                            continue
-                        if not data:
+                        if not data or data == "[DONE]" or data.startswith(":"):
                             continue
                         try:
                             maybe = json.loads(data)
