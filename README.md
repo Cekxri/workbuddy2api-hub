@@ -1,7 +1,7 @@
-# WorkBuddy 国际版、国内版多账号反代网关
+# WorkBuddy2API-Hub — 国际版、国内版多账号网关中枢
 
 <p align="center">
-  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-intl/releases"><img src="https://img.shields.io/badge/Release-v1.1.3-2496ED?style=flat-square" alt="Version 1.1.3"></a>
+  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.1.3-2496ED?style=flat-square" alt="Version 1.1.3"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Vibe_Coding-100%25-ff69b4?style=flat-square" alt="Vibe Coding">
 </p>
 
-本项目为 **WorkBuddy 国际版、国内版多账号反代网关 (v1.1.0起)**，将腾讯 **[www.workbuddy.ai](https://www.workbuddy.ai)** (国际版) 与 **[codebuddy.cn](https://www.codebuddy.cn)** (国内版) 原生服务封装为标准 OpenAI 兼容接口，支持 Chat Completions 与 Responses API。具备多账号负载轮询、稳定物理设备指纹隔离、OAuth 一键免客户端登录、国内版每日签到与实时积分查询、国内成长任务全自动完成与国内版积分任务、后台常驻定时调度器、Web 监控看板等全套能力。
+本项目为 **WorkBuddy2API-Hub (v1.1.0起)**，将腾讯 **[www.workbuddy.ai](https://www.workbuddy.ai)** (国际版) 与 **[codebuddy.cn](https://www.codebuddy.cn)** (国内版) 原生服务封装为标准 OpenAI 兼容接口，支持 Chat Completions 与 Responses API。具备多账号负载轮询、稳定物理设备指纹隔离、OAuth 一键免客户端登录、国内版每日签到与实时积分查询、国内成长任务全自动完成与国内版积分任务、后台常驻定时调度器、Web 监控看板等全套能力。
 
 - **开箱即用**：绿色包自带精简 Python 运行时，无需额外配置环境，双击批处理脚本即启。
 - **双区域独立路由**：支持 🌐 国际版 与 🇨🇳 国内版独立配置与管理，严格隔离串号，看板一键切换且状态落盘持久化。
