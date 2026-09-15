@@ -94,7 +94,12 @@ _JSON = r'''
     "supportsReasoning": true,
     "onlyReasoning": true,
     "reasoning": {
-      "effort": "high",
+      "defaultEffort": "high",
+      "supportedEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
       "summary": "auto"
     },
     "vendor": "e"
@@ -127,7 +132,12 @@ _JSON = r'''
     "supportsReasoning": true,
     "onlyReasoning": true,
     "reasoning": {
-      "effort": "high",
+      "defaultEffort": "high",
+      "supportedEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
       "summary": "auto"
     },
     "contextWindow": {
@@ -1314,7 +1324,12 @@ _CN_JSON = r'''
     "name": "Deepseek-V4.1-Flash",
     "onlyReasoning": true,
     "reasoning": {
-      "effort": "high",
+      "defaultEffort": "high",
+      "supportedEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
       "summary": "auto"
     },
     "relatedModels": {

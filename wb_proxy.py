@@ -1084,6 +1084,12 @@ def model_entry(mid, meta):
         item["reasoning_default_effort"] = reasoning["defaultEffort"]
     if reasoning.get("canDisableThinking") is not None:
         item["reasoning_can_disable"] = reasoning["canDisableThinking"]
+    # DeepSeek 4.1 official supports low / high / max
+    if mid == "deepseek-v4.1-flash":
+        item["reasoning_efforts"] = ["low", "high", "max"]
+        item["reasoning_default_effort"] = "high"
+        item.pop("reasoning_fixed_effort", None)
+
     if meta.get("onlyReasoning") is not None:
         item["always_reasoning"] = bool(meta.get("onlyReasoning"))
 
