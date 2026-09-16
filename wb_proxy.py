@@ -22,7 +22,6 @@ import re
 import json
 import os
 MAX_PAYLOAD_BYTES = int(os.environ.get("WB_MAX_PAYLOAD_BYTES", 50 * 1024 * 1024))  # 50MB limit
-import secrets
 import socket
 import sys
 import threading
@@ -160,11 +159,17 @@ class BadJSON(Exception):
 # scheduler, panel) serve the dashboard, which is same-origin, so they get no
 # ACAO header - that keeps a stray page on the LAN from reading their replies.
 CORS_PATH_PREFIXES = ("/v1", "/chat", "/completions", "/models", "/responses")
+# Management paths that happen to live under /v1 must not be treated as API:
+# /v1/usage reports account-level spend and is gated by the panel session.
+MANAGEMENT_PATH_PREFIXES = ("/v1/usage", "/usage", "/accounts", "/settings",
+                            "/tasks", "/scheduler", "/panel")
 
 
 def cors_origin_allowed(path):
     """True when the OpenAI-style API path should advertise CORS."""
     path = (path or "").split("?")[0]
+    if path.startswith(MANAGEMENT_PATH_PREFIXES):
+        return False
     return path.startswith(CORS_PATH_PREFIXES)
 
 _lock = threading.Lock()

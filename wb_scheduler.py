@@ -6,8 +6,6 @@
 3. 猫猫旅行与日常结算 (Cat Travel & Welfare)：自动派出猫猫旅行或领取归来奖励。
 4. 状态持久化与看板展示：暴露状态、执行记录、支持手动立即触发与开关切换。
 """
-import json
-import os
 import threading
 import time
 import wb_tasks

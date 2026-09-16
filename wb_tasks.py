@@ -7,11 +7,9 @@
 4. 严格遵守 >= 1.0s 防风控间隔，并使用 wb_fingerprint 的稳定设备指纹。
 """
 import json
-import os
 import time
 import urllib.error
 import urllib.request
-from wb_fingerprint import derive_id, get_desktop_fingerprint
 
 CHAT_BASE = "https://copilot.tencent.com"
 BILL_BASE = "https://www.codebuddy.cn"
