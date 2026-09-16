@@ -832,6 +832,48 @@ def current_account():
     return POOL.representative() if POOL else None
 
 
+# ---------------------------------------------------------------------------
+# Prefix-based session affinity (PATCHED-BY-OPS)
+# ---------------------------------------------------------------------------
+# 上游 prompt cache 是【账号级】的：只有同一个账号再次看到相同前缀才会命中。
+# 实测证据（wk 实例 11 个号）：8 次完全相同的前缀请求被轮询分散到 8 个账号，
+# 缓存率全部为 0%；而带上会话标识固定落到同一账号时，第 2 次起缓存率即 95.2%。
+#
+# sub2api / DSH 等客户端并不发送 X-Conversation-Id 之类的会话标识，
+# 于是 hub 走纯轮询，同一对话每一轮都换账号，缓存必然归零。
+#
+# 这里在缺少显式会话键时，用【对话稳定前缀】派生亲和键：
+# 取消息列表的前两条（system + 首条 user），它们在整段对话生命周期内不变，
+# 因此同一对话的每一轮都会落到同一账号；而不同对话的首条 user 不同，
+# 依旧会分散到各账号，负载均衡不受影响。
+AFFINITY_BY_PREFIX = os.environ.get("WB_AFFINITY_BY_PREFIX", "1").lower() not in (
+    "0", "false", "no", "off")
+AFFINITY_DEBUG = os.environ.get("WB_AFFINITY_DEBUG", "0").lower() in (
+    "1", "true", "yes", "on")
+
+
+def derive_affinity_key(messages):
+    """Derive a stable affinity key from a conversation's stable prefix.
+
+    The first two messages (system + first user turn) stay byte-identical for
+    the whole life of a conversation, so hashing them pins every later turn of
+    that conversation to the same upstream account - exactly what prompt
+    caching needs. Distinct conversations differ in their first user turn and
+    therefore still spread across the pool.
+    """
+    if not AFFINITY_BY_PREFIX:
+        return None
+    try:
+        msgs = messages or []
+        if not msgs:
+            return None
+        head = msgs[:2]
+        blob = json.dumps(head, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return "pfx-" + hashlib.sha256(blob).hexdigest()[:16]
+    except Exception:
+        return None
+
+
 def prompt_fingerprint(messages):
     """Privacy-safe fingerprint of the outgoing prompt.
 
@@ -1161,9 +1203,18 @@ def clean_chunk(raw):
         delta = choice.get("delta")
         if not isinstance(delta, dict):
             continue
-        if not delta.get("function_call"):
-            if "function_call" in delta:
-                delta.pop("function_call")
+        # PATCHED-BY-OPS: 原判断 `if not delta.get("function_call")` 对
+        # {"name":"","arguments":""} 为假（非空 dict 是真值），空占位删不掉。
+        # 改为显式检查：name 与 arguments 均空才视为占位噪音。
+        fc = delta.get("function_call")
+        if fc is not None:
+            fc_empty = False
+            if isinstance(fc, dict):
+                fc_empty = not fc.get("name") and not fc.get("arguments")
+            else:
+                fc_empty = not fc
+            if fc_empty:
+                delta.pop("function_call", None)
                 changed = True
         if isinstance(delta.get("tool_calls"), list) and not delta["tool_calls"]:
             delta.pop("tool_calls")
@@ -1175,6 +1226,57 @@ def clean_chunk(raw):
         if not delta and not choice.get("finish_reason"):
             return ""
     return json.dumps(obj, ensure_ascii=False) if changed else raw
+
+
+def _strip_empty_fc(obj):
+    """PATCHED-BY-OPS: 递归剔除空 function_call 占位（Responses/chat 通用）。"""
+    changed = False
+    if isinstance(obj, dict):
+        fc = obj.get("function_call")
+        if isinstance(fc, dict) and not fc.get("name") and not fc.get("arguments"):
+            obj.pop("function_call", None)
+            changed = True
+        tc = obj.get("tool_calls")
+        if isinstance(tc, list) and not tc:
+            obj.pop("tool_calls", None)
+            changed = True
+        for v in list(obj.values()):
+            if _strip_empty_fc(v):
+                changed = True
+    elif isinstance(obj, list):
+        for v in obj:
+            if _strip_empty_fc(v):
+                changed = True
+    return changed
+
+
+def clean_responses_frame(frame):
+    """PATCHED-BY-OPS: 清洗 Responses SSE 帧（bytes）。
+
+    输入 b'event: x\ndata: {...}\n\n'；只改写 data: 行的 JSON，
+    event: 行原样保留。解析失败原样返回（不破坏未知格式）。
+    """
+    if not frame:
+        return frame
+    try:
+        text = frame.decode("utf-8")
+    except Exception:
+        return frame
+    out, changed = [], False
+    for line in text.splitlines():
+        st = line.strip()
+        if st.startswith("data:"):
+            payload = st[5:].strip()
+            if payload and payload != "[DONE]":
+                try:
+                    obj = json.loads(payload)
+                    if _strip_empty_fc(obj):
+                        line = "data: " + json.dumps(obj, ensure_ascii=False)
+                        changed = True
+                except Exception:
+                    pass
+        out.append(line)
+    return ("\n".join(out) + "\n\n").encode("utf-8") if changed else frame
 
 
 def normalize_roles(messages):
@@ -1460,7 +1562,16 @@ def build_upstream_body(payload):
 
 def open_upstream(payload, session_key=None, target_realm=None):
     realm = target_realm or detect_model_realm(payload.get("model")) or CURRENT_REALM
-    body = json.dumps(build_upstream_body(payload), ensure_ascii=False).encode("utf-8")
+    upstream_body = build_upstream_body(payload)
+    body = json.dumps(upstream_body, ensure_ascii=False).encode("utf-8")
+    # PATCHED-BY-OPS: 客户端未提供会话标识时，用对话稳定前缀兜底。
+    # 位置放在 build_upstream_body 之后，保证键与真正发往上游的消息一致
+    # （该函数可能在最前面插入 SYSTEM_PROMPT）。
+    if not session_key:
+        session_key = derive_affinity_key(upstream_body.get("messages"))
+        if session_key and AFFINITY_DEBUG:
+            log("affinity: derived %s for %d msgs"
+                % (session_key, len(upstream_body.get("messages") or [])))
     total = max(1, POOL.count_ready(realm)) if POOL else 1
     tried = set()
     last_error = None
@@ -1571,7 +1682,13 @@ def aggregate_stream(raw_iter, model, resp_id):
                     if fn_args:
                         entry["function"]["arguments"] = (entry["function"]["arguments"] or "") + fn_args
             fc = delta.get("function_call")
-            if fc and isinstance(fc, dict):
+            # PATCH2-BY-OPS: 上游会在流末尾发 function_call:{"name":"","arguments":""}
+            # 占位。原判断对空 dict 成立，会凭空生成 tool_call 并伪造 id，
+            # 导致 finish_reason 被改成 "tool_calls"（参数全空）→ 严格客户端死等。
+            # 故：name 与 arguments 均为空时直接跳过。
+            fc_is_empty = (not isinstance(fc, dict)) or (
+                not fc.get("name") and not fc.get("arguments"))
+            if fc and isinstance(fc, dict) and not fc_is_empty:
                 idx = 0
                 if idx not in tool_calls_map:
                     tool_calls_map[idx] = {
@@ -1594,6 +1711,14 @@ def aggregate_stream(raw_iter, model, resp_id):
     message = {"role": "assistant", "content": "".join(content)}
     if reasoning:
         message["reasoning_content"] = "".join(reasoning)
+    # PATCH2-BY-OPS: 二次防御——剔除「无函数名且无参数」的空 tool_call。
+    # 即使上游以 tool_calls 数组形式发空占位，也不会泄漏给客户端。
+    if tool_calls_map:
+        tool_calls_map = {
+            k: v for k, v in tool_calls_map.items()
+            if (v.get("function") or {}).get("name")
+            or (v.get("function") or {}).get("arguments")
+        }
     if tool_calls_map:
         ordered_tcs = [tool_calls_map[k] for k in sorted(tool_calls_map.keys())]
         message["tool_calls"] = ordered_tcs
@@ -2868,7 +2993,10 @@ class Handler(BaseHTTPRequestHandler):
                     for frame in stream_responses_events(upstream, model, holder):
                         if first_ms is None:
                             first_ms = int((time.time() - t_start) * 1000)
-                        self.wfile.write(frame)
+                        # PATCHED-BY-OPS: 与 chat completions 路径对齐，清洗噪音帧
+                        # （空 function_call 占位会让 sub2api 等严格解析器卡在
+                        #  legacy 工具调用分支，报 "no terminal response event"）
+                        self.wfile.write(clean_responses_frame(frame))
                         self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                     wall = int((time.time() - t_start) * 1000)
