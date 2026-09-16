@@ -1044,6 +1044,11 @@ function accountRow(a){
   const realmBadge = a.realm === 'cn'
     ? '<span class="realm-badge-cn">国内版</span>'
     : '<span class="realm-badge-intl">国际版</span>';
+  // Inline handlers embed these in an HTML attribute, so they must survive
+  // both the attribute and the quoted JS string. uid comes from an upstream
+  // JWT; treat it as untrusted and keep it to a safe charset.
+  const uidAttr = esc(String(a.uid || '').replace(/[^\w.@-]/g, ''));
+  const nameAttr = esc(String(a.nickname || '').replace(/["'\\<>]/g, ''));
   const usage = USAGE_BY_ACCOUNT[a.uid] || {};
   const state = !a.enabled ? '<span class="badge off">已停用</span>'
               : a.inCooldown ? '<span class="badge warn">冷却 ' + (a.cooldownFor||0) + 's</span>'
@@ -1063,9 +1068,9 @@ function accountRow(a){
     + '<td>' + fmt(usage.total_tokens) + '</td>'
     + '<td>' + fmt(usage.cached_tokens) + '</td>'
     + '<td style="white-space:nowrap">'
-    + '<button class="sec mini" onclick="toggleAccount(&quot;' + a.uid + '&quot;,' + (!a.enabled) + ')">' + (a.enabled ? '停用' : '启用') + '</button> '
-    + '<button class="sec mini" onclick="refreshOne(&quot;' + a.uid + '&quot;)">刷新</button> '
-    + '<button class="danger mini" onclick="deleteAccount(&quot;' + a.uid + '&quot;,&quot;' + esc(a.nickname).replace(/["']/g, '') + '&quot;)">删除</button>'
+    + '<button class="sec mini" onclick="toggleAccount(&quot;' + uidAttr + '&quot;,' + (!a.enabled) + ')">' + (a.enabled ? '停用' : '启用') + '</button> '
+    + '<button class="sec mini" onclick="refreshOne(&quot;' + uidAttr + '&quot;)">刷新</button> '
+    + '<button class="danger mini" onclick="deleteAccount(&quot;' + uidAttr + '&quot;,&quot;' + nameAttr + '&quot;)">删除</button>'
     + '</td></tr>';
 }
 
@@ -1649,7 +1654,9 @@ function randomKeyValue(){
   const bytes = new Uint8Array(18);
   if(window.crypto && crypto.getRandomValues) crypto.getRandomValues(bytes);
   const raw = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-  return raw || 'qwer.1234';
+  // crypto.getRandomValues is present in every supported browser; the
+  // timestamp fallback only exists so the field is never left empty.
+  return raw || ('wb-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 }
 
 const REALM_CHOICES = [

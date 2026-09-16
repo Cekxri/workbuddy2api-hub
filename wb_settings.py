@@ -119,6 +119,26 @@ def set_api_key(accounts_dir, key):
         save(accounts_dir, data)
 
 
+def ensure_launcher_key(accounts_dir):
+    """Return the persisted LAN key, creating one on first use.
+
+    LAN mode must never ship a well-known default: the gateway spends the
+    account's own upstream quota, so anyone on the same network could drain it.
+    The value is generated once and stored so clients keep working across
+    restarts. Returns (key, created) so the caller can tell the user whether
+    this run minted a fresh credential.
+    """
+    with _lock:
+        data = load(accounts_dir)
+        existing = str(data.get("launcher_key") or "").strip()
+        if existing:
+            return existing, False
+        key = "wb-" + secrets.token_urlsafe(24)
+        data["launcher_key"] = key
+        save(accounts_dir, data)
+        return key, True
+
+
 # --------------------------------------------------------------- API keys
 # Each key can be bound to one upstream realm, so several clients can hit
 # different exits at the same time instead of sharing the global switch.

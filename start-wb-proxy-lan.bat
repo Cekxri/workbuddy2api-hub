@@ -19,7 +19,6 @@ rem ===========================================================
 set "PORT=%~1"
 if "%PORT%"=="" set "PORT=8788"
 set "KEY=%~2"
-if "%KEY%"=="" set "KEY=qwer.1234"
 set "HERE=%~dp0"
 set "SCRIPT=%HERE%wb_proxy.py"
 
@@ -101,8 +100,16 @@ echo   Keep this window open. Closing it stops the server.
 echo ===========================================================
 echo.
 
+rem Pass --api-key only when the user supplied one; otherwise the gateway
+rem mints a random key on first run and prints it below.
+if "%KEY%"=="" goto run_nokey
 "%PYEXE%" "%SCRIPT%" --port %PORT% --lan --api-key %KEY%
+goto after_run
 
+:run_nokey
+"%PYEXE%" "%SCRIPT%" --port %PORT% --lan
+
+:after_run
 echo.
 echo [server exited]
 pause

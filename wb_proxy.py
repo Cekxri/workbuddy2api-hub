@@ -17,7 +17,6 @@ Only the Python standard library is required.
 """
 
 import argparse
-import base64
 import hashlib
 import re
 import json
@@ -133,8 +132,6 @@ def install_console_close_handler():
 UPSTREAM = "https://www.workbuddy.ai"
 CHAT_PATH = "/v2/chat/completions"
 MODELS_PATH = "/v2/enterprises/personal/models"
-REFRESH_PATH = "/v2/auth/token/refresh"
-USER_AGENT = "CLI/2.63.2 CodeBuddy/2.63.2"
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 
 # The WorkBuddy AI desktop app caches its account product config here on every
@@ -144,21 +141,49 @@ DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 # the cache and fall back to the endpoint.
 PRODUCT_CONFIG_CACHE = os.path.join(os.path.expanduser("~"), ".workbuddy-ai", "cache", "acc-product-config-v3.json")
 
-# Intl only. The WorkBuddy AI desktop app (WorkBuddyAI.exe) keeps its session in
-# the shared IDE data dir as workbuddy-desktop-ai.info. The CN build
-# (workbuddy-desktop.info / copilot.tencent.com) is deliberately NOT scanned.
-AUTH_DIRS = [
-    os.path.join(os.environ.get("LOCALAPPDATA", ""), "CodeBuddyExtension", "Data", "Public", "auth"),
-]
-
-INTL_DOMAIN_SUFFIX = ".workbuddy.ai"
-INTL_ISSUER_MARKER = "workbuddy.ai"
-
 NOISE_KEYS = ("extra_fields", "refusal", "reasoning_content")
+
+
+class BodyTooLarge(Exception):
+    """Raised when a request body exceeds the configured cap."""
+
+    def __init__(self, length):
+        super(BodyTooLarge, self).__init__(length)
+        self.length = length
+
+
+class BadJSON(Exception):
+    """Raised when a request body is present but not a JSON object."""
+
+# CORS is only needed by browser-based chat clients that call the OpenAI-style
+# API from another origin. Management routes (accounts, settings, usage,
+# scheduler, panel) serve the dashboard, which is same-origin, so they get no
+# ACAO header - that keeps a stray page on the LAN from reading their replies.
+CORS_PATH_PREFIXES = ("/v1", "/chat", "/completions", "/models", "/responses")
+
+
+def cors_origin_allowed(path):
+    """True when the OpenAI-style API path should advertise CORS."""
+    path = (path or "").split("?")[0]
+    return path.startswith(CORS_PATH_PREFIXES)
 
 _lock = threading.Lock()
 _login_lock = threading.Lock()
 _login_attempts = {}  # ip -> list of timestamp
+
+
+def _prune_login_attempts(now=None, window=60):
+    """Drop stale per-IP entries so the dict cannot grow without bound.
+
+    Caller must hold _login_lock.
+    """
+    now = now or time.time()
+    for ip in list(_login_attempts.keys()):
+        recent = [t for t in _login_attempts[ip] if now - t < window]
+        if recent:
+            _login_attempts[ip] = recent
+        else:
+            del _login_attempts[ip]
 _models_cache = {"intl": {"at": 0.0, "data": None}, "cn": {"at": 0.0, "data": None}}
 
 # Usage accounting: every upstream response carries a usage block, and the
@@ -175,8 +200,6 @@ USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "reasoning_tokens",
 # Web-panel access control. The panel is gated by its own password (default
 # "admin"), independent of the /v1 API key. Sessions live in memory only, so a
 # restart forces browsers to log in again.
-# The value start-wb-proxy-lan.bat passes when the user gives no --api-key.
-LAUNCHER_DEFAULT_KEY = "qwer.1234"
 PANEL = wb_settings.PanelSessions()
 API_KEY_FILE_SET = False
 
@@ -278,7 +301,9 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
     # Derived per-request rates (None-safe).
     if gen_ms and gen_ms > 0:
         row["tokens_per_sec"] = round(fields["completion_tokens"] / (gen_ms / 1000.0), 2)
-    if fields["prompt_tokens"]:
+    # Share the denominator with the aggregate view (compute_usage_analytics),
+    # otherwise the per-request row and the rollup disagree on the same data.
+    if fields["prompt_tokens"] > 0:
         row["cache_hit_pct"] = round(fields["cached_tokens"] * 100.0 / fields["prompt_tokens"], 1)
 
     with _lock:
@@ -515,169 +540,6 @@ def recent_usage(limit=100, realm=None):
                 rows.append(item)
     except Exception: pass
     return {"total": total, "rows": rows[-limit:]}
-
-
-# ---------------------------------------------------------------------------
-# credential handling
-# ---------------------------------------------------------------------------
-
-def _jwt_issuer(token):
-    try:
-        payload = token.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        return str(json.loads(base64.urlsafe_b64decode(payload)).get("iss") or "")
-    except Exception:
-        return ""
-
-
-def is_intl_credential(blob):
-    """True only for the international realm (www.workbuddy.ai).
-
-    Guards against accidentally picking up the CN build's credential, which
-    lives in the same directory and targets copilot.tencent.com.
-    """
-    auth = blob.get("auth") or {}
-    domain = str(auth.get("domain") or "").strip().lower()
-    if not (domain == "workbuddy.ai" or domain.endswith(INTL_DOMAIN_SUFFIX)):
-        return False
-    issuer = _jwt_issuer(str(auth.get("accessToken") or "")).lower()
-    return INTL_ISSUER_MARKER in issuer
-
-
-def find_auth_file():
-    """Return the newest intl (www.workbuddy.ai) *.info credential file."""
-    cands = []
-    for d in AUTH_DIRS:
-        if not d or not os.path.isdir(d):
-            continue
-        for name in os.listdir(d):
-            if not name.endswith(".info"):
-                continue
-            p = os.path.join(d, name)
-            try:
-                with open(p, encoding="utf-8") as fh:
-                    blob = json.load(fh)
-            except Exception:
-                continue
-            if is_intl_credential(blob):
-                cands.append((os.path.getmtime(p), p))
-    if not cands:
-        raise SystemExit(
-            "No international (www.workbuddy.ai) credential found.\n"
-            "Sign in with the WorkBuddy AI desktop app (WorkBuddyAI.exe) first, "
-            "or pass --info <path to workbuddy-desktop-ai.info>."
-        )
-    return max(cands)[1]
-
-
-class Session:
-    """Holds the live WorkBuddy credential, re-reading/refreshing as needed."""
-
-    def __init__(self, info_path):
-        self.info_path = info_path
-        self.token = None
-        self.refresh_token = None
-        self.uid = None
-        self.domain = "www.workbuddy.ai"
-        self.issuer = ""
-        self.exp = 0
-        self.reload()
-
-    def _jwt_exp(self, token):
-        try:
-            payload = token.split(".")[1]
-            payload += "=" * (-len(payload) % 4)
-            return int(json.loads(base64.urlsafe_b64decode(payload)).get("exp") or 0)
-        except Exception:
-            return 0
-
-    def reload(self):
-        with open(self.info_path, encoding="utf-8") as fh:
-            blob = json.load(fh)
-        auth = blob.get("auth") or {}
-        account = blob.get("account") or {}
-        self.token = auth.get("accessToken") or ""
-        self.refresh_token = auth.get("refreshToken") or ""
-        self.uid = account.get("uid") or ""
-        self.domain = (auth.get("domain") or "www.workbuddy.ai").strip()
-        self.issuer = _jwt_issuer(self.token)
-        self.exp = self._jwt_exp(self.token)
-        # Fail closed: never forward a CN/free-tier realm token to workbuddy.ai.
-        if not is_intl_credential(blob):
-            raise SystemExit(
-                f"Credential at {self.info_path} is not the international realm "
-                f"(domain={self.domain!r}, issuer={self.issuer!r}).\n"
-                "This proxy only serves www.workbuddy.ai - sign in with the "
-                "WorkBuddy AI desktop app."
-            )
-        return self
-
-    def valid(self):
-        return bool(self.token) and (self.exp == 0 or self.exp - time.time() > 120)
-
-    def refresh(self):
-        """Best-effort access-token refresh; falls back to the on-disk session."""
-        if not self.refresh_token:
-            return False
-        req = urllib.request.Request(
-            UPSTREAM + REFRESH_PATH,
-            data=b"{}",
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/plain, */*",
-                "User-Agent": USER_AGENT,
-                "X-Refresh-Token": self.refresh_token,
-                "X-Auth-Refresh-Source": "plugin",
-                "X-User-Id": self.uid,
-                "X-Domain": self.domain,
-                "X-Product": "SaaS",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:
-            log(f"token refresh failed: {exc}")
-            return False
-        data = (payload.get("data") or {}).get("data") or payload.get("data") or {}
-        token = data.get("accessToken")
-        if not token:
-            return False
-        self.token = token
-        self.refresh_token = data.get("refreshToken") or self.refresh_token
-        self.exp = self._jwt_exp(token)
-        log("access token refreshed")
-        return True
-
-    def ensure(self):
-        with _lock:
-            if self.valid():
-                return
-            self.refresh()
-            if not self.valid():
-                self.reload()
-                if not self.valid():
-                    raise RuntimeError(
-                        "WorkBuddy session is expired and could not be refreshed - "
-                        "open the desktop app and sign in again."
-                    )
-
-    def headers(self):
-        self.ensure()
-        return {
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/plain, */*",
-            "X-Requested-With": "XMLHttpRequest",
-            "User-Agent": USER_AGENT,
-            "Origin": UPSTREAM,
-            "Referer": UPSTREAM + "/",
-            "Authorization": "Bearer " + self.token,
-            "X-User-Id": self.uid,
-            "X-No-Enterprise-Id": "1",
-            "X-Domain": self.domain,
-            "X-Product": "SaaS",
-        }
 
 
 POOL = None
@@ -956,7 +818,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "1.1.6",
+        "version": "1.1.7",
     }
 
 
@@ -2311,7 +2173,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/1.1.6"
+    server_version = "wb-proxy/1.1.7"
 
     def log_message(self, fmt, *args):
         log(fmt % args)
@@ -2321,7 +2183,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        if cors_origin_allowed(self.path):
+            self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
@@ -2407,15 +2270,13 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- web panel access ----
     def _panel_token(self):
-        """Session token from the X-Panel-Token header or ?panel= query."""
+        """Session token from the X-Panel-Token header.
+
+        Deliberately header-only: a token in the query string leaks through
+        browser history, the Referer header and any reverse-proxy access log.
+        """
         token = (self.headers.get("X-Panel-Token") or "").strip()
-        if token:
-            return token
-        try:
-            query = parse_qs(urlparse(self.path).query)
-            return (query.get("panel") or [""])[0].strip()
-        except Exception:
-            return ""
+        return token
 
     def _panel_ok(self):
         return PANEL.valid(self._panel_token())
@@ -2439,9 +2300,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        if cors_origin_allowed(self.path):
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Headers", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -2594,23 +2456,41 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _read_payload(self, max_bytes=MAX_PAYLOAD_BYTES):
+        """Parse the request body into a dict.
+
+        Raises BodyTooLarge / BadJSON so every caller handles both cases the
+        same way instead of each remembering to check for None.
+        """
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except Exception:
-            return {}
+            length = 0
         if length > max_bytes:
-            self._error(413, f"payload too large ({length} bytes > {max_bytes} limit)", "invalid_request_error")
-            return None
+            raise BodyTooLarge(length)
+        if length < 0:
+            raise BadJSON()
         try:
             raw = self.rfile.read(length).decode("utf-8") if length else "{}"
             data = json.loads(raw or "{}")
-            return data if isinstance(data, dict) else {}
         except Exception:
-            return {}
+            raise BadJSON()
+        return data if isinstance(data, dict) else {}
+
+    def _payload_or_error(self):
+        """Read the body, replying with the right error and returning None."""
+        try:
+            return self._read_payload()
+        except BodyTooLarge as exc:
+            self._error(413, "payload too large (%d bytes > %d limit)"
+                        % (exc.length, MAX_PAYLOAD_BYTES), "invalid_request_error")
+            return None
+        except BadJSON:
+            self._error(400, "invalid JSON body", "invalid_request_error")
+            return None
 
     def _handle_settings_save(self):
         """Persist panel-managed settings from the web settings tab."""
-        payload = self._read_payload()
+        payload = self._payload_or_error()
         if payload is None:
             return
         reply = {}
@@ -2680,7 +2560,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_panel(self, path):
         """Panel login, logout and the settings screen (password + API key)."""
-        payload = self._read_payload()
+        payload = self._payload_or_error()
         if payload is None:
             return
 
@@ -2688,6 +2568,7 @@ class Handler(BaseHTTPRequestHandler):
             client_ip = self.client_address[0] if hasattr(self, "client_address") and self.client_address else "127.0.0.1"
             now = time.time()
             with _login_lock:
+                _prune_login_attempts(now)
                 attempts = [t for t in _login_attempts.get(client_ip, []) if now - t < 60]
                 _login_attempts[client_ip] = attempts
                 if len(attempts) >= 5:
@@ -2918,7 +2799,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
                 self.send_header("Cache-Control", "no-cache")
                 self.send_header("Connection", "close")
-                self.send_header("Access-Control-Allow-Origin", "*")
+                if cors_origin_allowed(self.path):
+                    self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 holder = {"usage": None}
                 first_ms = None
@@ -2977,17 +2859,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
 
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except Exception:
-            length = 0
-        if length > MAX_PAYLOAD_BYTES:
-            return self._error(413, f"payload too large ({length} bytes > {MAX_PAYLOAD_BYTES} limit)", "invalid_request_error")
-        try:
-            raw = self.rfile.read(length).decode("utf-8") if length else "{}"
-            payload = json.loads(raw or "{}")
-        except Exception:
-            return self._error(400, "invalid JSON body", "invalid_request_error")
+        payload = self._payload_or_error()
+        if payload is None:
+            return
 
         if is_account_route:
             return self._handle_accounts(path, payload)
@@ -3041,7 +2915,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
                 self.send_header("Cache-Control", "no-cache")
                 self.send_header("Connection", "close")
-                self.send_header("Access-Control-Allow-Origin", "*")
+                if cors_origin_allowed(self.path):
+                    self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 emitted = False
                 last_usage = None
@@ -3129,13 +3004,10 @@ def main():
                     help="set the web panel password on startup (default: admin)")
     args = ap.parse_args()
 
-    # LAN mode: bind everywhere, and default to the fixed key "qwer.1234".
-    if args.lan:
-        if args.host == "127.0.0.1":
-            args.host = "0.0.0.0"
-        if not args.api_key:
-            args.api_key = "qwer.1234"
-            API_KEY_GENERATED = False
+    # LAN mode binds every interface. The key is generated below, once
+    # ACCOUNTS_DIR is resolved, so it can be persisted and reused.
+    if args.lan and args.host == "127.0.0.1":
+        args.host = "0.0.0.0"
 
     if args.user_agent:
         wb_accounts.USER_AGENT = args.user_agent.strip()
@@ -3171,12 +3043,18 @@ def main():
     if args.accounts_dir:
         ACCOUNTS_DIR = os.path.abspath(args.accounts_dir)
 
-    # Panel-managed settings win over the launcher default so a key change
-    # made in the browser survives a restart of the .bat file. An explicit
-    # --api-key that is not the launcher default still takes precedence.
+    # LAN mode must not ship a known key: the gateway spends the account's own
+    # upstream quota, so a guessable default lets anyone on the network drain
+    # it. Generate one on first use, persist it, and reuse it afterwards.
+    if args.lan and not API_KEY:
+        API_KEY, API_KEY_GENERATED = wb_settings.ensure_launcher_key(ACCOUNTS_DIR)
+
+    # A key saved from the panel wins over an auto-generated LAN key so a
+    # change made in the browser survives a restart of the .bat file. An
+    # explicit --api-key on the command line still takes precedence.
     global API_KEY_FILE_SET
     saved_key, key_from_panel = wb_settings.api_key_override(ACCOUNTS_DIR)
-    if key_from_panel and (not args.api_key or args.api_key == LAUNCHER_DEFAULT_KEY):
+    if key_from_panel and not args.api_key:
         API_KEY = saved_key
         API_KEY_FILE_SET = True
 
@@ -3256,7 +3134,9 @@ def main():
         print()
         print("    API Key   : %s" % API_KEY)
         if API_KEY_GENERATED:
-            print("                (generated for this run - save it)")
+            print("                (newly generated & saved to accounts/settings.json)")
+        else:
+            print("                (reused from accounts/settings.json)")
         print()
         print("    Open the dashboard (key already included):")
         print("      http://%s:%s/?key=%s" % (ips[0], args.port, API_KEY))
@@ -3284,6 +3164,8 @@ def main():
         sys.stdout.flush()
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
+    # Keep the handler referenced for the process lifetime: SetConsoleCtrlHandler
+    # stores a raw pointer, so a collected callback would crash on close.
     _ctrl_handler = install_console_close_handler()
     try:
         server.serve_forever()
