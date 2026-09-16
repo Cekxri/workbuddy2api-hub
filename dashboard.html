@@ -252,6 +252,8 @@ a:hover{text-decoration:underline}
     <button onclick="openLoginModal()">+ 添加账号 (OAuth)</button>
     <button class="sec" id="btnCheckin" onclick="doCheckin(this)" style="display:none">每日签到 (国内版)</button>
     <button class="sec" id="btnScanDesktop" onclick="scanDesktop(this)">扫描桌面客户端账号</button>
+    <button class="sec" onclick="exportAccounts(this)">导出账号</button>
+    <button class="sec" onclick="openImport()">导入账号</button>
     <button class="sec" onclick="fetchCredits(this)">刷新额度/积分</button>
     <button class="sec" onclick="setAll(true)">全部启用</button>
     <button class="sec" onclick="setAll(false)">全部停用</button>
@@ -504,6 +506,31 @@ a:hover{text-decoration:underline}
     <div class="modal-ft">
       <button class="sec" onclick="refreshDesktopScan(this)">重新扫描</button>
       <button class="sec" onclick="closeDesktopScan()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-mask" id="importModal">
+  <div class="modal" role="dialog" aria-modal="true" style="width:min(720px,100%)">
+    <div class="modal-hd">
+      <h2>导入账号</h2>
+      <button class="modal-x" onclick="closeImport()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint" style="margin-top:0">
+        选择一个账号 JSON 文件。支持本网关导出的文件、账号数组、单个账号对象，
+        以及桌面客户端的 <code>{"account":…,"auth":…}</code> 格式。
+      </p>
+      <div id="importBody"><p class="hint">尚未选择文件。</p></div>
+    </div>
+    <div class="modal-ft">
+      <label class="sec" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="checkbox" id="importOverwrite" style="margin:0">
+        覆盖同 UID 账号
+      </label>
+      <span style="flex:1"></span>
+      <button class="sec" onclick="closeImport()">取消</button>
+      <button id="btnImportCommit" class="primary" onclick="commitImport(this)" disabled>确认导入</button>
     </div>
   </div>
 </div>
@@ -1159,6 +1186,157 @@ async function deleteAccount(uid, name){
   try{ await postJSON('/accounts/delete', {uid: uid}); await loadAccounts(); }
   catch(e){ toast(e.message); }
 }
+
+/* ---- 账号导出 / 导入 ---- */
+async function exportAccounts(btn){
+  // Fetch through the authorised JSON API and save the blob client-side.
+  // A plain <a href> would not carry the X-Panel-Token header, so a
+  // password-only session would be rejected.
+  if(btn){ btn.disabled = true; btn.textContent = '导出中...'; }
+  try{
+    const r = await fetch('/accounts/export', {cache:'no-store', headers: authHeaders()});
+    if(r.status === 401 || r.status === 403){ panelNeedsLogin(); throw new Error('unauthorized'); }
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const text = await r.text();
+    let doc;
+    try{ doc = JSON.parse(text); }catch(e){ throw new Error('返回内容不是 JSON'); }
+    const stamp = new Date().toISOString().slice(0,19).replace(/[-:T]/g,'');
+    const name = 'workbuddy-accounts-' + stamp + '.json';
+    const blob = new Blob([text], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('已导出 ' + (doc.count || 0) + ' 个账号 → ' + name);
+  }catch(e){
+    toast('导出失败: ' + e.message, 'err');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '导出账号'; }
+  }
+}
+
+let importRows = null;   // 已解析、待导入的账号行
+
+function openImport(){
+  importRows = null;
+  const m = document.getElementById('importModal');
+  const body = document.getElementById('importBody');
+  const ow = document.getElementById('importOverwrite');
+  if(ow) ow.checked = false;
+  if(body) body.innerHTML = '<p class="hint">正在打开文件…</p>';
+  if(m) m.classList.add('show');
+  // The picker is created per call so choosing the same file twice still fires.
+  const picker = document.createElement('input');
+  picker.type = 'file';
+  picker.accept = '.json,application/json';
+  picker.onchange = () => {
+    const f = picker.files && picker.files[0];
+    if(!f){ closeImport(); return; }
+    readImportFile(f);
+  };
+  picker.click();
+}
+
+function closeImport(){
+  const m = document.getElementById('importModal');
+  if(m) m.classList.remove('show');
+  importRows = null;
+  const btn = document.getElementById('btnImportCommit');
+  if(btn) btn.disabled = true;
+}
+
+async function readImportFile(file){
+  const body = document.getElementById('importBody');
+  try{
+    const text = await file.text();
+    let doc;
+    try{ doc = JSON.parse(text); }
+    catch(e){ throw new Error('文件不是合法 JSON'); }
+
+    // Accept the export document, a bare array, or a single account object.
+    let rows;
+    if(Array.isArray(doc)) rows = doc;
+    else if(doc && Array.isArray(doc.accounts)) rows = doc.accounts;
+    else if(doc && (doc.accessToken || doc.auth)) rows = [doc];
+    else throw new Error('文件里没有找到账号（既没有 accounts 数组，也不是单个账号）');
+
+    if(!rows.length) throw new Error('账号列表是空的');
+    importRows = rows;
+
+    // Dry-run first so the user sees exactly what will happen.
+    const r = await postJSON('/accounts/import', {data: doc, dryRun: true});
+    renderImportPreview(file.name, r.result || {}, rows.length);
+  }catch(e){
+    importRows = null;
+    const btn = document.getElementById('btnImportCommit');
+    if(btn) btn.disabled = true;
+    if(body) body.innerHTML = '<p class="hint" style="color:var(--warn)">读取失败: ' + esc(e.message) + '</p>';
+  }
+}
+
+function renderImportPreview(filename, res, total){
+  const body = document.getElementById('importBody');
+  const btn = document.getElementById('btnImportCommit');
+  const added = res.added || [], updated = res.updated || [];
+  const skipped = res.skipped || [], invalid = res.invalid || [];
+
+  const rowsHtml = list => list.map(x => {
+    const uid = (typeof x === 'string' ? x : x.uid) || '?';
+    const reason = (typeof x === 'object' && x.reason) ? ' — ' + esc(x.reason) : '';
+    return '<li><code>' + esc(String(uid).slice(0,8)) + '</code>' + reason + '</li>';
+  }).join('');
+
+  let html = '<p class="hint" style="margin-top:0">文件：<b>' + esc(filename) + '</b>'
+    + ' · 共 ' + total + ' 条</p>';
+  html += '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px">'
+    + '<span>新增 <b style="color:var(--accent2)">' + added.length + '</b></span>'
+    + '<span>覆盖 <b>' + updated.length + '</b></span>'
+    + '<span>跳过 <b>' + skipped.length + '</b></span>'
+    + '<span>无效 <b style="color:var(--warn)">' + invalid.length + '</b></span>'
+    + '</div>';
+
+  if(added.length)   html += '<div style="margin-bottom:8px"><b>将新增</b><ul class="hint" style="margin:4px 0 0 18px;padding:0">' + rowsHtml(added) + '</ul></div>';
+  if(updated.length) html += '<div style="margin-bottom:8px"><b>将覆盖</b><ul class="hint" style="margin:4px 0 0 18px;padding:0">' + rowsHtml(updated) + '</ul></div>';
+  if(skipped.length) html += '<div style="margin-bottom:8px"><b>将跳过</b><ul class="hint" style="margin:4px 0 0 18px;padding:0">' + rowsHtml(skipped) + '</ul></div>';
+  if(invalid.length) html += '<div style="margin-bottom:8px"><b>无法解析</b><ul class="hint" style="margin:4px 0 0 18px;padding:0">' + rowsHtml(invalid) + '</ul></div>';
+
+  if(!added.length && !updated.length){
+    html += '<p class="hint" style="color:var(--warn)">没有可导入的账号。'
+      + (skipped.length ? '若要覆盖已存在的账号，请勾选下方「覆盖同 UID 账号」。' : '') + '</p>';
+  }
+  if(body) body.innerHTML = html;
+
+  const canCommit = (added.length + updated.length) > 0;
+  if(btn){
+    btn.disabled = !canCommit;
+    btn.textContent = '确认导入 ' + (added.length + updated.length) + ' 个';
+  }
+}
+
+async function commitImport(btn){
+  if(!importRows) return;
+  const ow = document.getElementById('importOverwrite');
+  const overwrite = !!(ow && ow.checked);
+  if(overwrite && !confirm('将覆盖同 UID 的现有账号（含其凭证），确定继续？')) return;
+
+  if(btn){ btn.disabled = true; btn.textContent = '导入中...'; }
+  try{
+    const r = await postJSON('/accounts/import', {data: importRows, overwrite: overwrite});
+    const res = r.result || {};
+    const n = (res.added || []).length + (res.updated || []).length;
+    toast('导入完成：新增 ' + (res.added || []).length
+          + '，覆盖 ' + (res.updated || []).length
+          + '，跳过 ' + (res.skipped || []).length
+          + '，无效 ' + (res.invalid || []).length);
+    if(n > 0){ closeImport(); await loadAccounts(); }
+    else { renderImportPreview('（已导入）', res, importRows.length); }
+  }catch(e){
+    toast('导入失败: ' + e.message, 'err');
+    if(btn){ btn.disabled = false; btn.textContent = '确认导入'; }
+  }
+}
+
 /* 桌面客户端账号：两步确认（先扫描展示弹窗，再逐条导入） */
 async function scanDesktop(btn){
   if(btn){ btn.disabled = true; btn.textContent = '扫描中...'; }
