@@ -1525,7 +1525,7 @@ async function panelLogout(){
 
 async function bootPanel(){
   try {
-    const r = await fetch('/panel/status', {cache: 'no-store'});
+    const r = await fetch('/panel/status', {cache: 'no-store', headers: authHeaders()});
     PANEL_STATUS = await r.json().catch(() => ({}));
   } catch(e) { PANEL_STATUS = {}; }
   const hint = document.getElementById('panelDefaultHint');
