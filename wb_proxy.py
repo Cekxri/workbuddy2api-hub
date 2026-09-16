@@ -2599,18 +2599,37 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # ?download=1 makes the browser save it as a file; without it the
             # document is returned inline so the dashboard can show a summary.
+            # ?uid= narrows it to specific accounts (repeatable, comma-joined),
+            # which is how the per-row "export" button works.
             realm = (query.get("realm") or [None])[0] or None
             if realm not in ("intl", "cn"):
                 realm = None
             include_secrets = (query.get("secrets") or ["1"])[0] not in ("0", "false", "no")
+
+            uids = []
+            for raw in query.get("uid") or []:
+                uids.extend(part.strip() for part in str(raw).split(",") if part.strip())
+            if uids:
+                known = {a.uid for a in (POOL.accounts if POOL else [])}
+                missing = [u for u in uids if u not in known]
+                if missing:
+                    return self._error(404, "no such account: %s" % ", ".join(missing[:5]),
+                                       "invalid_request_error")
             doc = wb_accounts.build_export_document(
                 POOL.accounts if POOL else [],
                 realm=realm,
                 include_secrets=include_secrets,
+                uids=uids or None,
             )
             if (query.get("download") or ["0"])[0] in ("1", "true", "yes"):
                 stamp = time.strftime("%Y%m%d-%H%M%S")
-                name = "workbuddy-accounts-%s%s.json" % (realm + "-" if realm else "", stamp)
+                if len(uids) == 1:
+                    # Name a single-account export after the account, so a
+                    # folder of them stays readable.
+                    label = uids[0][:8]
+                else:
+                    label = realm + "-" if realm else ""
+                name = "workbuddy-accounts-%s%s.json" % (label, stamp)
                 return self._download(name, doc)
             return self._json(200, doc)
         if path == "/accounts/login/poll":

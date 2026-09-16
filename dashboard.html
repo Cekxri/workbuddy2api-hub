@@ -1097,6 +1097,7 @@ function accountRow(a){
     + '<td style="white-space:nowrap">'
     + '<button class="sec mini" onclick="toggleAccount(&quot;' + uidAttr + '&quot;,' + (!a.enabled) + ')">' + (a.enabled ? '停用' : '启用') + '</button> '
     + '<button class="sec mini" onclick="refreshOne(&quot;' + uidAttr + '&quot;)">刷新</button> '
+    + '<button class="sec mini" onclick="exportOne(&quot;' + uidAttr + '&quot;)">导出</button> '
     + '<button class="danger mini" onclick="deleteAccount(&quot;' + uidAttr + '&quot;,&quot;' + nameAttr + '&quot;)">删除</button>'
     + '</td></tr>';
 }
@@ -1188,31 +1189,52 @@ async function deleteAccount(uid, name){
 }
 
 /* ---- 账号导出 / 导入 ---- */
-async function exportAccounts(btn){
+async function downloadExport(query, fallbackLabel){
   // Fetch through the authorised JSON API and save the blob client-side.
   // A plain <a href> would not carry the X-Panel-Token header, so a
   // password-only session would be rejected.
+  const r = await fetch('/accounts/export' + (query || ''), {cache:'no-store', headers: authHeaders()});
+  if(r.status === 401 || r.status === 403){ panelNeedsLogin(); throw new Error('unauthorized'); }
+  if(r.status === 404){
+    let msg = '账号不存在';
+    try{ const e = await r.json(); msg = (e.error && e.error.message) || msg; }catch(_){}
+    throw new Error(msg);
+  }
+  if(!r.ok) throw new Error('HTTP ' + r.status);
+  const text = await r.text();
+  let doc;
+  try{ doc = JSON.parse(text); }catch(e){ throw new Error('返回内容不是 JSON'); }
+  const stamp = new Date().toISOString().slice(0,19).replace(/[-:T]/g,'');
+  const name = 'workbuddy-accounts-' + (fallbackLabel || '') + stamp + '.json';
+  const blob = new Blob([text], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return {count: doc.count || 0, name: name};
+}
+
+async function exportAccounts(btn){
   if(btn){ btn.disabled = true; btn.textContent = '导出中...'; }
   try{
-    const r = await fetch('/accounts/export', {cache:'no-store', headers: authHeaders()});
-    if(r.status === 401 || r.status === 403){ panelNeedsLogin(); throw new Error('unauthorized'); }
-    if(!r.ok) throw new Error('HTTP ' + r.status);
-    const text = await r.text();
-    let doc;
-    try{ doc = JSON.parse(text); }catch(e){ throw new Error('返回内容不是 JSON'); }
-    const stamp = new Date().toISOString().slice(0,19).replace(/[-:T]/g,'');
-    const name = 'workbuddy-accounts-' + stamp + '.json';
-    const blob = new Blob([text], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = name;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    toast('已导出 ' + (doc.count || 0) + ' 个账号 → ' + name);
+    const r = await downloadExport('', '');
+    toast('已导出 ' + r.count + ' 个账号 → ' + r.name);
   }catch(e){
     toast('导出失败: ' + e.message, 'err');
   }finally{
     if(btn){ btn.disabled = false; btn.textContent = '导出账号'; }
+  }
+}
+
+async function exportOne(uid){
+  // Same document format as the bulk export, just narrowed to one account, so
+  // the file can be re-imported on another instance without editing.
+  try{
+    const r = await downloadExport('?uid=' + encodeURIComponent(uid), uid.slice(0,8) + '-');
+    toast('已导出 1 个账号 → ' + r.name);
+  }catch(e){
+    toast('导出失败: ' + e.message, 'err');
   }
 }
 

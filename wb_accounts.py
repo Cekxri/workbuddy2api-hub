@@ -858,11 +858,22 @@ def account_to_export(account):
     return data
 
 
-def build_export_document(accounts, realm=None, include_secrets=True):
-    """Wrap accounts in a self-describing export document."""
+def build_export_document(accounts, realm=None, include_secrets=True, uids=None):
+    """Wrap accounts in a self-describing export document.
+
+    `uids` narrows the export to specific accounts (a single uid gives a
+    one-account document). It is applied on top of the realm filter, so the
+    caller can ask for "this account" and still get an empty document rather
+    than a wrong one when the uid belongs to the other realm.
+    """
+    wanted = None
+    if uids is not None:
+        wanted = {str(u) for u in uids}
     rows = []
     for account in accounts:
         if realm and account.realm != realm:
+            continue
+        if wanted is not None and account.uid not in wanted:
             continue
         row = account_to_export(account)
         if not include_secrets:
