@@ -1,7 +1,7 @@
 # WorkBuddy2API-Hub — 国际版、国内版多账号网关中枢
 
 <p align="center">
-  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.1.6-2496ED?style=flat-square" alt="Version 1.1.6"></a>
+  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.1.7-2496ED?style=flat-square" alt="Version 1.1.7"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
@@ -48,7 +48,9 @@
 ### 3. 局域网共享模式
 双击运行 **`start-wb-proxy-lan.bat`**，允许局域网内其他设备（手机、平板、协同电脑）访问：
 - **Base URL**：`http://<本机局域网IP>:8788/v1`
-- **首次自动生成 Key**：为了内网安全，若面板未配置任何 Key，启动时终端会自动随机生成一个 24 位安全 API Key，并在控制台高亮输出；同时支持带密钥直达面板：`http://<IP>:8788/?key=生成的Key`。
+- **密钥随机生成并持久化**：LAN 模式不会使用任何写死的默认密钥。首次启动时自动生成一个高强度随机 API Key，保存到 `accounts/settings.json`，并在终端打印；之后重启会复用同一个 Key（不会每次变化）。
+- **自定义 Key**：启动脚本支持第二个参数传入自己的 Key，例如 `start-wb-proxy-lan.bat 8788 我的Key`，此时以你传入的为准。
+- 支持带密钥直达面板：`http://<IP>:8788/?key=生成的Key`。
 
 ---
 

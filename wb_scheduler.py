@@ -10,6 +10,7 @@ import json
 import os
 import threading
 import time
+import wb_tasks
 from wb_tasks import do_cat_travel
 
 
@@ -28,7 +29,13 @@ class Scheduler:
         self.last_run_time = None
         self.next_run_time = None
         self.logs = []
+        # Guards against overlapping runs: trigger_now() spawns a thread per
+        # click, and a manual trigger can also land on top of the hourly job.
+        self._run_lock = threading.Lock()
         self._calc_next_fire()
+        # Surface task-level failures (dead endpoints, upstream shape changes)
+        # in the same log the panel shows.
+        wb_tasks.set_logger(self.log)
 
     def log(self, msg):
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -95,10 +102,21 @@ class Scheduler:
 
     def trigger_now(self):
         """手动立即触发一次调度检查。"""
+        if self._run_lock.locked():
+            return {"ok": False, "msg": "已有巡检正在执行，请稍候再试"}
         threading.Thread(target=self._execute_cycle, args=("手动立即触发",), daemon=True).start()
         return {"ok": True, "msg": "已触发后台调度执行"}
 
     def _execute_cycle(self, trigger_reason="周期巡检"):
+        if not self._run_lock.acquire(blocking=False):
+            self.log(f"跳过本次巡检 ({trigger_reason})：上一轮仍在执行")
+            return
+        try:
+            self._run_cycle(trigger_reason)
+        finally:
+            self._run_lock.release()
+
+    def _run_cycle(self, trigger_reason="周期巡检"):
         self.last_run_time = time.strftime("%Y-%m-%d %H:%M:%S")
         self.log(f"开始执行任务 ({trigger_reason})...")
         if not self.pool or not self.pool.accounts:

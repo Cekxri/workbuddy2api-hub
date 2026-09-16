@@ -19,6 +19,20 @@ WEB_BASE = "https://www.workbuddy.cn"
 DESKTOP_UA = "WorkBuddy/5.5.6 WorkBuddy/5.5.6 CLI/2.137.1"
 WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 
+
+_log = lambda msg: None
+
+
+def set_logger(fn):
+    """Route task diagnostics to the caller's logger.
+
+    The growth endpoints swallow their errors so one dead endpoint cannot
+    abort a whole cycle. Without a logger those failures are invisible, and an
+    upstream change looks identical to "no tasks today".
+    """
+    global _log
+    _log = fn or (lambda msg: None)
+
 TASK_SPECS = {
     "create_canvas": {"kind": "canvas", "target": 1, "reward": 300, "name": "创建设计任务"},
     "template_5": {"kind": "template", "target": 5, "reward": 200, "name": "模板创建任务"},
@@ -81,7 +95,8 @@ def fetch_growth_summary(account):
         with urllib.request.urlopen(req, timeout=10) as resp:
             d = json.loads(resp.read().decode("utf-8"))
             out["energy"] = (d.get("data") or {}).get("balance", 0)
-    except Exception: pass
+    except Exception as exc:
+        _log(f"growth/energy query failed: {exc}")
     # 2. 连续打卡
     try:
         req = urllib.request.Request(CHAT_BASE + "/activity/growth/streak", headers=headers)
@@ -89,14 +104,16 @@ def fetch_growth_summary(account):
             d = json.loads(resp.read().decode("utf-8"))
             st = (d.get("data") or {}).get("streak") or {}
             out["streak_days"] = st.get("days", 0)
-    except Exception: pass
+    except Exception as exc:
+        _log(f"growth/streak query failed: {exc}")
     # 3. 猫猫旅行
     try:
         req = urllib.request.Request(CHAT_BASE + "/activity/growth/buddy/travel/status", headers=headers)
         with urllib.request.urlopen(req, timeout=10) as resp:
             d = json.loads(resp.read().decode("utf-8"))
             out["travel"] = d.get("data") or {}
-    except Exception: pass
+    except Exception as exc:
+        _log(f"buddy/travel/status query failed: {exc}")
     return out
 
 
@@ -146,8 +163,11 @@ def claim_task(account, code):
                     if d.get("code") == 0:
                         data = d.get("data") or {}
                         return {"ok": True, "credit": data.get("credit", 0), "energy": data.get("energy", 0)}
-            except Exception: pass
-    except Exception: pass
+                    _log(f"task {code} web claim rejected: code={d.get('code')} msg={d.get('msg')}")
+            except Exception as exc:
+                _log(f"task {code} web claim failed: {exc}")
+    except Exception as exc:
+        _log(f"task {code} claim failed: {exc}")
     return {"ok": False, "credit": 0, "energy": 0}
 
 
