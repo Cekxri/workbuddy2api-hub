@@ -1206,25 +1206,40 @@ SANITIZE_FEATURES = (
     "You are Claude Code",
     "Main branch (",
     "You are a coding agent running in the Codex CLI",
+    "github.com/anthropics/",
+    "11128",
 )
 
 SANITIZE_REWRITES = (
-    ("You are Claude Code, Anthropic's official CLI for Claude.",
-     "You are Claude Code, Anthropic's official CLI tool for Claude."),
+    ("You are Claude Code, Anthropic's official CLI for Claude",
+     "You are Claude Code, Anthropic's official CLI tool for Claude"),
     ("Main branch (you will usually use this for PRs)",
      "Default branch (you will usually use this for PRs)"),
     ("You are a coding agent running in the Codex CLI, a terminal-based coding assistant.",
      "You are a coding agent running in the Codex CLI tool, a terminal-based coding assistant."),
+    ("To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
+     "To provide feedback, users should report the issue at https://github.com/anthropics/claude-code/issues"),
+    ("11128", "11-128"),
 )
 
 SANITIZE_HDR_RE = re.compile(r"(?i)x-anthropic-billing-header:[^;\r\n]*;?\s*")
+SANITIZE_BARE_HDR_RE = re.compile(r"(?i)x-anthropic-billing-header")
 SANITIZE_KV_RE = re.compile(r"(?i)\bcc_[a-z0-9_]+=[^;\r\n]*;?\s*")
 
+
+def has_fingerprint(text):
+    if not isinstance(text, str) or not text:
+        return False
+    for f in SANITIZE_FEATURES:
+        if f in text:
+            return True
+    return bool(SANITIZE_BARE_HDR_RE.search(text))
+
+
 def sanitize_text(text):
-    if not isinstance(text, str):
+    if not isinstance(text, str) or not text:
         return text
-    hit = any(f in text for f in SANITIZE_FEATURES) or bool(SANITIZE_HDR_RE.search(text))
-    if not hit:
+    if not has_fingerprint(text):
         return text
     for old, new in SANITIZE_REWRITES:
         text = text.replace(old, new)
@@ -1234,6 +1249,7 @@ def sanitize_text(text):
         while prev != text:
             prev = text
             text = SANITIZE_KV_RE.sub("", text)
+    text = SANITIZE_BARE_HDR_RE.sub("x-anthropic-billing-hdr", text)
     return text.strip()
 
 
@@ -1253,12 +1269,35 @@ def sanitize_content(content):
     return content
 
 
+def sanitize_tool_calls(tool_calls):
+    if not isinstance(tool_calls, list):
+        return tool_calls
+    out = []
+    for tc in tool_calls:
+        if isinstance(tc, dict):
+            item = dict(tc)
+            fn = item.get("function")
+            if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
+                fn = dict(fn)
+                fn["arguments"] = sanitize_text(fn["arguments"])
+                item["function"] = fn
+            out.append(item)
+        else:
+            out.append(tc)
+    return out
+
+
 def sanitize_messages(messages):
     out = []
     for m in messages or []:
-        if isinstance(m, dict) and "content" in m:
+        if isinstance(m, dict):
             item = dict(m)
-            item["content"] = sanitize_content(m["content"])
+            if "content" in item:
+                item["content"] = sanitize_content(item["content"])
+            if isinstance(item.get("reasoning_content"), str):
+                item["reasoning_content"] = sanitize_text(item["reasoning_content"])
+            if "tool_calls" in item:
+                item["tool_calls"] = sanitize_tool_calls(item["tool_calls"])
             out.append(item)
         else:
             out.append(m)
@@ -1381,6 +1420,20 @@ def parse_dsml_tool_calls(text):
     return tool_calls, clean
 
 
+def translate_max_completion_tokens(obj):
+    alias = obj.pop("max_completion_tokens", None)
+    if alias is None:
+        return
+    if "max_tokens" in obj:
+        return
+    try:
+        val = int(alias)
+        if val > 0:
+            obj["max_tokens"] = val
+    except (TypeError, ValueError):
+        pass
+
+
 def build_upstream_body(payload):
     model = payload.get("model") or ""
     messages = normalize_roles(payload.get("messages") or [])
@@ -1390,6 +1443,7 @@ def build_upstream_body(payload):
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
     body = dict(payload)
     body["messages"] = messages
+    translate_max_completion_tokens(body)
     normalize_tool_choice(body)
     normalize_tools(body)
 
@@ -1399,7 +1453,8 @@ def build_upstream_body(payload):
             body["thinking"] = {"type": "enabled"}
 
     body["stream"] = True
-    body.pop("stream_options", None)
+    if "stream_options" not in body:
+        body["stream_options"] = {"include_usage": True}
     return body
 
 
