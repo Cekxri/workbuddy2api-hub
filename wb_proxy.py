@@ -1290,7 +1290,7 @@ def clean_chunk(raw):
         if fc is not None:
             fc_empty = False
             if isinstance(fc, dict):
-                fc_empty = not fc.get("name") and not fc.get("arguments")
+                fc_empty = not fc.get("name")
             else:
                 fc_empty = not fc
             if fc_empty:
@@ -1311,7 +1311,7 @@ def _strip_empty_fc(obj):
     changed = False
     if isinstance(obj, dict):
         fc = obj.get("function_call")
-        if isinstance(fc, dict) and not fc.get("name") and not fc.get("arguments"):
+        if isinstance(fc, dict) and not fc.get("name"):
             obj.pop("function_call", None)
             changed = True
         tc = obj.get("tool_calls")
@@ -1723,9 +1723,8 @@ def aggregate_stream(raw_iter, model, resp_id):
             # PATCH2-BY-OPS: 上游会在流末尾发 function_call:{"name":"","arguments":""}
             # 占位。原判断对空 dict 成立，会凭空生成 tool_call 并伪造 id，
             # 导致 finish_reason 被改成 "tool_calls"（参数全空）→ 严格客户端死等。
-            # 故：name 与 arguments 均为空时直接跳过。
-            fc_is_empty = (not isinstance(fc, dict)) or (
-                not fc.get("name") and not fc.get("arguments"))
+            # 故：只要 name 为空即视为无效占位直接跳过。
+            fc_is_empty = (not isinstance(fc, dict)) or (not fc.get("name"))
             if fc and isinstance(fc, dict) and not fc_is_empty:
                 idx = 0
                 if idx not in tool_calls_map:
@@ -1754,13 +1753,15 @@ def aggregate_stream(raw_iter, model, resp_id):
         tool_calls_map = {
             k: v for k, v in tool_calls_map.items()
             if (v.get("function") or {}).get("name")
-            or (v.get("function") or {}).get("arguments")
         }
     if tool_calls_map:
         ordered_tcs = [tool_calls_map[k] for k in sorted(tool_calls_map.keys())]
         message["tool_calls"] = ordered_tcs
         if finish in ("stop", None):
             finish = "tool_calls"
+    elif finish == "tool_calls":
+        # 占位被全部过滤掉，无实际工具调用，降级为正常结束，防止客户端无限挂起等待
+        finish = "stop"
     out = {
         "id": resp_id or "chatcmpl-wb",
         "object": "chat.completion",

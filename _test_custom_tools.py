@@ -138,5 +138,33 @@ check("function_call_arguments.done present", "response.function_call_arguments.
 check("no custom events for a normal tool", "custom_tool_call_input" not in raw2)
 
 print()
+print("[8] aggregate_stream: empty tool_call placeholder fallback (Issue #15)")
+# Case A: upstream sends legacy function_call placeholder with finish_reason="tool_calls"
+stream_placeholder = [
+    chunk({"content": "Hello!"}),
+    chunk({"function_call": {"name": "", "arguments": ""}}, "tool_calls"),
+]
+res_a = P.aggregate_stream(iter(stream_placeholder), "m", None)
+check("placeholder: finish_reason downgraded to stop", res_a["choices"][0]["finish_reason"] == "stop")
+check("placeholder: message has no tool_calls", "tool_calls" not in res_a["choices"][0]["message"])
+
+# Case B: upstream sends name="" with non-empty arguments
+stream_nameless = [
+    chunk({"content": "Thinking..."}),
+    chunk({"tool_calls": [{"index": 0, "function": {"name": "", "arguments": '{"k":"v"}'}}]}, "tool_calls"),
+]
+res_b = P.aggregate_stream(iter(stream_nameless), "m", None)
+check("nameless tool: finish_reason downgraded to stop", res_b["choices"][0]["finish_reason"] == "stop")
+check("nameless tool: filtered out completely", "tool_calls" not in res_b["choices"][0]["message"])
+
+# Case C: valid tool call is preserved
+stream_valid = [
+    chunk({"tool_calls": [{"index": 0, "id": "call_ok", "function": {"name": "my_func", "arguments": '{"ok":true}'}}]}, "tool_calls"),
+]
+res_c = P.aggregate_stream(iter(stream_valid), "m", None)
+check("valid tool: finish_reason is tool_calls", res_c["choices"][0]["finish_reason"] == "tool_calls")
+check("valid tool: tool_calls present", len(res_c["choices"][0]["message"].get("tool_calls", [])) == 1)
+
+print()
 print("SUMMARY: PASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)
