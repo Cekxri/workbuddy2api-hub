@@ -343,20 +343,37 @@ def _pct(values, q):
     ordered = sorted(values)
     idx = int(round((q / 100.0) * (len(ordered) - 1)))
     return ordered[max(0, min(len(ordered) - 1, idx))]
-def perf_stats(sample=5000, realm=None):
+_perf_cache = {}
+_perf_lock = threading.Lock()
+
+
+def perf_stats(sample=5000, realm=None, ttl=10):
+    """Cached wrapper: parsing thousands of rows is CPU-heavy, and the
+    dashboard polls this endpoint every few seconds."""
+    r = realm or CURRENT_REALM
+    try:
+        key = (int(sample), r)
+    except Exception:
+        key = (5000, r)
+    now = time.time()
+    with _perf_lock:
+        hit = _perf_cache.get(key)
+        if hit is not None and (now - hit[0]) < ttl:
+            return hit[1]
+    data = _perf_stats_uncached(sample, realm)
+    with _perf_lock:
+        _perf_cache[key] = (time.time(), data)
+    return data
+
+
+def _perf_stats_uncached(sample=5000, realm=None):
     """Latency percentiles + derived rates, computed from the JSONL log."""
     ttfts, gens, walls, rates, hits, tok_rates = [], [], [], [], [], []
     total = ok = err = 0
     # 按模型聚合性能指标
     m_buckets = {}
-    try:
-        with open(USAGE_LOG, encoding="utf-8") as fh:
-            rows = fh.readlines()[-sample:]
-    except FileNotFoundError:
-        rows = []
-    except Exception as exc:
-        log(f"perf read failed: {exc}")
-        rows = []
+    # 只读日志末尾 sample 行：原先 readlines() 会把整个日志读成字符串列表
+    rows = [raw.decode("utf-8", "replace") for raw in _tail_lines(USAGE_LOG, sample)]
     for line in rows:
         line = line.strip()
         if not line:
@@ -431,7 +448,25 @@ def perf_stats(sample=5000, realm=None):
             } for mid, mb in m_buckets.items()
         }
     }
-def usage_snapshot(realm=None):
+_snap_cache = {}
+_snap_lock = threading.Lock()
+
+
+def usage_snapshot(realm=None, ttl=10):
+    """Cached wrapper: the dashboard polls this every few seconds."""
+    r = realm or CURRENT_REALM
+    now = time.time()
+    with _snap_lock:
+        hit = _snap_cache.get(r)
+        if hit is not None and (now - hit[0]) < ttl:
+            return hit[1]
+    data = _usage_snapshot_uncached(r)
+    with _snap_lock:
+        _snap_cache[r] = (time.time(), data)
+    return data
+
+
+def _usage_snapshot_uncached(realm=None):
     r = realm or CURRENT_REALM
     rep = POOL.representative(realm=r) if POOL else current_account()
     snap = _empty_stats()
@@ -483,20 +518,100 @@ def usage_snapshot(realm=None):
         "accounts_ready": (POOL.count_ready() if POOL else 0),
     }
     return snap
-def recent_usage(limit=100, realm=None):
-    rows, total = [], 0
+def _tail_lines(path, max_lines, chunk=256 * 1024):
+    """Return up to the last `max_lines` non-empty lines, oldest first.
+
+    The usage log passes 20MB within a day. Scanning it end to end on every
+    dashboard poll was the dominant cost behind slow /usage/* responses.
+    """
+    lines = []
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            pos = fh.tell()
+            buf = b""
+            while pos > 0 and len(lines) < max_lines:
+                step = min(chunk, pos)
+                pos -= step
+                fh.seek(pos)
+                buf = fh.read(step) + buf
+                parts = buf.split(b"\n")
+                buf = parts[0]
+                for raw in reversed(parts[1:]):
+                    if not raw.strip():
+                        continue
+                    lines.append(raw)
+                    if len(lines) >= max_lines:
+                        break
+            if len(lines) < max_lines and buf.strip():
+                lines.append(buf)
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        log("tail read failed: %s" % exc)
+        return []
+    lines.reverse()
+    return lines
+
+
+def count_usage_rows(realm=None):
+    """Cheap row count - substring match instead of a full JSON parse.
+
+    Rows written before the `realm` field existed (they are all error rows)
+    have to fall back to the account/model heuristic in row_matches_realm,
+    so those few are still parsed properly.
+    """
+    needles = ()
+    if realm:
+        needles = ('"realm": "%s"' % realm, '"realm":"%s"' % realm)
+    n = 0
     try:
         with open(USAGE_LOG, encoding="utf-8") as fh:
             for line in fh:
-                line = line.strip()
-                if not line: continue
-                try: item = json.loads(line)
-                except Exception: continue
-                if realm and not row_matches_realm(item, realm): continue
-                total += 1
-                rows.append(item)
-    except Exception: pass
-    return {"total": total, "rows": rows[-limit:]}
+                if not line.strip():
+                    continue
+                if not needles:
+                    n += 1
+                    continue
+                if any(x in line for x in needles):
+                    n += 1
+                    continue
+                if '"realm"' in line:
+                    continue          # realm 字段存在但值不同
+                try:
+                    if row_matches_realm(json.loads(line), realm):
+                        n += 1
+                except Exception:
+                    pass
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    return n
+
+
+def recent_usage(limit=100, realm=None):
+    """Last `limit` rows, read from the tail of the log.
+
+    Reading only the tail keeps this in the millisecond range even when the
+    log holds tens of thousands of rows.
+    """
+    try:
+        limit = max(1, int(limit))
+    except Exception:
+        limit = 100
+    # Realm filtering drops rows, so over-read to still fill `limit`.
+    want = limit * 8 if realm else limit
+    rows = []
+    for raw in _tail_lines(USAGE_LOG, want):
+        try:
+            item = json.loads(raw.decode("utf-8", "replace"))
+        except Exception:
+            continue
+        if realm and not row_matches_realm(item, realm):
+            continue
+        rows.append(item)
+    return {"total": count_usage_rows(realm), "rows": rows[-limit:]}
 POOL = None
 SCHEDULER = None
 ACCOUNTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'accounts')
@@ -548,7 +663,24 @@ def account_views(realm=None):
     if not POOL:
         return []
     return POOL.list_public(realm=realm)
-def usage_by_account():
+_byacct_cache = {"at": 0.0, "data": None}
+_byacct_lock = threading.Lock()
+
+
+def usage_by_account(ttl=10):
+    """Cached wrapper: full aggregation over the whole log is expensive."""
+    now = time.time()
+    with _byacct_lock:
+        if _byacct_cache["data"] is not None and (now - _byacct_cache["at"]) < ttl:
+            return _byacct_cache["data"]
+    data = _usage_by_account_uncached()
+    with _byacct_lock:
+        _byacct_cache["at"] = time.time()
+        _byacct_cache["data"] = data
+    return data
+
+
+def _usage_by_account_uncached():
     """Aggregate the JSONL log per account id."""
     buckets = {}
     try:
