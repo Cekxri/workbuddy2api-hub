@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
 """WorkBuddy (workbuddy.ai) -> OpenAI-compatible reverse proxy.
-
 Reuses the credentials the WorkBuddy desktop app already stored on this machine
 (%%LOCALAPPDATA%%\\CodeBuddyExtension\\Data\\Public\\auth\\*.info), so no separate
 login is needed. Exposes:
-
     GET  /v1/models
     POST /v1/chat/completions     (stream=true and stream=false)
     GET  /health
-
 Only the Python standard library is required.
-
     python wb_proxy.py                    # bind 127.0.0.1:8788
     python wb_proxy.py --port 9000
     python wb_proxy.py --api-key sk-local # require a bearer token
 """
-
 import argparse
 import hashlib
 import re
@@ -29,13 +24,10 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-
 import wb_accounts
 import wb_catalog
 import wb_settings
-
 CURRENT_REALM = os.environ.get("WB_PROXY_DEFAULT_REALM", "intl")
-
 def detect_model_realm(model_id):
     if not model_id:
         return CURRENT_REALM
@@ -55,8 +47,6 @@ def detect_model_realm(model_id):
     if m in cn_only or any(m.startswith(p) for p in ("minimax-", "deepseek-v4-pro")):
         return "cn"
     return CURRENT_REALM
-
-
 # Models that exist on one side only. Everything else (deepseek-v4.1-flash,
 # hy3, glm-5.3 ...) is served by both exits, so it must not be treated as a
 # conflict.
@@ -71,8 +61,6 @@ CN_EXCLUSIVE = {
     "kimi-k3-1", "kimi-k2.8-preview", "kimi-k2.7", "minimax-m3",
     "hy3-x", "hy4-preview-dev", "hy4-preview-x",
 }
-
-
 def exclusive_realm(model_id):
     """"intl"/"cn" when only that exit serves the model, else ""."""
     if not model_id:
@@ -85,16 +73,12 @@ def exclusive_realm(model_id):
     return ""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
-
-
 def install_console_close_handler():
     """Release the port when the console window is closed by the user.
-
     Windows does not kill child processes when a console window closes, so
     the proxy (started by the .bat as a child of cmd.exe) would survive and
     keep the port bound - the next launch then wrongly reports "another
     proxy is already running".
-
     Closing the window raises CTRL_CLOSE_EVENT in every process attached to
     that console, which is exactly the signal we want. Registering a handler
     for it is event-driven, so unlike polling a parent pid there is no
@@ -105,12 +89,10 @@ def install_console_close_handler():
     try:
         import ctypes
         from ctypes import wintypes
-
         PHANDLER_ROUTINE = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
         CTRL_CLOSE_EVENT = 2
         CTRL_LOGOFF_EVENT = 5
         CTRL_SHUTDOWN_EVENT = 6
-
         def _handler(event):
             if event in (CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT):
                 try:
@@ -119,41 +101,30 @@ def install_console_close_handler():
                     pass
                 os._exit(0)
             return False
-
         handler = PHANDLER_ROUTINE(_handler)   # keep the callback referenced
         if not ctypes.windll.kernel32.SetConsoleCtrlHandler(handler, True):
             return None
         return handler
     except Exception:
         return None
-
-
 UPSTREAM = "https://www.workbuddy.ai"
 CHAT_PATH = "/v2/chat/completions"
 MODELS_PATH = "/v2/enterprises/personal/models"
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
-
 # The WorkBuddy AI desktop app caches its account product config here on every
 # launch. That file carries the real model catalog the app shows in its picker
 # (21 models, incl. deepseek-v4.1-flash / gpt-6-astra) - the CLI-facing
 # /v2/enterprises/personal/models endpoint returns a narrower list, so prefer
 # the cache and fall back to the endpoint.
 PRODUCT_CONFIG_CACHE = os.path.join(os.path.expanduser("~"), ".workbuddy-ai", "cache", "acc-product-config-v3.json")
-
 NOISE_KEYS = ("extra_fields", "refusal", "reasoning_content")
-
-
 class BodyTooLarge(Exception):
     """Raised when a request body exceeds the configured cap."""
-
     def __init__(self, length):
         super(BodyTooLarge, self).__init__(length)
         self.length = length
-
-
 class BadJSON(Exception):
     """Raised when a request body is present but not a JSON object."""
-
 # CORS is only needed by browser-based chat clients that call the OpenAI-style
 # API from another origin. Management routes (accounts, settings, usage,
 # scheduler, panel) serve the dashboard, which is same-origin, so they get no
@@ -163,23 +134,17 @@ CORS_PATH_PREFIXES = ("/v1", "/chat", "/completions", "/models", "/responses")
 # /v1/usage reports account-level spend and is gated by the panel session.
 MANAGEMENT_PATH_PREFIXES = ("/v1/usage", "/usage", "/accounts", "/settings",
                             "/tasks", "/scheduler", "/panel")
-
-
 def cors_origin_allowed(path):
     """True when the OpenAI-style API path should advertise CORS."""
     path = (path or "").split("?")[0]
     if path.startswith(MANAGEMENT_PATH_PREFIXES):
         return False
     return path.startswith(CORS_PATH_PREFIXES)
-
 _lock = threading.Lock()
 _login_lock = threading.Lock()
 _login_attempts = {}  # ip -> list of timestamp
-
-
 def _prune_login_attempts(now=None, window=60):
     """Drop stale per-IP entries so the dict cannot grow without bound.
-
     Caller must hold _login_lock.
     """
     now = now or time.time()
@@ -190,7 +155,6 @@ def _prune_login_attempts(now=None, window=60):
         else:
             del _login_attempts[ip]
 _models_cache = {"intl": {"at": 0.0, "data": None}, "cn": {"at": 0.0, "data": None}}
-
 # Usage accounting: every upstream response carries a usage block, and the
 # proxy also records one JSONL line per request. Defaults to a folder next to
 # this script; override with --usage-dir or WB_PROXY_USAGE_DIR.
@@ -201,14 +165,11 @@ USAGE_SUMMARY = os.path.join(USAGE_DIR, "usage-summary.json")
 DASHBOARD_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "reasoning_tokens",
                 "cached_tokens", "total_tokens", "credit")
-
 # Web-panel access control. The panel is gated by its own password (default
 # "admin"), independent of the /v1 API key. Sessions live in memory only, so a
 # restart forces browsers to log in again.
 PANEL = wb_settings.PanelSessions()
 API_KEY_FILE_SET = False
-
-
 def configured_keys():
     """Panel-managed API keys, always read fresh so panel edits apply at once."""
     try:
@@ -216,8 +177,6 @@ def configured_keys():
     except Exception as exc:
         log("could not read api keys: %s" % exc)
         return []
-
-
 def auth_required():
     """Whether /v1 calls must present a key at all."""
     if wb_settings.auth_disabled(ACCOUNTS_DIR):
@@ -225,19 +184,14 @@ def auth_required():
     if any(entry.get("enabled") for entry in configured_keys()):
         return True
     return bool(API_KEY)
-
-
 def identify_key(supplied):
     """Return the key entry a caller used, or None when nothing matches.
-
     Once the panel has at least one key, those keys are the only accepted
     credentials - otherwise a launcher key left in a .bat file would silently
     keep working after the panel was locked down.
     """
     extra = () if configured_keys() else (API_KEY,)
     return wb_settings.match_api_key(ACCOUNTS_DIR, supplied, extra_keys=extra)
-
-
 def _empty_stats():
     return {"requests": 0, "errors": 0, "prompt_tokens": 0, "completion_tokens": 0,
             "reasoning_tokens": 0, "cached_tokens": 0, "total_tokens": 0,
@@ -246,11 +200,7 @@ def _empty_stats():
             "ttft_ms_sum": 0, "ttft_samples": 0,
             "gen_ms_sum": 0, "gen_samples": 0,
             "wall_ms_sum": 0, "wall_samples": 0}
-
-
 _usage = _empty_stats()
-
-
 def _extract_usage(usage):
     """Normalize the upstream usage block into the fields we track."""
     if not usage:
@@ -266,8 +216,6 @@ def _extract_usage(usage):
         "total_tokens": usage.get("total_tokens") or 0,
         "credit": usage.get("credit") or 0,
     }
-
-
 def row_matches_realm(row, realm):
     if not realm: return True
     r = row.get("realm")
@@ -279,14 +227,12 @@ def row_matches_realm(row, realm):
     model = row.get("model")
     if model: return detect_model_realm(model) == realm
     return realm == "intl"
-
 def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_ms=None, fp=None,
                 account=None):
     """Accumulate stats, append a JSONL row, and persist the summary."""
     fields = _extract_usage(usage)
     if not fields:
         return None
-
     row = {
         "at": time.time(),
         "iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -310,7 +256,6 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
     # otherwise the per-request row and the rollup disagree on the same data.
     if fields["prompt_tokens"] > 0:
         row["cache_hit_pct"] = round(fields["cached_tokens"] * 100.0 / fields["prompt_tokens"], 1)
-
     with _lock:
         _usage["requests"] += 1
         for k in USAGE_FIELDS:
@@ -331,7 +276,6 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
             if k in fields:
                 per[k] += fields[k]
         summary = json.loads(json.dumps(_usage))
-
     try:
         os.makedirs(USAGE_DIR, exist_ok=True)
         with open(USAGE_LOG, "a", encoding="utf-8") as fh:
@@ -343,8 +287,6 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
     except Exception as exc:
         log(f"usage persist failed: {exc}")
     return row
-
-
 def record_error(model, status, message, elapsed_ms=None):
     """Count a failed request and append it to the log so errors are visible."""
     row = {
@@ -373,8 +315,6 @@ def record_error(model, status, message, elapsed_ms=None):
     except Exception as exc:
         log(f"error persist failed: {exc}")
     return row
-
-
 def _pct(values, q):
     """Nearest-rank percentile (no interpolation) - good enough for latency."""
     if not values:
@@ -382,8 +322,6 @@ def _pct(values, q):
     ordered = sorted(values)
     idx = int(round((q / 100.0) * (len(ordered) - 1)))
     return ordered[max(0, min(len(ordered) - 1, idx))]
-
-
 def perf_stats(sample=5000, realm=None):
     """Latency percentiles + derived rates, computed from the JSONL log."""
     ttfts, gens, walls, rates, hits, tok_rates = [], [], [], [], [], []
@@ -398,7 +336,6 @@ def perf_stats(sample=5000, realm=None):
     except Exception as exc:
         log(f"perf read failed: {exc}")
         rows = []
-
     for line in rows:
         line = line.strip()
         if not line:
@@ -439,7 +376,6 @@ def perf_stats(sample=5000, realm=None):
         if r.get("elapsed_ms") is not None: mb["walls"].append(r["elapsed_ms"])
         if r.get("tokens_per_sec"): mb["tok_rates"].append(r["tokens_per_sec"])
         if r.get("cache_hit_pct") is not None: mb["hits"].append(r["cache_hit_pct"])
-
     def block(vals):
         if not vals:
             return None
@@ -451,7 +387,6 @@ def perf_stats(sample=5000, realm=None):
             "max": max(vals),
             "samples": len(vals),
         }
-
     return {
         "sampled": total,
         "success": ok,
@@ -475,8 +410,6 @@ def perf_stats(sample=5000, realm=None):
             } for mid, mb in m_buckets.items()
         }
     }
-
-
 def usage_snapshot(realm=None):
     r = realm or CURRENT_REALM
     rep = POOL.representative(realm=r) if POOL else current_account()
@@ -529,8 +462,6 @@ def usage_snapshot(realm=None):
         "accounts_ready": (POOL.count_ready() if POOL else 0),
     }
     return snap
-
-
 def recent_usage(limit=100, realm=None):
     rows, total = [], 0
     try:
@@ -545,13 +476,10 @@ def recent_usage(limit=100, realm=None):
                 rows.append(item)
     except Exception: pass
     return {"total": total, "rows": rows[-limit:]}
-
-
 POOL = None
 SCHEDULER = None
 ACCOUNTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'accounts')
 REALM_STATE_FILE = os.path.join(ACCOUNTS_DIR, "active_realm.json")
-
 def load_persisted_realm():
     global CURRENT_REALM
     if os.path.isfile(REALM_STATE_FILE):
@@ -565,7 +493,6 @@ def load_persisted_realm():
         except Exception as e:
             log("could not load active realm: %s" % e)
     return CURRENT_REALM
-
 def save_persisted_realm(realm):
     global CURRENT_REALM
     if realm in ("intl", "cn"):
@@ -578,11 +505,8 @@ def save_persisted_realm(realm):
         except Exception as exc:
             log("failed to persist active realm: %s" % exc)
     return CURRENT_REALM
-
 API_KEY = None
 SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
-
-
 def import_desktop_accounts(realm=None):
     imported = []
     for p, r in wb_accounts.desktop_credential_candidates():
@@ -595,20 +519,14 @@ def import_desktop_accounts(realm=None):
         except Exception as exc:
             log("skip %s: %s" % (os.path.basename(p), exc))
     return imported
-
-
 def desktop_credential_scan():
     """Read-only scan of the desktop client credentials on this machine."""
     return wb_accounts.scan_desktop_credentials()
-
-
 def account_views(realm=None):
     """List view of every account, including a live readiness flag."""
     if not POOL:
         return []
     return POOL.list_public(realm=realm)
-
-
 def usage_by_account():
     """Aggregate the JSONL log per account id."""
     buckets = {}
@@ -644,14 +562,10 @@ def usage_by_account():
     for item in out:
         item["models"] = sorted(item["models"].items(), key=lambda kv: -kv[1])[:5]
     return out
-
-
-
 def compute_usage_analytics():
     """Detailed analytics for Token, Cache, and Reasoning metrics page."""
     now = time.localtime()
     today_ts = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, 0, 0, 0, 0, 0, -1))
-
     def new_stat():
         return {
             "requests": 0, "errors": 0,
@@ -661,12 +575,10 @@ def compute_usage_analytics():
             "speed_sum": 0.0, "speed_n": 0,
             "elapsed_sum": 0.0, "elapsed_n": 0,
         }
-
     all_summary = new_stat()
     today_summary = new_stat()
     acct_map = {}
     model_map = {}
-
     if os.path.exists(USAGE_LOG):
         try:
             with open(USAGE_LOG, encoding="utf-8") as fh:
@@ -678,13 +590,11 @@ def compute_usage_analytics():
                         r = json.loads(line)
                     except Exception:
                         continue
-
                     is_err = bool(r.get("error"))
                     at = r.get("at", 0)
                     is_today = (at >= today_ts)
                     acct_uid = r.get("account") or "(unattributed)"
                     m_id = r.get("model") or "(unknown)"
-
                     def feed(stat_obj, is_error):
                         if is_error:
                             stat_obj["errors"] += 1
@@ -704,11 +614,9 @@ def compute_usage_analytics():
                             if r.get("elapsed_ms"):
                                 stat_obj["elapsed_sum"] += r["elapsed_ms"]
                                 stat_obj["elapsed_n"] += 1
-
                     feed(all_summary, is_err)
                     if is_today:
                         feed(today_summary, is_err)
-
                     if acct_uid not in acct_map:
                         acct_map[acct_uid] = {
                             "uid": acct_uid,
@@ -723,7 +631,6 @@ def compute_usage_analytics():
                     feed(acct_map[acct_uid]["all_time"], is_err)
                     if is_today:
                         feed(acct_map[acct_uid]["today"], is_err)
-
                     if not is_err:
                         tm = acct_map[acct_uid]["all_models"].setdefault(m_id, {"requests": 0, "tokens": 0, "reasoning": 0})
                         tm["requests"] += 1
@@ -734,7 +641,6 @@ def compute_usage_analytics():
                             tdm["requests"] += 1
                             tdm["tokens"] += (r.get("total_tokens") or 0)
                             tdm["reasoning"] += (r.get("reasoning_tokens") or 0)
-
                     if m_id not in model_map:
                         model_map[m_id] = {"model": m_id, "today": new_stat(), "all_time": new_stat()}
                     feed(model_map[m_id]["all_time"], is_err)
@@ -742,7 +648,6 @@ def compute_usage_analytics():
                         feed(model_map[m_id]["today"], is_err)
         except Exception as exc:
             log("compute_usage_analytics failed: %s" % exc)
-
     if POOL:
         for a in POOL.accounts:
             if a.uid in acct_map:
@@ -762,7 +667,6 @@ def compute_usage_analytics():
                     "today_models": {},
                     "all_models": {},
                 }
-
     def finalize(stat_obj):
         p = stat_obj["prompt_tokens"]
         c = stat_obj["cached_tokens"]
@@ -774,7 +678,6 @@ def compute_usage_analytics():
         stat_obj["speed_avg"] = round(stat_obj["speed_sum"] / stat_obj["speed_n"], 1) if stat_obj["speed_n"] > 0 else 0.0
         stat_obj["elapsed_ms_avg"] = round(stat_obj["elapsed_sum"] / stat_obj["elapsed_n"]) if stat_obj["elapsed_n"] > 0 else 0
         return stat_obj
-
     finalize(all_summary)
     finalize(today_summary)
     for a in acct_map.values():
@@ -783,18 +686,14 @@ def compute_usage_analytics():
     for m in model_map.values():
         finalize(m["today"])
         finalize(m["all_time"])
-
     accts_list = sorted(acct_map.values(), key=lambda a: (-a["today"]["total_tokens"], -a["all_time"]["total_tokens"]))
     models_list = sorted(model_map.values(), key=lambda m: (-m["today"]["total_tokens"], -m["all_time"]["total_tokens"]))
-
     return {
         "today_ts": today_ts,
         "summary": {"today": today_summary, "all_time": all_summary},
         "accounts": accts_list,
         "models": models_list,
     }
-
-
 def runtime_settings_view():
     """Current panel-visible settings (never returns the password or the key)."""
     key = API_KEY or ""
@@ -825,13 +724,9 @@ def runtime_settings_view():
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
         "version": "1.1.9",
     }
-
-
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
     return POOL.representative() if POOL else None
-
-
 # ---------------------------------------------------------------------------
 # Prefix-based session affinity (PATCHED-BY-OPS)
 # ---------------------------------------------------------------------------
@@ -850,11 +745,8 @@ AFFINITY_BY_PREFIX = os.environ.get("WB_AFFINITY_BY_PREFIX", "1").lower() not in
     "0", "false", "no", "off")
 AFFINITY_DEBUG = os.environ.get("WB_AFFINITY_DEBUG", "0").lower() in (
     "1", "true", "yes", "on")
-
-
 def derive_affinity_key(messages):
     """Derive a stable affinity key from a conversation's stable prefix.
-
     The first two messages (system + first user turn) stay byte-identical for
     the whole life of a conversation, so hashing them pins every later turn of
     that conversation to the same upstream account - exactly what prompt
@@ -872,11 +764,8 @@ def derive_affinity_key(messages):
         return "pfx-" + hashlib.sha256(blob).hexdigest()[:16]
     except Exception:
         return None
-
-
 def prompt_fingerprint(messages):
     """Privacy-safe fingerprint of the outgoing prompt.
-
     Cache hits need a byte-identical prefix, so these hashes answer "is my
     prefix stable / is my conversation continuous?" without storing any text.
     """
@@ -884,7 +773,6 @@ def prompt_fingerprint(messages):
         def h(obj):
             blob = json.dumps(obj, ensure_ascii=False, sort_keys=True).encode("utf-8")
             return hashlib.sha256(blob).hexdigest()[:12]
-
         msgs = messages or []
         out = {"msgs_sha": h(msgs), "n_msgs": len(msgs)}
         if msgs:
@@ -893,17 +781,12 @@ def prompt_fingerprint(messages):
         return out
     except Exception:
         return {}
-
-
 def log(msg):
     sys.stderr.write(f"[wb-proxy] {time.strftime('%H:%M:%S')} {msg}\n")
     sys.stderr.flush()
-
-
 # ---------------------------------------------------------------------------
 # upstream helpers
 # ---------------------------------------------------------------------------
-
 #: Auxiliary models the API advertises but that are not usable for chat.
 #: "lite" backs internal helpers (title generation, compaction) and upstream
 #: rejects it with 11102; the codewise/completion entries are text-completion
@@ -919,8 +802,6 @@ VIRTUAL_ALIAS_MODELS = {
 NON_CHAT_MODELS = {"lite"} | VIRTUAL_ALIAS_MODELS
 NON_CHAT_PREFIXES = ("codewise-", "completion-")
 NON_CHAT_SUFFIXES = ("-image-alpha", "-image-alpha-edit", "-taco-completion")
-
-
 def is_chat_model(mid):
     if not mid:
         return False
@@ -931,7 +812,6 @@ def is_chat_model(mid):
     if mid.endswith(NON_CHAT_SUFFIXES):
         return False
     return True
-
 CN_UI_ORDER = [
     "hy4-preview-f",
     "hy3",
@@ -948,7 +828,6 @@ CN_UI_ORDER = [
     "kimi-k2.6",
     "deepseek-v4-pro",
 ]
-
 INTL_UI_ORDER = [
     "deepseek-v4.1-flash",
     "gpt-6-astra",
@@ -967,7 +846,6 @@ INTL_UI_ORDER = [
     "kimi-k3",
     "kimi-k2.6",
 ]
-
 def merge_catalog(primary, realm=None):
     r = realm or CURRENT_REALM
     merged = {}
@@ -991,14 +869,12 @@ def merge_catalog(primary, realm=None):
         if mid in merged:
             out.append((mid, merged[mid]))
     return out
-
 def fetch_models(realm=None):
     r = realm or CURRENT_REALM
     with _lock:
         c = _models_cache.get(r) or {"at": 0.0, "data": None}
         if c["data"] and time.time() - c["at"] < 300:
             return c["data"]
-
     live = read_product_config_models(realm=r)
     if not live and r == "intl":
         live = [(m, {}) for m in fetch_endpoint_models()]
@@ -1006,11 +882,8 @@ def fetch_models(realm=None):
     with _lock:
         _models_cache[r] = {"at": time.time(), "data": entries}
     return entries
-
-
 def model_entry(mid, meta):
     """Build a rich /v1/models entry from the desktop app catalog metadata.
-
     The OpenAI spec only names id/object/created/owned_by, so capability data is
     convention-driven. Several shapes are emitted at once so that different
     clients (OpenRouter-style, LobeChat-style, plain-flag readers) all find
@@ -1023,22 +896,18 @@ def model_entry(mid, meta):
         "created": int(time.time()),
         "owned_by": "workbuddy",
     }
-
     name = meta.get("name")
     if name:
         item["name"] = name
     desc = meta.get("descriptionEn") or meta.get("descriptionZh")
     if desc:
         item["description"] = desc
-
     # ---- modality / capability ----
     # disabledMultimodal explicitly turns image input off; absent means allowed.
     vision = bool(meta.get("supportsImages")) and not meta.get("disabledMultimodal")
     tools = bool(meta.get("supportsToolCall"))
     thinks = bool(meta.get("supportsReasoning"))
-
     inputs = ["text"] + (["image"] if vision else [])
-
     # Capability flags under every spelling the common clients look for.
     # /v1/models has no standard for this, so each convention is emitted at
     # once rather than guessing which one a given client reads:
@@ -1074,7 +943,6 @@ def model_entry(mid, meta):
         "output_modalities": ["text"],
         "modality": "+".join(inputs) + "->text",
     }
-
     # ---- limits ----
     if meta.get("maxInputTokens"):
         item["context_length"] = meta["maxInputTokens"]
@@ -1085,7 +953,6 @@ def model_entry(mid, meta):
     ctx = (meta.get("contextWindow") or {}).get("supportedLengths")
     if ctx:
         item["context_windows"] = ctx
-
     # ---- reasoning controls ----
     reasoning = meta.get("reasoning") or {}
     efforts = reasoning.get("supportedEfforts")
@@ -1102,10 +969,8 @@ def model_entry(mid, meta):
         item["reasoning_efforts"] = ["low", "high", "max"]
         item["reasoning_default_effort"] = "high"
         item.pop("reasoning_fixed_effort", None)
-
     if meta.get("onlyReasoning") is not None:
         item["always_reasoning"] = bool(meta.get("onlyReasoning"))
-
     # ---- misc ----
     if meta.get("credits"):
         item["credits"] = meta["credits"]
@@ -1121,8 +986,6 @@ def model_entry(mid, meta):
     if tags:
         item["tags"] = tags
     return item
-
-
 def read_product_config_models(realm=None):
     """Read the desktop app's cached catalog: [(id, meta), ...]."""
     r = realm or CURRENT_REALM
@@ -1134,7 +997,6 @@ def read_product_config_models(realm=None):
             cfg = json.load(fh)
     except Exception as exc:
         return []
-
     def find(node):
         if isinstance(node, dict):
             models = node.get("models")
@@ -1145,7 +1007,6 @@ def read_product_config_models(realm=None):
                 if hit:
                     return hit
         return None
-
     models = find(cfg) or []
     out = []
     for m in models:
@@ -1153,8 +1014,6 @@ def read_product_config_models(realm=None):
         if isinstance(mid, str) and mid:
             out.append((mid, m))
     return out
-
-
 def fetch_endpoint_models():
     account = POOL.pick(realm="intl") if POOL else None
     if account is None:
@@ -1169,7 +1028,6 @@ def fetch_endpoint_models():
         log(f"model discovery failed: {exc}")
         cached = _models_cache.get("intl", {}).get("data")
         return [m for m, _ in (cached or [])]
-
     ids, seen = [], set()
     for agent in (payload.get("data") or {}).get("agents") or []:
         for mid in agent.get("models") or []:
@@ -1177,8 +1035,6 @@ def fetch_endpoint_models():
                 seen.add(mid)
                 ids.append(mid)
     return ids
-
-
 def strip_data_prefix(line):
     line = line.strip()
     # SSE comment / heartbeat / keepalive / empty line
@@ -1190,8 +1046,6 @@ def strip_data_prefix(line):
     if not line or line.startswith(":"):
         return ""
     return line
-
-
 def clean_chunk(raw):
     """Drop the empty noise fields the WorkBuddy gateway pads deltas with."""
     try:
@@ -1226,8 +1080,6 @@ def clean_chunk(raw):
         if not delta and not choice.get("finish_reason"):
             return ""
     return json.dumps(obj, ensure_ascii=False) if changed else raw
-
-
 def _strip_empty_fc(obj):
     """PATCHED-BY-OPS: 递归剔除空 function_call 占位（Responses/chat 通用）。"""
     changed = False
@@ -1248,11 +1100,8 @@ def _strip_empty_fc(obj):
             if _strip_empty_fc(v):
                 changed = True
     return changed
-
-
 def clean_responses_frame(frame):
     """PATCHED-BY-OPS: 清洗 Responses SSE 帧（bytes）。
-
     输入 b'event: x\ndata: {...}\n\n'；只改写 data: 行的 JSON，
     event: 行原样保留。解析失败原样返回（不破坏未知格式）。
     """
@@ -1277,11 +1126,8 @@ def clean_responses_frame(frame):
                     pass
         out.append(line)
     return ("\n".join(out) + "\n\n").encode("utf-8") if changed else frame
-
-
 def normalize_roles(messages):
     """Map role names the upstream rejects onto ones it accepts.
-
     WorkBuddy only knows system / user / assistant / tool. OpenAI's newer
     "developer" role (used by the Codex CLI and current SDKs) is the same thing
     as "system", but sending it verbatim fails with code 11128.
@@ -1297,8 +1143,6 @@ def normalize_roles(messages):
             item["role"] = "system"
         out.append(item)
     return out
-
-
 # ---------------------------------------------------------------------------
 # Fingerprint Sanitization (immunizes against Codex / Claude Code WAF patterns)
 # ---------------------------------------------------------------------------
@@ -1311,7 +1155,6 @@ SANITIZE_FEATURES = (
     "github.com/anthropics/",
     "11128",
 )
-
 SANITIZE_REWRITES = (
     ("You are Claude Code, Anthropic's official CLI for Claude",
      "You are Claude Code, Anthropic's official CLI tool for Claude"),
@@ -1323,12 +1166,9 @@ SANITIZE_REWRITES = (
      "To provide feedback, users should report the issue at https://github.com/anthropics/claude-code/issues"),
     ("11128", "11-128"),
 )
-
 SANITIZE_HDR_RE = re.compile(r"(?i)x-anthropic-billing-header:[^;\r\n]*;?\s*")
 SANITIZE_BARE_HDR_RE = re.compile(r"(?i)x-anthropic-billing-header")
 SANITIZE_KV_RE = re.compile(r"(?i)\bcc_[a-z0-9_]+=[^;\r\n]*;?\s*")
-
-
 def has_fingerprint(text):
     if not isinstance(text, str) or not text:
         return False
@@ -1336,8 +1176,6 @@ def has_fingerprint(text):
         if f in text:
             return True
     return bool(SANITIZE_BARE_HDR_RE.search(text))
-
-
 def sanitize_text(text):
     if not isinstance(text, str) or not text:
         return text
@@ -1353,8 +1191,6 @@ def sanitize_text(text):
             text = SANITIZE_KV_RE.sub("", text)
     text = SANITIZE_BARE_HDR_RE.sub("x-anthropic-billing-hdr", text)
     return text.strip()
-
-
 def sanitize_content(content):
     if isinstance(content, str):
         return sanitize_text(content)
@@ -1369,8 +1205,6 @@ def sanitize_content(content):
                 out.append(part)
         return out
     return content
-
-
 def sanitize_tool_calls(tool_calls):
     if not isinstance(tool_calls, list):
         return tool_calls
@@ -1387,8 +1221,6 @@ def sanitize_tool_calls(tool_calls):
         else:
             out.append(tc)
     return out
-
-
 def sanitize_messages(messages):
     out = []
     for m in messages or []:
@@ -1404,8 +1236,6 @@ def sanitize_messages(messages):
         else:
             out.append(m)
     return out
-
-
 # ---------------------------------------------------------------------------
 # DeepSeek Multi-turn Consistency: reasoning_content backfill
 # ---------------------------------------------------------------------------
@@ -1433,8 +1263,6 @@ def backfill_reasoning_content(messages, model):
         else:
             out.append(m)
     return out
-
-
 # ---------------------------------------------------------------------------
 # Tool & Tool Choice Normalization (avoids code 11101 on object tool_choice)
 # ---------------------------------------------------------------------------
@@ -1464,8 +1292,6 @@ def normalize_tool_choice(obj):
             obj.pop("tool_choice", None)
     else:
         obj.pop("tool_choice", None)
-
-
 def normalize_tools(obj):
     tools = obj.get("tools")
     if not tools or not isinstance(tools, list):
@@ -1487,8 +1313,6 @@ def normalize_tools(obj):
         else:
             norm.append(t)
     obj["tools"] = norm
-
-
 # ---------------------------------------------------------------------------
 # DeepSeek DSML Tool Calls Fallback Parser
 # ---------------------------------------------------------------------------
@@ -1496,7 +1320,6 @@ TAG_START = r"<[^>]*DSML[^>]*"
 DSML_CALLS_RE = re.compile(TAG_START + r"calls>(.*?)</[^>]*DSML[^>]*calls>", re.DOTALL)
 DSML_INVOKE_RE = re.compile(TAG_START + r"invoke\s+name=[\x22\x27]([^\x22\x27]+)[\x22\x27]>(.*?)</[^>]*invoke>", re.DOTALL)
 DSML_PARAM_RE = re.compile(TAG_START + r"parameter\s+name=[\x22\x27]([^\x22\x27]+)[\x22\x27][^>]*>(.*?)</[^>]*parameter>", re.DOTALL)
-
 def parse_dsml_tool_calls(text):
     if not text or "DSML" not in text:
         return None, text
@@ -1520,8 +1343,6 @@ def parse_dsml_tool_calls(text):
         })
     clean = (text[:match.start()].strip() + " " + text[match.end():].strip()).strip()
     return tool_calls, clean
-
-
 def translate_max_completion_tokens(obj):
     alias = obj.pop("max_completion_tokens", None)
     if alias is None:
@@ -1534,8 +1355,6 @@ def translate_max_completion_tokens(obj):
             obj["max_tokens"] = val
     except (TypeError, ValueError):
         pass
-
-
 def build_upstream_body(payload):
     model = payload.get("model") or ""
     messages = normalize_roles(payload.get("messages") or [])
@@ -1548,18 +1367,14 @@ def build_upstream_body(payload):
     translate_max_completion_tokens(body)
     normalize_tool_choice(body)
     normalize_tools(body)
-
     # Thinking injection for DeepSeek models
     if str(model).lower().startswith("deepseek"):
         if "thinking" not in body and body.get("reasoning_effort") != "none":
             body["thinking"] = {"type": "enabled"}
-
     body["stream"] = True
     if "stream_options" not in body:
         body["stream_options"] = {"include_usage": True}
     return body
-
-
 def open_upstream(payload, session_key=None, target_realm=None):
     realm = target_realm or detect_model_realm(payload.get("model")) or CURRENT_REALM
     upstream_body = build_upstream_body(payload)
@@ -1611,8 +1426,6 @@ def open_upstream(payload, session_key=None, target_realm=None):
     if last_error is not None:
         raise last_error
     raise RuntimeError(f"no usable account for realm '{realm}': all are disabled, cooling down, or expired")
-
-
 def extract_session_key(headers, payload):
     key = (
         headers.get("X-Conversation-Id") or
@@ -1626,7 +1439,6 @@ def extract_session_key(headers, payload):
     if key:
         return str(key).strip()
     return None
-
 def aggregate_stream(raw_iter, model, resp_id):
     """Fold an SSE stream into one non-streaming chat.completion object."""
     content, reasoning, finish = [], [], "stop"
@@ -1707,7 +1519,6 @@ def aggregate_stream(raw_iter, model, resp_id):
                         entry["function"]["arguments"] += fc["arguments"]
             if choice.get("finish_reason"):
                 finish = choice["finish_reason"]
-
     message = {"role": "assistant", "content": "".join(content)}
     if reasoning:
         message["reasoning_content"] = "".join(reasoning)
@@ -1724,7 +1535,6 @@ def aggregate_stream(raw_iter, model, resp_id):
         message["tool_calls"] = ordered_tcs
         if finish in ("stop", None):
             finish = "tool_calls"
-
     out = {
         "id": resp_id or "chatcmpl-wb",
         "object": "chat.completion",
@@ -1737,8 +1547,6 @@ def aggregate_stream(raw_iter, model, resp_id):
     out["elapsed_ms"] = int((time.time() - started) * 1000)
     out["first_chunk_at"] = first_chunk_at
     return out
-
-
 # ---------------------------------------------------------------------------
 # Responses API (/v1/responses) <-> Chat Completions translation
 # ---------------------------------------------------------------------------
@@ -1746,7 +1554,6 @@ def aggregate_stream(raw_iter, model, resp_id):
 # Kelivo and other clients can speak OpenAI's newer Responses API. The upstream
 # gateway only speaks Chat Completions, so those requests are translated down,
 # and the reply is translated back up into Responses objects / SSE events.
-
 def local_ip_addresses():
     """Every non-loopback IPv4 address this machine answers on."""
     found = []
@@ -1766,12 +1573,8 @@ def local_ip_addresses():
         except Exception:
             pass
     return found
-
-
 def _new_id(prefix):
     return prefix + uuid.uuid4().hex
-
-
 def _flatten_content(content):
     """Flatten Responses-style content into text, or OpenAI vision parts."""
     if content is None:
@@ -1780,7 +1583,6 @@ def _flatten_content(content):
         return content
     if not isinstance(content, list):
         return str(content)
-
     texts, parts = [], []
     for piece in content:
         if isinstance(piece, str):
@@ -1803,20 +1605,15 @@ def _flatten_content(content):
                 url = f"data:{mime};base64," + piece["data"]
             if url:
                 parts.append({"type": "image_url", "image_url": {"url": url}})
-
     if any(p.get("type") == "image_url" for p in parts):
         return parts          # multimodal: keep structured parts
     return chr(10).join(t for t in texts if t)
-
-
 def responses_to_chat(payload):
     """Translate a Responses API request body into a Chat Completions body."""
     messages = []
-
     instructions = payload.get("instructions")
     if isinstance(instructions, str) and instructions.strip():
         messages.append({"role": "system", "content": instructions})
-
     inp = payload.get("input")
     if isinstance(inp, str):
         messages.append({"role": "user", "content": inp})
@@ -1885,15 +1682,12 @@ def responses_to_chat(payload):
                         "content": "",
                         "tool_calls": [tc_item],
                     })
-
     chat = {"model": payload.get("model"), "messages": messages}
-
     for key in ("temperature", "top_p", "seed"):
         if payload.get(key) is not None:
             chat[key] = payload[key]
     if payload.get("max_output_tokens") is not None:
         chat["max_tokens"] = payload["max_output_tokens"]
-
     effort = None
     reasoning = payload.get("reasoning")
     if isinstance(reasoning, dict):
@@ -1902,7 +1696,6 @@ def responses_to_chat(payload):
         effort = payload.get("reasoning_effort")
     if effort:
         chat["reasoning_effort"] = effort
-
     if payload.get("tools"):
         chat["tools"] = payload["tools"]
     if payload.get("tool_choice"):
@@ -1910,8 +1703,6 @@ def responses_to_chat(payload):
     if payload.get("parallel_tool_calls") is not None:
         chat["parallel_tool_calls"] = payload["parallel_tool_calls"]
     return chat
-
-
 def _responses_usage(u):
     if not u:
         return None
@@ -1927,15 +1718,12 @@ def _responses_usage(u):
         "output_tokens_details": {"reasoning_tokens": det.get("reasoning_tokens") or 0},
         "total_tokens": u.get("total_tokens") or 0,
     }
-
-
 def chat_to_response(chat_obj, model):
     """Fold a Chat Completions object into a Responses API response object."""
     choice = (chat_obj.get("choices") or [{}])[0]
     msg = choice.get("message") or {}
     text = msg.get("content") or ""
     reasoning = msg.get("reasoning_content") or ""
-
     output = []
     if reasoning:
         output.append({
@@ -1976,7 +1764,6 @@ def chat_to_response(chat_obj, model):
             "role": "assistant",
             "content": [{"type": "output_text", "text": text, "annotations": []}] if text else [],
         })
-
     finish = choice.get("finish_reason") or "stop"
     obj = {
         "id": _new_id("resp_"),
@@ -1997,8 +1784,6 @@ def chat_to_response(chat_obj, model):
     if finish == "length":
         obj["incomplete_details"] = {"reason": "max_output_tokens"}
     return obj
-
-
 def stream_responses_events(upstream, model, holder):
     """Yield Responses-API SSE frames translated from chat-completions chunks."""
     resp_id, msg_id, rs_id = _new_id("resp_"), _new_id("msg_"), _new_id("rs_")
@@ -2013,7 +1798,6 @@ def stream_responses_events(upstream, model, holder):
     tool_calls_map = {}
     text_buffer = ""
     dsml_tool_calls = []
-
     def resp_obj(status):
         obj = {
             "id": resp_id,
@@ -2032,7 +1816,6 @@ def stream_responses_events(upstream, model, holder):
         if u:
             obj["usage"] = u
         return obj
-
     def ev(etype, payload):
         nonlocal seq
         seq += 1
@@ -2040,7 +1823,6 @@ def stream_responses_events(upstream, model, holder):
         data.update(payload)
         body = json.dumps(data, ensure_ascii=False)
         return ("event: " + etype + chr(10) + "data: " + body + chr(10) + chr(10)).encode("utf-8")
-
     def reason_item(status):
         return {
             "id": rs_id,
@@ -2048,7 +1830,6 @@ def stream_responses_events(upstream, model, holder):
             "status": status,
             "summary": [{"type": "summary_text", "text": "".join(reason_parts)}],
         }
-
     def msg_item(status):
         item = {"id": msg_id, "type": "message", "status": status,
                 "role": "assistant", "content": []}
@@ -2056,10 +1837,8 @@ def stream_responses_events(upstream, model, holder):
             item["content"] = [{"type": "output_text", "text": "".join(text_parts),
                               "annotations": []}]
         return item
-
     yield ev("response.created", {"response": resp_obj("in_progress")})
     yield ev("response.in_progress", {"response": resp_obj("in_progress")})
-
     for raw in upstream:
         data = strip_data_prefix(raw.decode("utf-8", "replace"))
         if not data or data == "[DONE]":
@@ -2127,7 +1906,6 @@ def stream_responses_events(upstream, model, holder):
                             "call_id": entry["id"],
                             "delta": fn_args,
                         })
-
             piece = delta.get("content")
             if piece:
                 if msg_index is None:
@@ -2155,7 +1933,6 @@ def stream_responses_events(upstream, model, holder):
                         "item_id": msg_id, "output_index": msg_index, "content_index": 0,
                         "part": {"type": "output_text", "text": "", "annotations": []},
                     })
-                
                 # DSML tool call buffering: do not stream raw DSML tags to client
                 text_buffer += piece
                 while text_buffer:
@@ -2168,7 +1945,6 @@ def stream_responses_events(upstream, model, holder):
                         })
                         text_buffer = ""
                         break
-                    
                     m = DSML_CALLS_RE.search(text_buffer)
                     if m and m.start() == idx:
                         if idx > 0:
@@ -2183,7 +1959,6 @@ def stream_responses_events(upstream, model, holder):
                             dsml_tool_calls.extend(calls_found)
                         text_buffer = text_buffer[m.end():]
                         continue
-                    
                     cand = text_buffer[idx:idx+30]
                     is_cand = ("DSML" in cand) or (len(cand) < 10 and not any(c in cand for c in (" ", "\t", "\n", ">")))
                     if is_cand:
@@ -2214,10 +1989,8 @@ def stream_responses_events(upstream, model, holder):
                             })
                             text_buffer = ""
                             break
-
             if choice.get("finish_reason"):
                 finish = choice["finish_reason"]
-
     if reason_index is not None and outputs[reason_index] is None:
         full_r = "".join(reason_parts)
         yield ev("response.reasoning_summary_text.done", {
@@ -2230,7 +2003,6 @@ def stream_responses_events(upstream, model, holder):
         outputs[reason_index] = reason_item("completed")
         yield ev("response.output_item.done",
                  {"output_index": reason_index, "item": outputs[reason_index]})
-
     # 1. Emit completed structured tool calls
     for idx in sorted(tool_calls_map.keys()):
         entry = tool_calls_map[idx]
@@ -2252,7 +2024,6 @@ def stream_responses_events(upstream, model, holder):
             "output_index": entry["output_index"],
             "item": fc_item,
         })
-
     # Flush remaining buffered text if any
     if text_buffer:
         calls_rem, clean_rem = parse_dsml_tool_calls(text_buffer)
@@ -2266,7 +2037,6 @@ def stream_responses_events(upstream, model, holder):
                     "content_index": 0, "delta": clean_rem,
                 })
         text_buffer = ""
-
     # 2. DSML fallback: emit buffered/parsed DSML tool calls if no structured tool_calls were emitted
     full_text = "".join(text_parts)
     dsml_calls = dsml_tool_calls
@@ -2305,7 +2075,6 @@ def stream_responses_events(upstream, model, holder):
                 "output_index": out_idx,
                 "item": fc_item,
             })
-
     # 3. Emit message item only if text was emitted OR no other output item exists
     has_other_items = any(o for o in outputs if o)
     if msg_index is not None or full_text or not has_other_items:
@@ -2330,24 +2099,19 @@ def stream_responses_events(upstream, model, holder):
         })
         outputs[msg_index] = msg_item("completed")
         yield ev("response.output_item.done", {"output_index": msg_index, "item": outputs[msg_index]})
-
     status = "completed" if finish != "length" else "incomplete"
     final = resp_obj(status)
     if finish == "length":
         final["incomplete_details"] = {"reason": "max_output_tokens"}
     yield ev("response.completed", {"response": final})
-
-
 # ---------------------------------------------------------------------------
 # HTTP layer
 # ---------------------------------------------------------------------------
-
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     # Which configured API key the caller used, set by _key_ok(). Its bound
     # realm decides the upstream exit for this request alone.
     key_entry = None
-
     def handle(self):
         try:
             super().handle()
@@ -2359,10 +2123,8 @@ class Handler(BaseHTTPRequestHandler):
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
     server_version = "wb-proxy/1.1.9"
-
     def log_message(self, fmt, *args):
         log(fmt % args)
-
     def _json(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -2372,13 +2134,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
-
     def _error(self, code, message, err_type="server_error"):
         self._json(code, {"error": {"message": message, "type": err_type, "code": code}})
-
     def _download(self, filename, obj):
         """Send a JSON document as a browser download.
-
         Content-Disposition is quoted because the filename is generated from
         user-controlled parts (the realm filter) and could otherwise break the
         header or allow a response-splitting attempt.
@@ -2394,7 +2153,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
-
     def _supplied_key(self):
         """The key the caller presented, from the header or the ?key= query."""
         supplied = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
@@ -2408,7 +2166,6 @@ class Handler(BaseHTTPRequestHandler):
             return (query.get("key") or [""])[0].strip()
         except Exception:
             return ""
-
     def _key_ok(self):
         """True when the request carries a right key (or no key is needed)."""
         # An authenticated panel session also unlocks the management APIs,
@@ -2421,14 +2178,11 @@ class Handler(BaseHTTPRequestHandler):
         if not auth_required():
             return True
         return False
-
     def _key_realm(self):
         """Realm bound to the key this request used, or "" when unbound."""
         return (self.key_entry or {}).get("realm") or ""
-
     def _cross_realm_error(self, model, realm):
         """Explain a model/exit mismatch instead of letting upstream reject it.
-
         Sending gpt-6-astra to the domestic exit (or deepseek-v4-pro to the
         international one) earns an opaque 403 from upstream, so catch it here
         and say which key is bound where.
@@ -2444,10 +2198,8 @@ class Handler(BaseHTTPRequestHandler):
         return ("模型 %s 只在%s提供，但「%s」绑定的是%s出口。"
                 "请改用对应出口的 Key，或把该 Key 的出口改为「跟随面板切换」。"
                 % (model, served, name, used))
-
     def _request_realm(self, explicit=None):
         """Pick the upstream exit for this request.
-
         Priority: an explicit ?realm= argument, then the realm bound to the
         API key, then the X-Realm header / ?realm= query, and finally the
         global switch. Returning None lets open_upstream() fall back to
@@ -2465,30 +2217,24 @@ class Handler(BaseHTTPRequestHandler):
             return parse_qs(urlparse(self.path).query).get("realm", [None])[0]
         except Exception:
             return None
-
     def _authorized(self):
         if self._key_ok():
             return True
         self._error(401, "invalid api key", "invalid_request_error")
         return False
-
     # ---- web panel access ----
     def _panel_token(self):
         """Session token from the X-Panel-Token header.
-
         Deliberately header-only: a token in the query string leaks through
         browser history, the Referer header and any reverse-proxy access log.
         """
         token = (self.headers.get("X-Panel-Token") or "").strip()
         return token
-
     def _panel_ok(self):
         return PANEL.valid(self._panel_token())
-
     @staticmethod
     def _is_panel_route(path):
         """Management endpoints shown in the web panel.
-
         Model listings stay reachable with the API key alone so that plain
         OpenAI clients can keep discovering models.
         """
@@ -2501,7 +2247,6 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/settings"):
             return True
         return False
-
     def do_OPTIONS(self):
         self.send_response(204)
         if cors_origin_allowed(self.path):
@@ -2510,7 +2255,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Content-Length", "0")
         self.end_headers()
-
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -2605,7 +2349,6 @@ class Handler(BaseHTTPRequestHandler):
             if realm not in ("intl", "cn"):
                 realm = None
             include_secrets = (query.get("secrets") or ["1"])[0] not in ("0", "false", "no")
-
             uids = []
             for raw in query.get("uid") or []:
                 uids.extend(part.strip() for part in str(raw).split(",") if part.strip())
@@ -2657,13 +2400,27 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/tasks":
             if not self._authorized():
                 return
-            acc = POOL.representative(realm="cn") if POOL else None
+            cn_accounts = [a for a in (POOL.accounts if POOL else []) if a.realm == "cn" and a.enabled]
+            if not cn_accounts:
+                return self._json(200, {"tasks": [], "summary": {}, "accounts": [], "msg": "未找到可用的国内版账号"})
+            uid = (query.get("uid") or [None])[0]
+            acc = None
+            if uid and uid != "all":
+                target = POOL.get(uid) if POOL else None
+                if target and target.realm == "cn":
+                    acc = target
             if not acc:
-                return self._json(200, {"tasks": [], "summary": {}, "msg": "未找到国内版可用账号"})
+                acc = cn_accounts[0]
             from wb_tasks import fetch_growth_tasks, fetch_growth_summary
             tasks = fetch_growth_tasks(acc)
             summary = fetch_growth_summary(acc)
-            return self._json(200, {"tasks": tasks, "summary": summary, "account": acc.public()})
+            acct_list = [{"uid": a.uid, "nickname": a.nickname or a.uid[:8]} for a in cn_accounts]
+            return self._json(200, {
+                "tasks": tasks,
+                "summary": summary,
+                "account": acc.public(),
+                "accounts": acct_list,
+            })
         if path == "/scheduler":
             if not self._authorized():
                 return
@@ -2683,7 +2440,6 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(200, {"id": wanted, "key": entry.get("key") or ""})
             return self._error(404, "no such key", "invalid_request_error")
         return self._error(404, "not found", "invalid_request_error")
-
     def _dashboard(self):
         try:
             with open(DASHBOARD_HTML, "rb") as fh:
@@ -2696,10 +2452,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
-
     def _read_payload(self, max_bytes=MAX_PAYLOAD_BYTES, allow_list=False):
         """Parse the request body into a dict (or a list when allow_list).
-
         Raises BodyTooLarge / BadJSON so every caller handles both cases the
         same way instead of each remembering to check for None.
         """
@@ -2723,7 +2477,6 @@ class Handler(BaseHTTPRequestHandler):
             # which is the most natural shape for a hand-written file.
             return data
         return {}
-
     def _payload_or_error(self, allow_list=False):
         """Read the body, replying with the right error and returning None."""
         try:
@@ -2735,14 +2488,12 @@ class Handler(BaseHTTPRequestHandler):
         except BadJSON:
             self._error(400, "invalid JSON body", "invalid_request_error")
             return None
-
     def _handle_settings_save(self):
         """Persist panel-managed settings from the web settings tab."""
         payload = self._payload_or_error()
         if payload is None:
             return
         reply = {}
-
         if "api_keys" in payload:
             raw = payload.get("api_keys")
             if not isinstance(raw, list):
@@ -2780,11 +2531,9 @@ class Handler(BaseHTTPRequestHandler):
                 })
             wb_settings.set_api_keys(ACCOUNTS_DIR, cleaned)
             reply["api_keys_saved"] = len(cleaned)
-
         if "auth_disabled" in payload:
             wb_settings.set_auth_disabled(ACCOUNTS_DIR, payload.get("auth_disabled"))
             reply["auth_disabled"] = bool(payload.get("auth_disabled"))
-
         new_key = payload.get("api_key")
         if new_key is not None:
             new_key = str(new_key).strip()
@@ -2796,22 +2545,18 @@ class Handler(BaseHTTPRequestHandler):
             API_KEY = new_key
             API_KEY_FILE_SET = True
             reply["api_key_set"] = bool(new_key)
-
         if payload.get("restart_scheduler"):
             if SCHEDULER:
                 SCHEDULER.stop()
                 SCHEDULER.start()
             reply["scheduler"] = "restarted"
-
         reply.update(runtime_settings_view())
         return self._json(200, reply)
-
     def _handle_panel(self, path):
         """Panel login, logout and the settings screen (password + API key)."""
         payload = self._payload_or_error()
         if payload is None:
             return
-
         if path == "/panel/login":
             client_ip = self.client_address[0] if hasattr(self, "client_address") and self.client_address else "127.0.0.1"
             now = time.time()
@@ -2822,7 +2567,6 @@ class Handler(BaseHTTPRequestHandler):
                 if len(attempts) >= 5:
                     wait_sec = int(60 - (now - attempts[0]))
                     return self._error(429, f"too many login attempts, please wait {max(1, wait_sec)}s", "rate_limit_error")
-
             password = str(payload.get("password") or "")
             if not wb_settings.verify_panel_password(ACCOUNTS_DIR, password):
                 with _login_lock:
@@ -2830,7 +2574,6 @@ class Handler(BaseHTTPRequestHandler):
                 # Small backoff delay to mitigate automated brute force
                 time.sleep(0.5)
                 return self._error(401, "invalid panel password", "invalid_request_error")
-
             with _login_lock:
                 _login_attempts.pop(client_ip, None)
             token = PANEL.create()
@@ -2839,15 +2582,12 @@ class Handler(BaseHTTPRequestHandler):
                 "token": token,
                 "using_default_password": wb_settings.panel_password_is_default(ACCOUNTS_DIR),
             })
-
         if path == "/panel/logout":
             PANEL.revoke(self._panel_token())
             return self._json(200, {"ok": True})
-
         # Everything past this point requires an authenticated panel session.
         if not self._panel_ok():
             return self._error(401, "panel password required", "invalid_request_error")
-
         if path == "/panel/password":
             current = str(payload.get("current") or "")
             new = str(payload.get("new") or "")
@@ -2861,21 +2601,17 @@ class Handler(BaseHTTPRequestHandler):
                 PANEL.revoke_all()
             token = PANEL.create()
             return self._json(200, {"ok": True, "token": token})
-
         return self._error(404, "not found", "invalid_request_error")
-
     def _handle_accounts(self, path, payload):
         """Account-management endpoints (dashboard uses these)."""
         if POOL is None:
             return self._error(503, "account pool unavailable")
-
         if path == "/accounts/import" and isinstance(payload, list):
             # A bare array is only meaningful for import; wrap it so the rest
             # of this handler can keep assuming a dict.
             payload = {"data": payload}
         if not isinstance(payload, dict):
             return self._error(400, "expected a JSON object", "invalid_request_error")
-
         if path in ("/accounts/credits", "/accounts/credits/fetch"):
             uid = payload.get("uid")
             targets = [POOL.get(uid)] if uid else list(POOL.accounts)
@@ -2887,41 +2623,89 @@ class Handler(BaseHTTPRequestHandler):
                 results.append({"uid": account.uid, "ok": res.get("ok", False),
                                 "credits": account.credits, "error": res.get("error", "")})
             return self._json(200, {"results": results, "accounts": account_views()})
-
         if path == "/tasks/run":
-            acc = POOL.representative(realm="cn") if POOL else None
-            if not acc:
-                return self._json(200, {"ok": False, "msg": "未找到国内版账号"})
+            if not POOL:
+                return self._json(200, {"ok": False, "msg": "账号池不可用"})
+            uid = payload.get("uid")
+            if uid and uid != "all":
+                target = POOL.get(uid)
+                if not target or target.realm != "cn":
+                    return self._json(200, {"ok": False, "msg": "未找到指定的国内版账号"})
+                targets = [target]
+            else:
+                targets = [a for a in POOL.accounts if a.realm == "cn" and a.enabled]
+            if not targets:
+                return self._json(200, {"ok": False, "msg": "未找到已启用的国内版账号"})
             from wb_tasks import run_growth_tasks
-            res = run_growth_tasks(acc, gap=1.0)
-            return self._json(200, res)
-
+            combined_logs = []
+            total_credit = 0
+            for i, acc in enumerate(targets):
+                uid_str = acc.uid[:8] if acc.uid else "?"
+                nick = acc.nickname or uid_str
+                combined_logs.append(f"====== 正在为账号 [{nick} ({acc.uid})] 执行全自动成长任务 ({i+1}/{len(targets)}) ======")
+                res = run_growth_tasks(acc, gap=1.0)
+                total_credit += res.get("credit_added") or 0
+                for l in res.get("logs") or []:
+                    combined_logs.append(f"  {l}")
+                if i < len(targets) - 1:
+                    time.sleep(1.5)
+            combined_logs.append(f"====== 全部 {len(targets)} 个账号任务执行完毕，累计新增积分: +{total_credit} ======")
+            return self._json(200, {
+                "ok": True,
+                "credit_added": total_credit,
+                "logs": combined_logs,
+                "accounts_count": len(targets)
+            })
         if path == "/tasks/travel":
-            acc = POOL.representative(realm="cn") if POOL else None
-            if not acc:
-                return self._json(200, {"ok": False, "msg": "未找到国内版账号"})
+            if not POOL:
+                return self._json(200, {"ok": False, "msg": "账号池不可用"})
+            uid = payload.get("uid")
+            if uid and uid != "all":
+                target = POOL.get(uid)
+                if not target or target.realm != "cn":
+                    return self._json(200, {"ok": False, "msg": "未找到指定的国内版账号"})
+                targets = [target]
+            else:
+                targets = [a for a in POOL.accounts if a.realm == "cn" and a.enabled]
+            if not targets:
+                return self._json(200, {"ok": False, "msg": "未找到已启用的国内版账号"})
             from wb_tasks import do_cat_travel
-            res = do_cat_travel(acc)
-            return self._json(200, res)
-
+            results = []
+            for i, acc in enumerate(targets):
+                uid_str = acc.uid[:8] if acc.uid else "?"
+                nick = acc.nickname or uid_str
+                res = do_cat_travel(acc)
+                results.append({
+                    "uid": acc.uid,
+                    "nickname": nick,
+                    "action": res.get("action"),
+                    "msg": res.get("msg") or "",
+                    "reward_credit": res.get("reward_credit", 0)
+                })
+                if i < len(targets) - 1:
+                    time.sleep(1.0)
+            summary_msg = chr(10).join([f"{r['nickname']}: {r['msg']}" for r in results])
+            return self._json(200, {
+                "ok": True,
+                "results": results,
+                "msg": summary_msg,
+                "accounts_count": len(targets)
+            })
         if path == "/scheduler/trigger":
             if SCHEDULER:
                 return self._json(200, SCHEDULER.trigger_now())
             return self._json(200, {"ok": False, "msg": "调度器未初始化"})
-
         if path == "/scheduler/toggle":
             if SCHEDULER:
                 SCHEDULER.enabled = not SCHEDULER.enabled
                 SCHEDULER.log(f"用户切换调度器状态为: {'启用' if SCHEDULER.enabled else '暂停'}")
                 return self._json(200, SCHEDULER.status())
             return self._json(200, {"ok": False, "msg": "调度器未初始化"})
-
         if path == "/realm":
             new_realm = payload.get("realm")
             if new_realm in ("intl", "cn"):
                 save_persisted_realm(new_realm)
             return self._json(200, {"ok": True, "current": CURRENT_REALM, "persisted": True})
-
         if path == "/accounts/checkin":
             uid = payload.get("uid")
             targets = [POOL.get(uid)] if uid else [a for a in (POOL.accounts if POOL else []) if a.realm == "cn"]
@@ -2932,7 +2716,6 @@ class Handler(BaseHTTPRequestHandler):
                 res = account.checkin()
                 results.append({"uid": account.uid, "nickname": account.nickname, **res})
             return self._json(200, {"results": results, "accounts": account_views()})
-
         if path == "/accounts/login/start":
             platform = payload.get("platform") or "CLI"
             target_realm = payload.get("realm") or CURRENT_REALM
@@ -2942,11 +2725,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(502, "could not start login: %s" % exc)
             log("oauth login started (realm=%s, platform=%s, state=%s)" % (target_realm, platform, started["state"][:8]))
             return self._json(200, started)
-
         if path == "/accounts/login/cancel":
             state = payload.get("state") or ""
             return self._json(200, {"cancelled": POOL.cancel_login(state)})
-
         if path == "/accounts/import/desktop":
             # Two ways to call this:
             #   {}                     -> scan only (read-only, nothing imported)
@@ -2976,7 +2757,6 @@ class Handler(BaseHTTPRequestHandler):
                 "accounts": account_views(),
                 "pool_uids": [a.uid for a in POOL.accounts],
             })
-
         if path == "/accounts/refresh":
             uid = payload.get("uid")
             targets = [POOL.get(uid)] if uid else list(POOL.accounts)
@@ -2988,7 +2768,6 @@ class Handler(BaseHTTPRequestHandler):
                 account.save(ACCOUNTS_DIR)
                 results.append({"uid": account.uid, "ok": ok, "error": account.last_error})
             return self._json(200, {"results": results})
-
         if path == "/accounts/set":
             uid = payload.get("uid")
             if not uid:
@@ -2998,11 +2777,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(404, "no such account")
             log("account %s %s" % (uid[:8], "enabled" if payload.get("enabled") else "disabled"))
             return self._json(200, {"account": updated})
-
         if path == "/accounts/set-all":
             POOL.set_all_enabled(bool(payload.get("enabled")))
             return self._json(200, {"accounts": account_views()})
-
         if path == "/accounts/delete":
             uid = payload.get("uid")
             if not uid:
@@ -3010,7 +2787,6 @@ class Handler(BaseHTTPRequestHandler):
             removed = POOL.remove(uid)
             log("account %s deleted" % uid[:8])
             return self._json(200, {"deleted": removed, "accounts": account_views()})
-
         if path == "/accounts/import":
             # Import a previously exported document (or any hand-written list
             # of accounts). Body shapes accepted, see wb_accounts._coerce_account_rows:
@@ -3034,13 +2810,11 @@ class Handler(BaseHTTPRequestHandler):
             if problem:
                 return self._error(400, "cannot read the document: %s" % problem,
                                    "invalid_request_error")
-
             dry_run = bool(payload.get("dryRun"))
             overwrite = bool(payload.get("overwrite"))
             forced_realm = (payload.get("realm") or "").strip().lower() or None
             if forced_realm and forced_realm not in ("intl", "cn"):
                 return self._error(400, "realm must be intl or cn", "invalid_request_error")
-
             if dry_run:
                 # Validate every row without touching the pool so the caller can
                 # see exactly what an import would do before committing to it.
@@ -3052,7 +2826,6 @@ class Handler(BaseHTTPRequestHandler):
                     "result": POOL.preview_import_rows(rows, realm=forced_realm, overwrite=overwrite),
                     "accounts": account_views(),
                 })
-
             report = POOL.import_rows(rows, realm=forced_realm, overwrite=overwrite)
             log("account import: %d added, %d updated, %d skipped, %d invalid"
                 % (len(report["added"]), len(report["updated"]),
@@ -3062,9 +2835,7 @@ class Handler(BaseHTTPRequestHandler):
                 "result": report,
                 "accounts": account_views(),
             })
-
         return self._error(404, "unknown account endpoint", "invalid_request_error")
-
     def _handle_responses(self, payload):
         """Serve /v1/responses by translating to chat completions upstream."""
         session_key = extract_session_key(self.headers, payload)
@@ -3073,13 +2844,11 @@ class Handler(BaseHTTPRequestHandler):
         want_stream = bool(payload.get("stream"))
         t_start = time.time()
         fp = prompt_fingerprint(chat_req.get("messages"))
-
         log(
             "responses: model=%s stream=%s msgs=%d effort=%r"
             % (model, want_stream, len(chat_req.get("messages") or []),
                chat_req.get("reasoning_effort"))
         )
-
         try:
             req_realm = self._request_realm() or CURRENT_REALM
             blocked = self._cross_realm_error(chat_req.get("model"), req_realm)
@@ -3096,10 +2865,9 @@ class Handler(BaseHTTPRequestHandler):
             record_error(model, 502, message,
                          elapsed_ms=int((time.time() - t_start) * 1000))
             if message.startswith("no usable account"):
-                return self._error(503, message + 
+                return self._error(503, message +
                                    " - add or enable one at the dashboard (/)")
             return self._error(502, f"upstream unreachable: {exc}")
-
         with upstream:
             if want_stream:
                 self.send_response(200)
@@ -3133,7 +2901,6 @@ class Handler(BaseHTTPRequestHandler):
                              gen_ms=(wall - first_ms) if first_ms is not None else None,
                              fp=fp, account=account.uid)
                 return
-
             try:
                 chat_obj = aggregate_stream(upstream, model, None)
             except Exception as exc:
@@ -3145,7 +2912,6 @@ class Handler(BaseHTTPRequestHandler):
             record_usage(model, chat_obj.get("usage"), stream=False, elapsed_ms=wall, fp=fp,
                          account=account.uid)
             return self._json(200, result)
-
     def do_POST(self):
         path = self.path.split("?")[0]
         if path == "/settings/save":
@@ -3168,17 +2934,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(404, "not found", "invalid_request_error")
         if not self._authorized():
             return
-
         payload = self._payload_or_error(allow_list=(path == "/accounts/import"))
         if payload is None:
             return
-
         if is_account_route:
             return self._handle_accounts(path, payload)
-
         if path in ("/v1/responses", "/responses"):
             return self._handle_responses(payload)
-
         # Diagnostics: what the client actually asked for, and what we forward.
         # Only the knobs that change behaviour are logged - never message text.
         forwarded = build_upstream_body(payload)
@@ -3196,7 +2958,6 @@ class Handler(BaseHTTPRequestHandler):
         )
         session_key = extract_session_key(self.headers, payload)
         fp = prompt_fingerprint(forwarded.get("messages"))
-
         want_stream = bool(payload.get("stream"))
         model = payload.get("model") or "hy4-preview"
         t_start = time.time()
@@ -3215,10 +2976,9 @@ class Handler(BaseHTTPRequestHandler):
             message = str(exc)
             record_error(model, 502, message, elapsed_ms=int((time.time() - t_start) * 1000))
             if message.startswith("no usable account"):
-                return self._error(503, message + 
+                return self._error(503, message +
                                    " - add or enable one at the dashboard (/)")
             return self._error(502, f"upstream unreachable: {exc}")
-
         with upstream:
             if want_stream:
                 self.send_response(200)
@@ -3269,7 +3029,6 @@ class Handler(BaseHTTPRequestHandler):
                              gen_ms=(wall - first_ms) if first_ms is not None else None,
                              fp=fp, account=account.uid)
                 return
-
             try:
                 result = aggregate_stream(upstream, model, None)
             except Exception as exc:
@@ -3284,12 +3043,9 @@ class Handler(BaseHTTPRequestHandler):
                          gen_ms=(wall - first_ms) if first_ms is not None else None,
                          fp=fp, account=account.uid)
             return self._json(200, result)
-
-
 def main():
     global POOL, ACCOUNTS_DIR, API_KEY, SYSTEM_PROMPT, USAGE_DIR, USAGE_LOG, USAGE_SUMMARY
     API_KEY_GENERATED = False
-
     ap = argparse.ArgumentParser(description="WorkBuddy (workbuddy.ai) -> OpenAI-compatible proxy")
     ap.add_argument("--info", help="path to the WorkBuddy *.info credential file")
     ap.add_argument("--host", default=os.environ.get("HOST") or "127.0.0.1")
@@ -3313,21 +3069,17 @@ def main():
     ap.add_argument("--panel-password", default=None,
                     help="set the web panel password on startup (default: admin)")
     args = ap.parse_args()
-
     # LAN mode binds every interface. The key is generated below, once
     # ACCOUNTS_DIR is resolved, so it can be persisted and reused.
     if args.lan and args.host == "127.0.0.1":
         args.host = "0.0.0.0"
-
     if args.user_agent:
         wb_accounts.USER_AGENT = args.user_agent.strip()
         log("user-agent : %s (override)" % wb_accounts.USER_AGENT)
-
     if args.usage_dir:
         USAGE_DIR = os.path.abspath(args.usage_dir)
         USAGE_LOG = os.path.join(USAGE_DIR, "usage.jsonl")
         USAGE_SUMMARY = os.path.join(USAGE_DIR, "usage-summary.json")
-
     # Refuse to start a second copy. On Windows SO_REUSEADDR lets two sockets
     # bind the same port, which silently splits incoming connections between
     # them - confusing and hard to diagnose.
@@ -3347,18 +3099,15 @@ def main():
         return
     except Exception:
         pass  # nothing listening - good, carry on
-
     API_KEY = args.api_key
     SYSTEM_PROMPT = args.system_prompt
     if args.accounts_dir:
         ACCOUNTS_DIR = os.path.abspath(args.accounts_dir)
-
     # LAN mode must not ship a known key: the gateway spends the account's own
     # upstream quota, so a guessable default lets anyone on the network drain
     # it. Generate one on first use, persist it, and reuse it afterwards.
     if args.lan and not API_KEY:
         API_KEY, API_KEY_GENERATED = wb_settings.ensure_launcher_key(ACCOUNTS_DIR)
-
     # A key saved from the panel wins over an auto-generated LAN key so a
     # change made in the browser survives a restart of the .bat file. An
     # explicit --api-key on the command line still takes precedence.
@@ -3367,13 +3116,11 @@ def main():
     if key_from_panel and not args.api_key:
         API_KEY = saved_key
         API_KEY_FILE_SET = True
-
     if args.panel_password:
         wb_settings.set_panel_password(ACCOUNTS_DIR, args.panel_password)
         log("panel      : password set from --panel-password")
     elif wb_settings.panel_password_is_default(ACCOUNTS_DIR):
         log("panel      : password is still the default 'admin' - change it in the panel")
-
     POOL = wb_accounts.AccountPool(ACCOUNTS_DIR, log=log)
     POOL.load()
     load_persisted_realm()
@@ -3381,11 +3128,9 @@ def main():
     from wb_scheduler import Scheduler
     SCHEDULER = Scheduler(POOL)
     SCHEDULER.start()
-
     if args.info:
         account = POOL.import_desktop_credential(args.info, source="file")
         log("imported account %s from %s" % (account.uid[:8], args.info))
-
     first_run = not POOL.accounts
     if first_run:
         # Never adopt the desktop client's login silently: just report what is
@@ -3401,17 +3146,14 @@ def main():
             log("open the dashboard and click [Scan desktop app] to import")
         else:
             log("no accounts yet - no desktop credentials found on this machine")
-
     if first_run and not POOL.accounts:
         # Do NOT exit here: the dashboard has to stay reachable so a new
         # account can be added through the browser login flow.
         log("still no accounts - starting anyway so you can log in via the dashboard")
-
     if args.import_desktop:
         for account in POOL.accounts:
             print("  %s  %s  %s" % (account.uid[:8], account.nickname, account.domain))
         return
-
     rep = current_account()
     log("accounts   : %d total, %d usable" % (len(POOL.accounts), POOL.count_ready()))
     for account in POOL.accounts:
@@ -3458,7 +3200,6 @@ def main():
         print("  " + "=" * 62)
         print()
         sys.stdout.flush()
-
     if not POOL.accounts:
         print()
         print("  " + "=" * 62)
@@ -3472,7 +3213,6 @@ def main():
         print("  " + "=" * 62)
         print()
         sys.stdout.flush()
-
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     # Keep the handler referenced for the process lifetime: SetConsoleCtrlHandler
     # stores a raw pointer, so a collected callback would crash on close.
@@ -3486,8 +3226,6 @@ def main():
             server.server_close()
         except Exception:
             pass
-
-
 if __name__ == "__main__":
     try:
         # Keep console output readable regardless of the active code page.

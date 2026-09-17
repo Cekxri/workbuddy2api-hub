@@ -304,7 +304,10 @@ a:hover{text-decoration:underline}
         <h2 style="margin:0">国内版成长任务与日常福利</h2>
         <div style="font-size:12px;color:var(--dim)">全自动批量接取、事件上报点亮并领取官方成长积分 (+1450分)，以及猫猫日常与打卡</div>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="growthAcctSelect" onchange="switchGrowthAccount(this.value)" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;color:var(--fg);font-family:inherit">
+          <option value="all">全部国内账号 (批量)</option>
+        </select>
         <button class="primary" id="btnRunTasks" onclick="runGrowthTasks(this)">一键做任务领积分</button>
         <button id="btnCatTravel" onclick="triggerCatTravel(this)">猫猫旅行</button>
       </div>
@@ -787,6 +790,13 @@ function renderAvailableModels(){
   }).join('');
 }
 
+let CURRENT_GROWTH_UID = 'all';
+
+async function switchGrowthAccount(uid){
+  CURRENT_GROWTH_UID = uid;
+  await loadGrowthTasks();
+}
+
 async function loadGrowthTasks(){
   const sec = document.getElementById("sectionGrowthTasks");
   if(!sec) return;
@@ -796,12 +806,22 @@ async function loadGrowthTasks(){
   }
   sec.style.display = 'block';
   try{
-    const r = await getJSON('/tasks');
+    const q = (CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all') ? ('?uid=' + encodeURIComponent(CURRENT_GROWTH_UID)) : '';
+    const r = await getJSON('/tasks' + q);
     const tasks = r.tasks || [];
     const sum = r.summary || {};
+    const accts = r.accounts || [];
     const streak = sum.streak_days || 0;
     const energy = sum.energy || 0;
     const tr = sum.travel || {};
+
+    const sel = document.getElementById("growthAcctSelect");
+    if(sel && accts.length){
+      const opts = ['<option value="all"' + (CURRENT_GROWTH_UID === 'all' ? ' selected' : '') + '>全部国内账号 (批量)</option>']
+        .concat(accts.map(a => '<option value="' + esc(a.uid) + '"' + (CURRENT_GROWTH_UID === a.uid ? ' selected' : '') + '>' + esc(a.nickname) + ' (' + esc(a.uid.slice(0,6)) + ')</option>'))
+        .join('');
+      sel.innerHTML = opts;
+    }
 
     const elStk = document.getElementById("stkDays");
     if(elStk) elStk.textContent = streak + ' 天';
@@ -813,16 +833,16 @@ async function loadGrowthTasks(){
     if(elCat){
       if(tr.state === 'arrived') {
         elCat.innerHTML = '<span style="color:#26bb82">旅行归来！待领奖</span>';
-        if(elCatDesc) elCatDesc.textContent = '奖励待领 +' + (tr.reward_credit || 0) + ' 积分';
+        if(elCatDesc) elCatDesc.textContent = '获得奖励 +' + (tr.reward_credit || 0) + ' 积分';
       } else if(tr.state === 'traveling') {
         elCat.innerHTML = '<span style="color:var(--accent)">旅行中...</span>';
         if(elCatDesc) elCatDesc.textContent = '预计稍后归来';
       } else if(tr.daily_limit_reached) {
-        elCat.textContent = '今日旅行已完成';
-        if(elCatDesc) elCatDesc.textContent = '明日 00:00 刷新';
+        elCat.textContent = '今日次数已用尽';
+        if(elCatDesc) elCatDesc.textContent = '次日 00:00 刷新';
       } else {
-        elCat.textContent = '家中待命';
-        if(elCatDesc) elCatDesc.textContent = '可随时派出旅行';
+        elCat.textContent = '在家待命中';
+        if(elCatDesc) elCatDesc.textContent = '随时可出发旅行';
       }
     }
 
@@ -843,7 +863,7 @@ async function loadGrowthTasks(){
       } else if(t.status === 'not_accepted'){
         stBadge = '<span class="badge">未接取</span>';
       }
-      const prog = (t.status === 'claimed' || t.status === 'completed') ? '已完成' : (t.current + ' / ' + t.target);
+      const prog = (t.status === 'claimed' || t.status === 'completed') ? '已达成' : (t.current + ' / ' + t.target);
       const rwd = (t.reward_credit ? ('<b style="color:var(--accent2)">+' + t.reward_credit + '</b> 积分') : '') +
                   (t.reward_energy ? (' <span style="color:var(--accent)">+' + t.reward_energy + ' 能量</span>') : '');
       return '<tr>'
@@ -866,10 +886,14 @@ async function runGrowthTasks(btn){
   const logBox = document.getElementById("taskLogBox");
   if(logBox){
     logBox.style.display = 'block';
-    logBox.innerHTML = '<div style="color:var(--accent)">[task_runner] 正在启动全自动任务接取、事件点亮与奖励到账流水...</div>';
+    logBox.innerHTML = '<div style="color:var(--accent)">[task_runner] 正在启动全自动任务接取、事件上报与奖励领取流水...</div>';
   }
   try{
-    const r = await postJSON("/tasks/run", {});
+    const payload = {};
+    if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
+      payload.uid = CURRENT_GROWTH_UID;
+    }
+    const r = await postJSON("/tasks/run", payload);
     const logs = r.logs || [];
     if(logBox){
       logBox.innerHTML = logs.map(l => '<div>' + esc(l) + '</div>').join('');
@@ -877,7 +901,8 @@ async function runGrowthTasks(btn){
     }
     await loadAccounts();
     await loadGrowthTasks();
-    toast("成长任务执行完成！");
+    const sumC = r.credit_added != null ? ('，共增加 +' + r.credit_added + ' 积分') : '';
+    toast("成长任务流水执行完成" + sumC + "！");
   }catch(e){
     if(logBox) logBox.innerHTML += '<div style="color:var(--warn)">执行出错: ' + esc(e.message) + '</div>';
     alert("任务执行失败: " + e.message);
@@ -890,12 +915,16 @@ async function runGrowthTasks(btn){
 async function triggerCatTravel(btn){
   btn.disabled = true;
   try{
-    const r = await postJSON("/tasks/travel", {});
+    const payload = {};
+    if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
+      payload.uid = CURRENT_GROWTH_UID;
+    }
+    const r = await postJSON("/tasks/travel", payload);
     alert(r.msg || (r.ok ? "操作成功" : "操作失败"));
     await loadAccounts();
     await loadGrowthTasks();
   }catch(e){
-    alert("猫猫操作失败: " + e.message);
+    alert("猫猫旅行失败: " + e.message);
   }finally{
     btn.disabled = false;
   }

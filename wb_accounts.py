@@ -1,3 +1,4 @@
+import re
 import base64
 import json
 import os
@@ -203,8 +204,11 @@ class Account(object):
 
     def save(self, directory):
         os.makedirs(directory, exist_ok=True)
-        name = (self.uid or uuid.uuid4().hex) + ".json"
-        path = os.path.join(directory, name)
+        safe_uid = re.sub(r"[^A-Za-z0-9_-]", "_", str(self.uid or "")).strip("_ ")
+        name = (safe_uid or uuid.uuid4().hex) + ".json"
+        path = os.path.abspath(os.path.join(directory, name))
+        if not path.startswith(os.path.abspath(directory)):
+            raise ValueError("invalid path for account save")
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(self.to_dict(), fh, ensure_ascii=False, indent=2)
@@ -955,7 +959,8 @@ def normalise_import_row(row, realm=None):
         detected = detect_realm_from_token(token, pick("domain"))
     cfg = get_realm_config(detected)
 
-    uid = str(pick("uid") or "").strip() or jwt_uid(token)
+    raw_uid = str(pick("uid") or "").strip() or jwt_uid(token)
+    uid = re.sub(r"[^A-Za-z0-9_-]", "_", raw_uid).strip("_ ")
     if not uid:
         raise ValueError("cannot determine uid (no uid field and no sub claim)")
 
