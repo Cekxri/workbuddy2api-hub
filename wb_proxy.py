@@ -13,6 +13,7 @@ Only the Python standard library is required.
 """
 import argparse
 import hashlib
+from collections import deque
 import re
 import json
 import os
@@ -133,7 +134,7 @@ CORS_PATH_PREFIXES = ("/v1", "/chat", "/completions", "/models", "/responses")
 # Management paths that happen to live under /v1 must not be treated as API:
 # /v1/usage reports account-level spend and is gated by the panel session.
 MANAGEMENT_PATH_PREFIXES = ("/v1/usage", "/usage", "/accounts", "/settings",
-                            "/tasks", "/scheduler", "/panel")
+                            "/tasks", "/scheduler", "/panel", "/logs")
 def cors_origin_allowed(path):
     """True when the OpenAI-style API path should advertise CORS."""
     path = (path or "").split("?")[0]
@@ -286,6 +287,14 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
         os.replace(tmp_summary, USAGE_SUMMARY)
     except Exception as exc:
         log(f"usage persist failed: {exc}")
+    try:
+        t_tokens = fields.get("total_tokens", 0)
+        dur = f" {elapsed_ms:.0f}ms" if elapsed_ms is not None else ""
+        acc_tag = f" acct={account[:8]}" if account else ""
+        speed_tag = f" {row.get('tokens_per_sec', 0)}t/s" if row.get("tokens_per_sec") else ""
+        log(f"chat done: model={model}{acc_tag}{dur} tokens={t_tokens} (in={fields.get('prompt_tokens',0)} out={fields.get('completion_tokens',0)}){speed_tag}", tag="chat")
+    except Exception:
+        pass
     return row
 def record_error(model, status, message, elapsed_ms=None):
     """Count a failed request and append it to the log so errors are visible."""
@@ -314,6 +323,8 @@ def record_error(model, status, message, elapsed_ms=None):
         os.replace(tmp_summary, USAGE_SUMMARY)
     except Exception as exc:
         log(f"error persist failed: {exc}")
+    dur = f" {elapsed_ms:.0f}ms" if elapsed_ms is not None else ""
+    log(f"request error: model={model}{dur} status={status} msg={str(message)[:180]}", level="ERROR", tag="chat")
     return row
 def _pct(values, q):
     """Nearest-rank percentile (no interpolation) - good enough for latency."""
@@ -722,7 +733,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "1.1.9",
+        "version": "1.2.0",
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -781,9 +792,82 @@ def prompt_fingerprint(messages):
         return out
     except Exception:
         return {}
-def log(msg):
+
+LOG_BUFFER = deque(maxlen=2000)
+_LOG_LOCK = threading.Lock()
+_LOG_COUNTER = 0
+
+def add_log_entry(msg, level=None, tag=None):
+    global _LOG_COUNTER
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    t_short = time.strftime("%H:%M:%S")
+    msg_str = str(msg).rstrip()
+    if not level:
+        lower = msg_str.lower()
+        if any(k in lower for k in ("error", "exception", "failed", "11128", "11101", "11140", "traceback", "errno", "fatal")):
+            level = "ERROR"
+        elif any(k in lower for k in ("warn", "warning", "retry", "timeout")):
+            level = "WARN"
+        else:
+            level = "INFO"
+    if not tag:
+        lower = msg_str.lower()
+        if "chat:" in lower or "chat done" in lower or "/v1/chat" in lower or "/chat/completions" in lower or "responses" in lower:
+            tag = "chat"
+        elif "scheduler" in lower or "调度器" in lower:
+            tag = "scheduler"
+        elif "task" in lower or "任务" in lower or "打卡" in lower or "猫猫" in lower or "travel" in lower:
+            tag = "tasks"
+        elif "account" in lower or "账号" in lower or "pool" in lower or "imported" in lower:
+            tag = "accounts"
+        elif "model" in lower or "catalog" in lower or "模型" in lower:
+            tag = "catalog"
+        elif "auth" in lower or "token" in lower or "oauth" in lower:
+            tag = "auth"
+        elif "settings" in lower or "设置" in lower:
+            tag = "settings"
+        else:
+            tag = "system"
+    with _LOG_LOCK:
+        _LOG_COUNTER += 1
+        entry = {
+            "id": _LOG_COUNTER,
+            "ts": ts,
+            "time": t_short,
+            "level": level,
+            "tag": tag,
+            "msg": msg_str,
+        }
+        LOG_BUFFER.append(entry)
+    return entry
+
+def log(msg, level=None, tag=None):
     sys.stderr.write(f"[wb-proxy] {time.strftime('%H:%M:%S')} {msg}\n")
     sys.stderr.flush()
+    add_log_entry(msg, level=level, tag=tag)
+
+def get_logs(limit=200, level="", tag="", search="", since_id=0):
+    with _LOG_LOCK:
+        items = list(LOG_BUFFER)
+    if since_id > 0:
+        items = [x for x in items if x["id"] > since_id]
+    if level:
+        items = [x for x in items if x["level"] == level.upper()]
+    if tag:
+        items = [x for x in items if x["tag"].lower() == tag.lower()]
+    if search:
+        s = search.lower()
+        items = [x for x in items if s in x["msg"].lower() or s in x["tag"].lower()]
+    total = len(items)
+    if limit and limit > 0 and since_id == 0:
+        items = items[-limit:]
+    max_id = items[-1]["id"] if items else since_id
+    return {"total": total, "logs": items, "max_id": max_id}
+
+def clear_logs():
+    with _LOG_LOCK:
+        LOG_BUFFER.clear()
+
 # ---------------------------------------------------------------------------
 # upstream helpers
 # ---------------------------------------------------------------------------
@@ -2122,7 +2206,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/1.1.9"
+    server_version = "wb-proxy/1.2.0"
     def log_message(self, fmt, *args):
         log(fmt % args)
     def _json(self, code, obj):
@@ -2245,6 +2329,8 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/tasks") or path.startswith("/scheduler"):
             return True
         if path.startswith("/settings"):
+            return True
+        if path.startswith("/logs"):
             return True
         return False
     def do_OPTIONS(self):
@@ -2429,6 +2515,37 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authorized():
                 return
             return self._json(200, runtime_settings_view())
+        if path == "/logs":
+            if not self._authorized():
+                return
+            try:
+                limit = int(query.get("limit", ["200"])[0])
+            except (ValueError, TypeError):
+                limit = 200
+            level = query.get("level", [""])[0]
+            tag = query.get("tag", [""])[0]
+            search = query.get("search", [""])[0]
+            try:
+                since_id = int(query.get("since_id", ["0"])[0])
+            except (ValueError, TypeError):
+                since_id = 0
+            return self._json(200, get_logs(limit=limit, level=level, tag=tag, search=search, since_id=since_id))
+        if path == "/logs/export":
+            if not self._authorized():
+                return
+            log_data = get_logs(limit=5000)
+            lines = [f"[{item['ts']}] [{item['level']}] [{item['tag']}] {item['msg']}" for item in log_data["logs"]]
+            text_content = "\n".join(lines).encode("utf-8")
+            filename = f"wb-proxy-{time.strftime('%Y%m%d-%H%M%S')}.log"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Length", str(len(text_content)))
+            if cors_origin_allowed(self.path):
+                self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(text_content)
+            return
         if path == "/settings/reveal":
             # The panel only ever draws masked keys, so copying one needs an
             # explicit request. Panel session required, API key is not enough.
@@ -2701,6 +2818,9 @@ class Handler(BaseHTTPRequestHandler):
                 SCHEDULER.log(f"用户切换调度器状态为: {'启用' if SCHEDULER.enabled else '暂停'}")
                 return self._json(200, SCHEDULER.status())
             return self._json(200, {"ok": False, "msg": "调度器未初始化"})
+        if path == "/logs/clear":
+            clear_logs()
+            return self._json(200, {"ok": True})
         if path == "/realm":
             new_realm = payload.get("realm")
             if new_realm in ("intl", "cn"):
@@ -2927,6 +3047,7 @@ class Handler(BaseHTTPRequestHandler):
             or path == "/realm"
             or path.startswith("/tasks")
             or path.startswith("/scheduler")
+            or path.startswith("/logs")
         )
         if not is_account_route and path not in ("/v1/chat/completions", "/chat/completions",
                                                 "/v1/completions", "/completions",

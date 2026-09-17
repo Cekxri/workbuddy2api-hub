@@ -41,6 +41,11 @@ class Scheduler:
         self.logs.append(entry)
         if len(self.logs) > 60:
             self.logs = self.logs[-60:]
+        try:
+            import wb_proxy
+            wb_proxy.add_log_entry(f"[调度器] {msg}", tag="scheduler")
+        except Exception:
+            pass
 
     def start(self):
         if self._thread and self._thread.is_alive():
