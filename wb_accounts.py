@@ -501,6 +501,80 @@ class AccountPool(object):
             self.accounts.remove(account)
             return True
 
+    def preview_import_rows(self, rows, realm=None, overwrite=False):
+        """Report what import_rows() would do, without touching the pool.
+
+        Shares the same accept/skip rules as import_rows() so a dry run cannot
+        disagree with the real thing.
+        """
+        preview = {"added": [], "updated": [], "skipped": [], "invalid": []}
+        known = {a.uid for a in self.accounts}
+        seen = set()
+        for index, row in enumerate(rows):
+            try:
+                kwargs = normalise_import_row(row, realm=realm)
+            except Exception as exc:
+                preview["invalid"].append({"index": index + 1, "reason": str(exc)})
+                continue
+            uid = kwargs["uid"]
+            if uid in seen:
+                preview["skipped"].append({"uid": uid, "reason": "duplicate inside the document"})
+            elif uid in known and not overwrite:
+                preview["skipped"].append({"uid": uid, "reason": "already exists"})
+            elif uid in known:
+                preview["updated"].append(uid)
+            else:
+                preview["added"].append(uid)
+            seen.add(uid)
+        return preview
+
+    def import_rows(self, rows, realm=None, overwrite=False):
+        """Add accounts from exported/foreign rows.
+
+        Returns a report dict:
+            added       - uids that were new to the pool
+            updated     - uids that already existed and were replaced
+            skipped     - [{"uid","reason"}] rows that were not imported
+            invalid     - [{"index","reason"}] rows that could not be parsed
+
+        Nothing is written until a row parses cleanly, so one bad entry does
+        not abort the rest of the file.
+        """
+        added, updated, skipped, invalid = [], [], [], []
+        seen = set()
+        for index, row in enumerate(rows):
+            try:
+                kwargs = normalise_import_row(row, realm=realm)
+            except Exception as exc:
+                invalid.append({"index": index + 1, "reason": str(exc)})
+                continue
+
+            uid = kwargs["uid"]
+            if uid in seen:
+                skipped.append({"uid": uid, "reason": "duplicate inside the document"})
+                continue
+            seen.add(uid)
+
+            existing = self.get(uid) is not None
+            if existing and not overwrite:
+                skipped.append({"uid": uid, "reason": "already exists"})
+                continue
+
+            try:
+                self.add(Account(kwargs))
+            except Exception as exc:
+                invalid.append({"index": index + 1, "reason": str(exc)})
+                continue
+
+            (updated if existing else added).append(uid)
+
+        return {
+            "added": added,
+            "updated": updated,
+            "skipped": skipped,
+            "invalid": invalid,
+        }
+
     def set_enabled(self, uid, enabled):
         account = self.get(uid)
         if account is None: return None
@@ -750,3 +824,155 @@ def scan_desktop_credentials():
             item["error"] = str(exc)
         found.append(item)
     return found
+
+
+# --------------------------------------------------------------- export / import
+#
+# Accounts travel as a single JSON document so a pool can be moved between
+# machines (or backed up) without reaching into the accounts directory by hand.
+# The shape is deliberately close to the per-account files on disk, so an
+# exported document can be read by eye and hand-edited if needed.
+#
+# Two containers are accepted on import:
+#   1. this module's own export  -> {"format": "workbuddy-accounts", "accounts": [...]}
+#   2. a bare list               -> [ {...}, {...} ]           (hand-written)
+#   3. a single account object   -> {...}                       (one-off paste)
+# A desktop-app credential ({"auth": {...}, "account": {...}}) is also accepted,
+# because that is what people usually have lying around.
+
+EXPORT_FORMAT = "workbuddy-accounts"
+EXPORT_VERSION = 1
+
+# Fields that describe live state rather than the credential itself. They are
+# exported for inspection but never trusted on import: a stale cooldown or a
+# disabled flag from another machine would silently cripple the target pool.
+VOLATILE_FIELDS = ("cooldownUntil", "lastError", "credits", "lastCheckin")
+
+
+def account_to_export(account):
+    """Serialise one account for an export document."""
+    data = account.to_dict()
+    # Keep the credential and identity; drop nothing, but mark the file source
+    # so a re-import on the same machine does not look like a desktop import.
+    data.pop("path", None)
+    return data
+
+
+def build_export_document(accounts, realm=None, include_secrets=True, uids=None):
+    """Wrap accounts in a self-describing export document.
+
+    `uids` narrows the export to specific accounts (a single uid gives a
+    one-account document). It is applied on top of the realm filter, so the
+    caller can ask for "this account" and still get an empty document rather
+    than a wrong one when the uid belongs to the other realm.
+    """
+    wanted = None
+    if uids is not None:
+        wanted = {str(u) for u in uids}
+    rows = []
+    for account in accounts:
+        if realm and account.realm != realm:
+            continue
+        if wanted is not None and account.uid not in wanted:
+            continue
+        row = account_to_export(account)
+        if not include_secrets:
+            row.pop("accessToken", None)
+            row.pop("refreshToken", None)
+        rows.append(row)
+    return {
+        "format": EXPORT_FORMAT,
+        "version": EXPORT_VERSION,
+        "exportedAt": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "count": len(rows),
+        "accounts": rows,
+    }
+
+
+def _coerce_account_rows(blob):
+    """Normalise any accepted container into a list of account dicts.
+
+    Returns (rows, error). Accepts the export document, a bare list, a single
+    account object, or a desktop-app credential.
+    """
+    if isinstance(blob, list):
+        rows = blob
+    elif isinstance(blob, dict) and isinstance(blob.get("accounts"), list):
+        # Our own export document (or any object carrying an accounts array).
+        rows = blob["accounts"]
+    elif isinstance(blob, dict):
+        # A single account object, or a desktop-app credential
+        # ({"account": {...}, "auth": {...}}). Anything else is a wrong shape
+        # and must be reported rather than silently treated as one account.
+        looks_like_account = (
+            blob.get("accessToken")
+            or isinstance(blob.get("auth"), dict)
+            or isinstance(blob.get("account"), dict)
+        )
+        if not looks_like_account:
+            keys = ", ".join(sorted(blob.keys())[:6]) or "none"
+            return [], ("not an account document (expected an accounts array, "
+                        "a list, or an account object; got keys: %s)" % keys)
+        rows = [blob]
+    else:
+        return [], "expected an object or a list of accounts"
+
+    out = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            return [], "account #%d is not an object" % (index + 1)
+        out.append(row)
+    if not out:
+        return [], "no accounts found in the document"
+    return out, ""
+
+
+def normalise_import_row(row, realm=None):
+    """Turn one exported/foreign row into Account kwargs.
+
+    Accepts both the flat account shape and the nested desktop-credential shape
+    so a file from either source imports cleanly. Raises ValueError when the
+    row carries no usable credential.
+    """
+    auth = row.get("auth") if isinstance(row.get("auth"), dict) else None
+    profile = row.get("account") if isinstance(row.get("account"), dict) else None
+
+    def pick(key, default=None):
+        """Read a field from whichever layer holds it (flat, auth, account)."""
+        for layer in (row, auth, profile):
+            if isinstance(layer, dict) and layer.get(key) not in (None, ""):
+                return layer.get(key)
+        return default
+
+    token = str(pick("accessToken") or "").strip()
+    if not token:
+        raise ValueError("no accessToken")
+    if token.count(".") != 2:
+        raise ValueError("accessToken is not a JWT")
+
+    detected = str(realm or pick("realm") or "").strip().lower()
+    if detected not in ("intl", "cn"):
+        detected = detect_realm_from_token(token, pick("domain"))
+    cfg = get_realm_config(detected)
+
+    uid = str(pick("uid") or "").strip() or jwt_uid(token)
+    if not uid:
+        raise ValueError("cannot determine uid (no uid field and no sub claim)")
+
+    return {
+        "uid": uid,
+        "nickname": str(pick("nickname") or ""),
+        "domain": str(pick("domain") or cfg["domain"]),
+        "realm": detected,
+        "platform": str(pick("platform") or "CLI"),
+        "enterpriseId": str(pick("enterpriseId") or ""),
+        "accessToken": token,
+        "refreshToken": str(pick("refreshToken") or ""),
+        "expiresAt": normalize_epoch(pick("expiresAt")) or jwt_exp(token),
+        "source": "import",
+        "enabled": True,
+        # Volatile state is intentionally reset - see VOLATILE_FIELDS.
+        "lastError": "",
+        "cooldownUntil": 0.0,
+    }
+

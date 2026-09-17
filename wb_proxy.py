@@ -2376,6 +2376,25 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, code, message, err_type="server_error"):
         self._json(code, {"error": {"message": message, "type": err_type, "code": code}})
 
+    def _download(self, filename, obj):
+        """Send a JSON document as a browser download.
+
+        Content-Disposition is quoted because the filename is generated from
+        user-controlled parts (the realm filter) and could otherwise break the
+        header or allow a response-splitting attempt.
+        """
+        body = json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
+        safe = re.sub(r'[^A-Za-z0-9._-]', "_", str(filename))[:120] or "export.json"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", 'attachment; filename="%s"' % safe)
+        self.send_header("Cache-Control", "no-store")
+        if cors_origin_allowed(self.path):
+            self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _supplied_key(self):
         """The key the caller presented, from the header or the ?key= query."""
         supplied = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
@@ -2575,6 +2594,44 @@ class Handler(BaseHTTPRequestHandler):
                 "storage": ACCOUNTS_DIR,
                 "usable": POOL.count_ready() if POOL else 0,
             })
+        if path == "/accounts/export":
+            if not self._authorized():
+                return
+            # ?download=1 makes the browser save it as a file; without it the
+            # document is returned inline so the dashboard can show a summary.
+            # ?uid= narrows it to specific accounts (repeatable, comma-joined),
+            # which is how the per-row "export" button works.
+            realm = (query.get("realm") or [None])[0] or None
+            if realm not in ("intl", "cn"):
+                realm = None
+            include_secrets = (query.get("secrets") or ["1"])[0] not in ("0", "false", "no")
+
+            uids = []
+            for raw in query.get("uid") or []:
+                uids.extend(part.strip() for part in str(raw).split(",") if part.strip())
+            if uids:
+                known = {a.uid for a in (POOL.accounts if POOL else [])}
+                missing = [u for u in uids if u not in known]
+                if missing:
+                    return self._error(404, "no such account: %s" % ", ".join(missing[:5]),
+                                       "invalid_request_error")
+            doc = wb_accounts.build_export_document(
+                POOL.accounts if POOL else [],
+                realm=realm,
+                include_secrets=include_secrets,
+                uids=uids or None,
+            )
+            if (query.get("download") or ["0"])[0] in ("1", "true", "yes"):
+                stamp = time.strftime("%Y%m%d-%H%M%S")
+                if len(uids) == 1:
+                    # Name a single-account export after the account, so a
+                    # folder of them stays readable.
+                    label = uids[0][:8]
+                else:
+                    label = realm + "-" if realm else ""
+                name = "workbuddy-accounts-%s%s.json" % (label, stamp)
+                return self._download(name, doc)
+            return self._json(200, doc)
         if path == "/accounts/login/poll":
             if not self._authorized():
                 return
@@ -2640,8 +2697,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _read_payload(self, max_bytes=MAX_PAYLOAD_BYTES):
-        """Parse the request body into a dict.
+    def _read_payload(self, max_bytes=MAX_PAYLOAD_BYTES, allow_list=False):
+        """Parse the request body into a dict (or a list when allow_list).
 
         Raises BodyTooLarge / BadJSON so every caller handles both cases the
         same way instead of each remembering to check for None.
@@ -2659,12 +2716,18 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(raw or "{}")
         except Exception:
             raise BadJSON()
-        return data if isinstance(data, dict) else {}
+        if isinstance(data, dict):
+            return data
+        if allow_list and isinstance(data, list):
+            # The account-import endpoint accepts a bare array of accounts,
+            # which is the most natural shape for a hand-written file.
+            return data
+        return {}
 
-    def _payload_or_error(self):
+    def _payload_or_error(self, allow_list=False):
         """Read the body, replying with the right error and returning None."""
         try:
-            return self._read_payload()
+            return self._read_payload(allow_list=allow_list)
         except BodyTooLarge as exc:
             self._error(413, "payload too large (%d bytes > %d limit)"
                         % (exc.length, MAX_PAYLOAD_BYTES), "invalid_request_error")
@@ -2806,6 +2869,13 @@ class Handler(BaseHTTPRequestHandler):
         if POOL is None:
             return self._error(503, "account pool unavailable")
 
+        if path == "/accounts/import" and isinstance(payload, list):
+            # A bare array is only meaningful for import; wrap it so the rest
+            # of this handler can keep assuming a dict.
+            payload = {"data": payload}
+        if not isinstance(payload, dict):
+            return self._error(400, "expected a JSON object", "invalid_request_error")
+
         if path in ("/accounts/credits", "/accounts/credits/fetch"):
             uid = payload.get("uid")
             targets = [POOL.get(uid)] if uid else list(POOL.accounts)
@@ -2941,6 +3011,58 @@ class Handler(BaseHTTPRequestHandler):
             log("account %s deleted" % uid[:8])
             return self._json(200, {"deleted": removed, "accounts": account_views()})
 
+        if path == "/accounts/import":
+            # Import a previously exported document (or any hand-written list
+            # of accounts). Body shapes accepted, see wb_accounts._coerce_account_rows:
+            #   {"format":"workbuddy-accounts","accounts":[...]}   <- our export
+            #   [...]                                              <- bare list
+            #   {"accessToken": ...}                               <- single account
+            #   {"account":{...},"auth":{...}}                     <- desktop credential
+            #
+            # Options:
+            #   dryRun    (bool) - validate and report, write nothing
+            #   overwrite (bool) - replace accounts whose uid already exists
+            #   realm     ("intl"|"cn") - force a realm instead of detecting it
+            #
+            # `data` carries the document. It is preferred over the bare body so
+            # the body can also hold the options above.
+            blob = payload.get("data") if "data" in payload else payload
+            if not isinstance(blob, (dict, list)):
+                return self._error(400, "the document must be a JSON object or array",
+                                   "invalid_request_error")
+            rows, problem = wb_accounts._coerce_account_rows(blob)
+            if problem:
+                return self._error(400, "cannot read the document: %s" % problem,
+                                   "invalid_request_error")
+
+            dry_run = bool(payload.get("dryRun"))
+            overwrite = bool(payload.get("overwrite"))
+            forced_realm = (payload.get("realm") or "").strip().lower() or None
+            if forced_realm and forced_realm not in ("intl", "cn"):
+                return self._error(400, "realm must be intl or cn", "invalid_request_error")
+
+            if dry_run:
+                # Validate every row without touching the pool so the caller can
+                # see exactly what an import would do before committing to it.
+                # Shares its rules with the real import, so the preview cannot
+                # disagree with what would actually happen.
+                return self._json(200, {
+                    "dryRun": True,
+                    "count": len(rows),
+                    "result": POOL.preview_import_rows(rows, realm=forced_realm, overwrite=overwrite),
+                    "accounts": account_views(),
+                })
+
+            report = POOL.import_rows(rows, realm=forced_realm, overwrite=overwrite)
+            log("account import: %d added, %d updated, %d skipped, %d invalid"
+                % (len(report["added"]), len(report["updated"]),
+                   len(report["skipped"]), len(report["invalid"])))
+            return self._json(200, {
+                "count": len(rows),
+                "result": report,
+                "accounts": account_views(),
+            })
+
         return self._error(404, "unknown account endpoint", "invalid_request_error")
 
     def _handle_responses(self, payload):
@@ -3047,7 +3169,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
 
-        payload = self._payload_or_error()
+        payload = self._payload_or_error(allow_list=(path == "/accounts/import"))
         if payload is None:
             return
 
