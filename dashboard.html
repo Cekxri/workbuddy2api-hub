@@ -34,15 +34,15 @@ h1 span{color:var(--dim);font-weight:400;font-size:13px;margin-left:8px}
 .meta b{color:var(--fg);font-weight:600}
 main{padding:24px 24px 60px;max-width:1280px;margin:0 auto}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:12px;margin-bottom:22px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 18px;box-shadow:var(--shadow)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 18px;box-shadow:var(--shadow);min-width:0}
 .card .k{color:var(--dim);font-size:12px;margin-bottom:6px;font-weight:500}
-.card .v{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.5px;color:var(--fg)}
-.card .s{color:var(--dim);font-size:11px;margin-top:4px}
+.card .v{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.5px;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .s{color:var(--dim);font-size:11px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .card.think .v{color:var(--think)}
 .card.accent .v{color:var(--accent)}
 .card.accent2 .v{color:var(--accent2)}
 .card.err .v{color:var(--bad)}
-#cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+#cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:20px}
 #cards .card{padding:14px 18px;min-width:0;border-radius:12px;background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow)}
 #cards .card .k{font-size:12px;color:var(--dim);margin-bottom:6px;font-weight:500}
 #cards .card .v{font-size:22px;font-weight:700;white-space:nowrap;letter-spacing:-.3px}
@@ -54,7 +54,7 @@ section h2{margin:0 0 14px;font-size:13px;font-weight:700;color:var(--dim);
 section h2 em{color:var(--fg);font-style:normal;text-transform:none;letter-spacing:0;margin-left:6px}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{text-align:right;padding:9px 12px;border-bottom:1px solid var(--line);
-  font-variant-numeric:tabular-nums}
+  font-variant-numeric:tabular-nums;vertical-align:middle}
 th{color:var(--dim);font-weight:600;font-size:12px;white-space:nowrap;background:var(--panel2)}
 th:first-child{border-top-left-radius:8px;border-bottom-left-radius:8px}
 th:last-child{border-top-right-radius:8px;border-bottom-right-radius:8px}
@@ -64,6 +64,18 @@ tbody tr:hover{background:rgba(241,245,249,.6)}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
 .bar-fill{height:6px;border-radius:3px;background:var(--accent);min-width:2px;display:inline-block;vertical-align:middle}
 .bar-fill.think{background:var(--think)}
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;width:100%;border-radius:8px}
+.table-wrap table{min-width:720px}
+@media (max-width: 860px){
+  header{padding:12px 16px}
+  main{padding:16px 12px 60px}
+  section{padding:14px 14px;border-radius:12px}
+  #cards{grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
+  #cards .card{padding:10px 12px}
+  #cards .card .v{font-size:18px}
+  .toolbar{gap:6px}
+  .toolbar button{padding:5px 10px;font-size:11px}
+}
 .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;
   background:var(--panel2);border:1px solid var(--line);color:var(--dim);white-space:nowrap;font-weight:600}
 .badge.ok{color:#15803d;background:rgba(34,197,94,.14);border-color:rgba(34,197,94,.32)}
@@ -117,37 +129,58 @@ a:hover{text-decoration:underline}
 .realm-pill{background:transparent;border:none;color:var(--dim);font-size:12px;padding:6px 16px;border-radius:8px;cursor:pointer;transition:all .15s}
 .realm-pill:hover{color:var(--fg)}
 .realm-pill.active{background:var(--accent);color:#fff;font-weight:600;box-shadow:var(--shadow-sm)}
+.key-card{
+  background:#ffffff;border:1px solid var(--line);border-radius:12px;
+  padding:16px 20px;margin-bottom:12px;box-shadow:var(--shadow);
+  transition:all .15s ease;
+}
+.key-card:hover{border-color:var(--line-hover);box-shadow:var(--shadow-md)}
+.key-card.disabled{opacity:.75;background:rgba(241,245,249,.5)}
+.key-card-main{
+  display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
+}
+.key-action-btn{
+  display:inline-flex;align-items:center;gap:5px;padding:5px 14px;border-radius:20px;
+  font-size:12px;font-weight:500;cursor:pointer;border:1px solid var(--line);
+  background:#ffffff;color:var(--fg);transition:all .15s ease;box-shadow:var(--shadow-sm);
+}
+.key-action-btn:hover{background:var(--panel2);border-color:var(--line-hover)}
+.key-action-btn.danger{
+  color:#dc2626;border-color:rgba(220,38,38,.28);background:rgba(220,38,38,.03);
+}
+.key-action-btn.danger:hover{
+  background:#dc2626;color:#ffffff;border-color:#dc2626;
+}
 .realm-badge-intl{color:#0369a1;background:rgba(2,132,199,.12);border:1px solid rgba(2,132,199,.3);padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
 .realm-badge-cn{color:#b91c1c;background:rgba(220,38,38,.12);border:1px solid rgba(220,38,38,.3);padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
+.badge-effort{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;line-height:1.4;white-space:nowrap;margin:1px 2px;background:rgba(124,58,237,.12);color:var(--think);border:1px solid rgba(124,58,237,.3);font-weight:600}
 .realm-filter{display:inline-flex;gap:6px;margin-left:8px}
 .realm-filter button{background:var(--panel2);border:1px solid var(--line);color:var(--dim);padding:3px 9px;font-size:11px}
 .realm-filter button.active{border-color:var(--accent);color:var(--accent);background:#fff}
 
-.realm-banner{
-  background:var(--panel);border:1px solid var(--line);border-radius:14px;
-  padding:16px 20px;margin-bottom:20px;display:flex;align-items:center;
-  justify-content:space-between;gap:18px;flex-wrap:wrap;box-shadow:var(--shadow);
+.realm-card{
+  background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:14px 18px;box-shadow:var(--shadow);cursor:pointer;transition:all .15s ease;
+  position:relative;display:flex;flex-direction:column;justify-content:space-between;min-height:104px;
 }
-.realm-tabs{display:flex;gap:10px;flex-wrap:wrap}
-.realm-tab{
-  display:flex;align-items:center;gap:12px;padding:10px 18px;border-radius:10px;
-  background:var(--panel2);border:1px solid var(--line);color:var(--dim);
-  cursor:pointer;text-align:left;transition:all .15s;
+.realm-card:hover{border-color:var(--line-hover);transform:translateY(-1px);box-shadow:var(--shadow-md)}
+.realm-card.active{
+  border-color:var(--accent);background:#ffffff;
+  box-shadow:0 0 0 1px var(--accent), var(--shadow-md);
 }
-.realm-tab:hover{border-color:var(--line-hover);color:var(--fg);background:#fff}
-.realm-tab.active{
-  background:#fff;border-color:var(--accent);color:var(--fg);
-  box-shadow:0 2px 8px rgba(37,99,235,.15);
+.realm-card.active#tabCn{
+  border-color:#ef4444;box-shadow:0 0 0 1px #ef4444, var(--shadow-md);
 }
-.realm-tab .tab-icon{font-size:22px;line-height:1}
-.realm-tab .tab-title{font-size:14px;font-weight:700;display:block;color:var(--fg)}
-.realm-tab .tab-desc{font-size:11px;color:var(--dim);display:block;margin-top:2px}
-.realm-banner-right{display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+.realm-card.gateway-ctrl{
+  background:var(--panel2);cursor:default;border-color:var(--line);
+}
+.realm-card.gateway-ctrl:hover{transform:none;border-color:var(--line);box-shadow:var(--shadow)}
 .toggle-realm-btn{
   background:#fff;border:1px solid var(--accent);color:var(--accent);
   padding:8px 18px;font-size:13px;font-weight:600;border-radius:8px;box-shadow:var(--shadow-sm);cursor:pointer;
+  transition:all .15s ease;
 }
-.toggle-realm-btn:hover{background:var(--accent);color:#fff}
+.toggle-realm-btn:hover{background:rgba(0,0,0,.04);box-shadow:var(--shadow-md)}
 .realm-endpoint-info{font-size:12px;color:var(--dim)}
 
 .main-nav{display:inline-flex;gap:4px;background:var(--panel2);padding:4px;border-radius:10px;border:1px solid var(--line)}
@@ -221,35 +254,64 @@ a:hover{text-decoration:underline}
 </div>
 <main>
   <div id="pageGateway">
-  <!-- 版本中枢控制栏 -->
-  <div class="realm-banner">
-    <div>
-      <div style="font-size:11px;color:var(--dim);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.5px">查看详情 (点击切换视图)</div>
-      <div class="realm-tabs">
-        <div id="tabIntl" class="realm-tab active" onclick="switchViewRealm('intl')">
-          
-          <div class="tab-text">
-            <span class="tab-title">国际版详情 (Global)</span>
-            <span class="tab-desc">www.workbuddy.ai</span>
-          </div>
-        </div>
-        <div id="tabCn" class="realm-tab" onclick="switchViewRealm('cn')">
-          
-          <div class="tab-text">
-            <span class="tab-title">国内版详情 (China)</span>
-            <span class="tab-desc">copilot.tencent.com</span>
-          </div>
+  <!-- 版本中枢控制栏 (三列等高对齐网格) -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-bottom:18px">
+    
+    <!-- 卡片 1: 国际版 (Global) -->
+    <div id="tabIntl" class="realm-card active" onclick="switchViewRealm('intl')">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span class="realm-badge-intl">国际版 (Global)</span>
+          <span id="tabIntlDefaultBadge" class="badge ok mini" style="font-weight:600;display:none">默认出口</span>
+          <span id="tabIntlViewBadge" class="badge s mini" style="display:inline-block">当前视图</span>
         </div>
       </div>
-    </div>
-    <div class="realm-banner-right" style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 16px">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-        <span id="gatewayDot" class="dot"></span>
-        <span style="font-size:13px">网关当前上游: <b id="activeGatewayName" style="color:var(--accent)">国际版</b></span>
+      <div class="mono" style="font-size:11px;color:var(--dim);margin-bottom:8px">www.workbuddy.ai</div>
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px">
+        <div style="display:flex;align-items:baseline;gap:6px">
+          <span id="tabIntlCredits" style="font-size:22px;font-weight:700;color:var(--accent2);letter-spacing:-.5px">0</span>
+          <span style="font-size:12px;color:var(--dim)">剩余积分 · <b id="tabIntlAccts" style="color:var(--fg)">0</b> 账号</span>
+        </div>
+        <span id="tabIntlKeyBadge" class="badge s mini" style="font-weight:600">0 个 Key</span>
       </div>
-      <div style="font-size:11px;color:var(--dim);margin-bottom:8px">出站地址: <span id="activeEndpoint" class="mono" style="color:var(--fg)">https://www.workbuddy.ai/v2</span> (本地已保存)</div>
-      <button class="toggle-realm-btn" id="btnToggleRealm" onclick="toggleActiveGatewayRealm()" style="cursor:pointer;width:100%">切换网关上游为【国内版】</button>
     </div>
+
+    <!-- 卡片 2: 国内版 (China) -->
+    <div id="tabCn" class="realm-card" onclick="switchViewRealm('cn')">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span class="realm-badge-cn">国内版 (China)</span>
+          <span id="tabCnDefaultBadge" class="badge ok mini" style="font-weight:600;display:none">默认出口</span>
+          <span id="tabCnViewBadge" class="badge warn mini" style="display:none">当前视图</span>
+        </div>
+      </div>
+      <div class="mono" style="font-size:11px;color:var(--dim);margin-bottom:8px">copilot.tencent.com</div>
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px">
+        <div style="display:flex;align-items:baseline;gap:6px">
+          <span id="tabCnCredits" style="font-size:22px;font-weight:700;color:var(--accent2);letter-spacing:-.5px">0</span>
+          <span style="font-size:12px;color:var(--dim)">剩余积分 · <b id="tabCnAccts" style="color:var(--fg)">0</b> 账号</span>
+        </div>
+        <span id="tabCnKeyBadge" class="badge warn mini" style="font-weight:600">0 个 Key</span>
+      </div>
+    </div>
+
+    <!-- 卡片 3: 网关出口控制 -->
+    <div id="cardGatewayCtrl" class="realm-card gateway-ctrl" style="cursor:default">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <span style="font-size:11px;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:.5px">网关默认出口</span>
+        <span id="activeGatewayKeyCount" class="badge ok mini" style="font-weight:600">0 个 Key 生效</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin:2px 0 8px">
+        <span id="gatewayDot" class="dot" style="width:9px;height:9px"></span>
+        <span id="activeGatewayName" style="font-size:20px;font-weight:700;color:var(--accent);letter-spacing:-.4px">国际版 (Global)</span>
+      </div>
+      <div style="margin-top:auto">
+        <button class="toggle-realm-btn" id="btnToggleRealm" onclick="toggleActiveGatewayRealm()" style="cursor:pointer;width:100%;padding:7px 12px;font-size:12px">
+          ⇄ 切换默认出口为【国内版】
+        </button>
+      </div>
+    </div>
+
   </div>
   <!-- 后台定时调度器状态栏 -->
   <div id="schedulerBar" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 14px;margin-bottom:16px;font-size:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
@@ -274,7 +336,7 @@ a:hover{text-decoration:underline}
     <button class="sec" id="btnScanDesktop" onclick="scanDesktop(this)">扫描桌面客户端账号</button>
     <button class="sec" onclick="exportAccounts(this)">导出账号</button>
     <button class="sec" onclick="openImport()">导入账号</button>
-    <button class="sec" onclick="fetchCredits(this)">刷新额度/积分</button>
+    <button class="sec" onclick="fetchCredits(this)">刷新积分</button>
     <button class="sec" onclick="setAll(true, this)">全部启用</button>
     <button class="sec" onclick="setAll(false, this)">全部停用</button>
     
@@ -286,8 +348,27 @@ a:hover{text-decoration:underline}
   
 
   <section>
-    <h2>最近请求</h2>
-    <div id="recent"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <h2 style="margin:0">最近请求 <em id="recentCount"></em></h2>
+      <div style="display:inline-flex;align-items:center;gap:8px">
+        <span style="font-size:12px;color:var(--dim)">显示条数:</span>
+        <div style="display:inline-flex;gap:3px;background:var(--panel2);padding:3px;border-radius:8px;border:1px solid var(--line)">
+          <button class="range-btn" id="btnRecentLimit10" onclick="setRecentLimit(10)">10</button>
+          <button class="range-btn" id="btnRecentLimit20" onclick="setRecentLimit(20)">20</button>
+          <button class="range-btn" id="btnRecentLimit50" onclick="setRecentLimit(50)">50</button>
+          <button class="range-btn" id="btnRecentLimit100" onclick="setRecentLimit(100)">100</button>
+        </div>
+      </div>
+    </div>
+    <div id="recent" class="table-wrap"></div>
+    <div id="recentPagination" style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--dim);flex-wrap:wrap;gap:8px">
+      <div id="recentPageInfo">第 1 / 1 页 · 共 0 条记录</div>
+      <div style="display:inline-flex;gap:6px;align-items:center">
+        <button class="sec mini" id="btnRecentPrev" onclick="changeRecentPage(-1)">上一页</button>
+        <span id="recentPageIndicator" class="mono" style="font-weight:600;color:var(--fg);padding:0 6px">1</span>
+        <button class="sec mini" id="btnRecentNext" onclick="changeRecentPage(1)">下一页</button>
+      </div>
+    </div>
   </section>
 
   <!-- 版本模型库与能力清单 -->
@@ -300,12 +381,12 @@ a:hover{text-decoration:underline}
       <table id="modelsTable">
         <thead>
           <tr>
-            <th>模型 ID</th>
-            <th>消费倍率 / 优惠</th>
-            <th>模型能力</th>
-            <th>上下文窗口</th>
-            <th>最大输出</th>
-            <th>思考能力 / 推理档位</th>
+            <th style="text-align:left;width:220px">模型 ID</th>
+            <th style="text-align:center;width:140px">消费倍率 / 优惠</th>
+            <th style="text-align:center;width:160px">模型能力</th>
+            <th style="text-align:center;width:110px">上下文窗口</th>
+            <th style="text-align:center;width:100px">最大输出</th>
+            <th style="text-align:left">思考档位</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -421,7 +502,6 @@ a:hover{text-decoration:underline}
   <div id="pageSettings" style="display:none">
     <div style="margin-bottom:16px">
       <h2 style="margin:0;font-size:16px;color:var(--fg)">网关设置</h2>
-      <div style="font-size:12px;color:var(--dim);margin-top:4px">面板密码与 API Key 均保存在本机 <span class="mono" id="setSettingsFile">settings.json</span>，重启后依然生效</div>
     </div>
 
     <section>
@@ -443,17 +523,16 @@ a:hover{text-decoration:underline}
     </section>
 
     <section>
-      <h2>API Key 与出口绑定 <em id="setKeyState"></em></h2>
-      <div style="font-size:12px;color:var(--dim);margin-bottom:14px">
-        可以配置多个 Key，并给每个 Key 指定一个上游出口。绑定后，用该 Key 发起的请求会固定走对应出口，
-        两个出口可同时对外服务，无需再切换全局网关。
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+        <div>
+          <h2 style="margin:0">API Key 与出口绑定 <em id="setKeyState"></em></h2>
+          <div style="font-size:12px;color:var(--dim);margin-top:4px">
+            为每个 Key 绑定专属出口。客户端使用该 Key 请求将固定走对应区域，实现双出口并发。
+          </div>
+        </div>
+        <button onclick="addApiKeyRow()">+ 添加 API Key</button>
       </div>
       <div id="keyList"></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-        <button class="sec" onclick="addApiKeyRow()">+ 添加一个 Key</button>
-        <button onclick="saveApiKeys(this)">保存全部</button>
-      </div>
-      <div style="font-size:11px;color:var(--dim);margin-top:10px" id="setKeyHint"></div>
     </section>
 
     <section>
@@ -481,12 +560,12 @@ a:hover{text-decoration:underline}
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <span id="logStatsBadge" style="font-size:12px;color:var(--dim);margin-right:6px">加载中...</span>
-        <button class="sec mini" onclick="fetchNewLogs(true)" title="立即拉取最新日志">🔄 刷新</button>
-        <button class="sec mini" id="btnToggleLogAuto" onclick="toggleLogAuto()" style="color:var(--accent2);font-weight:600">● 实时监听中</button>
-        <button class="sec mini" id="btnToggleLogScroll" onclick="toggleLogScroll()">↓ 自动滚屏: 开</button>
-        <button class="sec mini" onclick="copyFilteredLogs()" title="复制当前视图显示的日志">📋 复制</button>
-        <button class="sec mini" onclick="exportLogsFile()" title="下载为 .log 文件">📥 导出</button>
-        <button class="danger mini" onclick="clearServerLogs()" title="清空所有日志">🗑️ 清空</button>
+        <button class="sec mini" onclick="fetchNewLogs(true)" title="立即拉取最新日志">刷新</button>
+        <button class="sec mini" id="btnToggleLogAuto" onclick="toggleLogAuto()" style="color:var(--accent2);font-weight:600">实时监听中</button>
+        <button class="sec mini" id="btnToggleLogScroll" onclick="toggleLogScroll()">自动滚屏: 开</button>
+        <button class="sec mini" onclick="copyFilteredLogs()" title="复制当前视图显示的日志">复制</button>
+        <button class="sec mini" onclick="exportLogsFile()" title="下载为 .log 文件">导出</button>
+        <button class="danger mini" onclick="clearServerLogs()" title="清空所有日志">清空</button>
       </div>
     </div>
 
@@ -501,11 +580,11 @@ a:hover{text-decoration:underline}
 
       <div style="display:inline-flex;gap:3px;background:var(--panel2);padding:3px;border-radius:8px;border:1px solid var(--line)">
         <button class="range-btn active" id="btnLogTagAll" onclick="setLogFilterTag('')">全部模块</button>
-        <button class="range-btn" id="btnLogTagChat" onclick="setLogFilterTag('chat')">💬 对话</button>
-        <button class="range-btn" id="btnLogTagTasks" onclick="setLogFilterTag('tasks')">🐱 任务福利</button>
-        <button class="range-btn" id="btnLogTagSched" onclick="setLogFilterTag('scheduler')">⏰ 调度器</button>
-        <button class="range-btn" id="btnLogTagAcct" onclick="setLogFilterTag('accounts')">👤 账号</button>
-        <button class="range-btn" id="btnLogTagSys" onclick="setLogFilterTag('system')">⚙️ 系统</button>
+        <button class="range-btn" id="btnLogTagChat" onclick="setLogFilterTag('chat')">对话</button>
+        <button class="range-btn" id="btnLogTagTasks" onclick="setLogFilterTag('tasks')">任务福利</button>
+        <button class="range-btn" id="btnLogTagSched" onclick="setLogFilterTag('scheduler')">调度器</button>
+        <button class="range-btn" id="btnLogTagAcct" onclick="setLogFilterTag('accounts')">账号</button>
+        <button class="range-btn" id="btnLogTagSys" onclick="setLogFilterTag('system')">系统</button>
       </div>
 
       <div style="flex:1;min-width:180px;position:relative">
@@ -717,30 +796,83 @@ function updateUI(){
   const isIntlView = (window.VIEW_REALM === "intl");
   const tIntl = document.getElementById("tabIntl");
   const tCn = document.getElementById("tabCn");
-  if(tIntl) tIntl.className = "realm-tab" + (isIntlView ? " active" : "");
-  if(tCn) tCn.className = "realm-tab" + (!isIntlView ? " active" : "");
+  if(tIntl) tIntl.className = "realm-card" + (isIntlView ? " active" : "");
+  if(tCn) tCn.className = "realm-card" + (!isIntlView ? " active" : "");
+  const vbIntl = document.getElementById("tabIntlViewBadge");
+  if(vbIntl) vbIntl.style.display = isIntlView ? "inline-block" : "none";
+  const vbCn = document.getElementById("tabCnViewBadge");
+  if(vbCn) vbCn.style.display = !isIntlView ? "inline-block" : "none";
 
   const isIntlGw = (window.ACTIVE_GATEWAY_REALM === "intl");
+  const dbIntl = document.getElementById("tabIntlDefaultBadge");
+  if(dbIntl) dbIntl.style.display = isIntlGw ? "inline-block" : "none";
+  const dbCn = document.getElementById("tabCnDefaultBadge");
+  if(dbCn) dbCn.style.display = !isIntlGw ? "inline-block" : "none";
+
   const gwName = document.getElementById("activeGatewayName");
   if(gwName) {
-    gwName.textContent = isIntlGw ? "国际版" : "国内版";
-    gwName.style.color = isIntlGw ? "var(--accent)" : "var(--warn)";
+    gwName.textContent = isIntlGw ? "国际版 (Global)" : "国内版 (China)";
+    gwName.style.color = isIntlGw ? "var(--accent)" : "#dc2626";
   }
   const ep = document.getElementById("activeEndpoint");
   if(ep) ep.textContent = isIntlGw ? "https://www.workbuddy.ai/v2" : "https://copilot.tencent.com/v2";
 
   const btnToggle = document.getElementById("btnToggleRealm");
   if(btnToggle) {
-    btnToggle.textContent = isIntlGw ? "切换网关上游为【国内版】" : "切换网关上游为【国际版】";
+    btnToggle.textContent = isIntlGw ? "切换默认出口为【国内版】" : "切换默认出口为【国际版】";
+    btnToggle.style.borderColor = isIntlGw ? "#dc2626" : "var(--accent)";
+    btnToggle.style.color = isIntlGw ? "#dc2626" : "var(--accent)";
+  }
+  const cardGw = document.getElementById("cardGatewayCtrl");
+  if(cardGw){
+    cardGw.style.borderColor = isIntlGw ? "rgba(37,99,235,.28)" : "rgba(220,38,38,.28)";
+    cardGw.style.background = isIntlGw ? "rgba(37,99,235,.03)" : "rgba(220,38,38,.03)";
   }
 
   const btnCheckin = document.getElementById("btnCheckin");
   if(btnCheckin) btnCheckin.style.display = (window.VIEW_REALM === "cn" ? "inline-block" : "none");
+
+  // 计算当前绑定与生效的 Key 数量
+  const keys = (typeof API_KEY_ROWS !== 'undefined' && API_KEY_ROWS.length) ? API_KEY_ROWS : (window.API_KEY_ROWS || []);
+  const intlKeys = keys.filter(k => k.enabled !== false && k.realm === 'intl').length;
+  const cnKeys = keys.filter(k => k.enabled !== false && k.realm === 'cn').length;
+  const followKeys = keys.filter(k => k.enabled !== false && !k.realm).length;
+  const activeKeysTotal = isIntlGw ? (intlKeys + followKeys) : (cnKeys + followKeys);
+
+  const elGwKeyBadge = document.getElementById("activeGatewayKeyCount");
+  if(elGwKeyBadge) elGwKeyBadge.textContent = activeKeysTotal + ' 个 Key 生效';
+
+  const elIntlKey = document.getElementById("tabIntlKeyBadge");
+  if(elIntlKey) elIntlKey.textContent = intlKeys + ' 个 Key';
+
+  const elCnKey = document.getElementById("tabCnKeyBadge");
+  if(elCnKey) elCnKey.textContent = cnKeys + ' 个 Key';
+
+  // 左侧卡片账号数与积分统计
+  const allAccts = window.ACCOUNTS || [];
+  const intlAccts = allAccts.filter(a => a.realm === 'intl' || !a.realm);
+  const cnAccts = allAccts.filter(a => a.realm === 'cn');
+
+  let intlCred = 0, hasIntlCred = false;
+  intlAccts.forEach(a => { if(a.credits && a.credits.remain != null){ intlCred += a.credits.remain; hasIntlCred = true; } });
+  let cnCred = 0, hasCnCred = false;
+  cnAccts.forEach(a => { if(a.credits && a.credits.remain != null){ cnCred += a.credits.remain; hasCnCred = true; } });
+
+  const elIntlCred = document.getElementById("tabIntlCredits");
+  if(elIntlCred) elIntlCred.textContent = hasIntlCred ? fmt(intlCred) : "—";
+  const elIntlAcct = document.getElementById("tabIntlAccts");
+  if(elIntlAcct) elIntlAcct.textContent = intlAccts.length;
+
+  const elCnCred = document.getElementById("tabCnCredits");
+  if(elCnCred) elCnCred.textContent = hasCnCred ? fmt(cnCred) : "—";
+  const elCnAcct = document.getElementById("tabCnAccts");
+  if(elCnAcct) elCnAcct.textContent = cnAccts.length;
 };
 
 async function switchViewRealm(r){
   if(window.VIEW_REALM === r) return;
   window.VIEW_REALM = r;
+  RECENT_PAGE = 1;
   window.updateUI();
   await loadAccounts();
   await loadModels();
@@ -821,6 +953,10 @@ function renderAvailableModels(){
     if(hasTool){
       caps.push('<span class="badge ok" style="font-size:11px">工具</span>');
     }
+    const hasReasoning = m.supports_reasoning || m.reasoning_fixed_effort || (m.reasoning_efforts && m.reasoning_efforts.length);
+    if(hasReasoning){
+      caps.push('<span class="badge" style="background:rgba(124,58,237,.12);color:var(--think);border-color:rgba(124,58,237,.3);font-size:11px;font-weight:600">推理</span>');
+    }
     const capHtml = caps.join(' ');
 
     const fmtK = v => {
@@ -840,27 +976,29 @@ function renderAvailableModels(){
     // 4. 最大输出
     const maxOut = m.max_output_tokens ? ('<b>' + fmtK(m.max_output_tokens) + '</b>') : '-';
 
-    // 5. 思考推理能力
+    // 5. 思考档位
     let effort = '<span style="color:var(--dim)">—</span>';
+    const renderEffortBadge = e => {
+      const lvl = String(e || '').toLowerCase();
+      return '<span class="badge-effort">' + esc(lvl) + '</span>';
+    };
     if(m.reasoning_fixed_effort){
-      effort = '<span class="badge ok" style="font-size:11px">固定推理 ' + esc(m.reasoning_fixed_effort) + '</span>';
+      effort = renderEffortBadge(m.reasoning_fixed_effort);
     } else if(m.reasoning_efforts && m.reasoning_efforts.length === 1){
-      effort = '<span class="badge ok" style="font-size:11px">固定推理 ' + esc(m.reasoning_efforts[0]) + '</span>';
+      effort = renderEffortBadge(m.reasoning_efforts[0]);
     } else if(m.reasoning_efforts && m.reasoning_efforts.length){
-      const effBadges = m.reasoning_efforts.map(e => '<span class="badge" style="background:rgba(217,119,6,.15);color:var(--think);font-size:11px">' + e + '</span>').join(' ');
-      const canDis = m.reasoning_can_disable ? ' <span style="font-size:11px;color:var(--dim)">(可关闭)</span>' : ' <span style="font-size:11px;color:var(--think)">(强制思考)</span>';
-      effort = effBadges + canDis;
+      effort = m.reasoning_efforts.map(renderEffortBadge).join(' ');
     } else if(m.supports_reasoning){
-      effort = '<span class="badge" style="background:rgba(217,119,6,.15);color:var(--think);font-size:11px">支持思考</span>';
+      effort = '<span class="badge-effort">原生</span>';
     }
 
     return '<tr>'
-      + '<td class="mono"><b>' + esc(m.id) + '</b></td>'
-      + '<td>' + credBadge + '</td>'
-      + '<td>' + capHtml + '</td>'
-      + '<td>' + ctx + '</td>'
-      + '<td>' + maxOut + '</td>'
-      + '<td>' + effort + '</td>'
+      + '<td style="text-align:left" class="mono"><b>' + esc(m.id) + '</b></td>'
+      + '<td style="text-align:center">' + credBadge + '</td>'
+      + '<td style="text-align:center">' + capHtml + '</td>'
+      + '<td style="text-align:center">' + ctx + '</td>'
+      + '<td style="text-align:center">' + maxOut + '</td>'
+      + '<td style="text-align:left">' + effort + '</td>'
       + '</tr>';
   }).join('');
 }
@@ -1149,25 +1287,36 @@ async function postJSON(url, body){
   return parsed;
 }
 function toast(msg, kind){
-  // Visible, self-dismissing notification (the old version only wrote to the
-  // console, so actions like "已导入" looked like they did nothing).
   console.log('[wb]', msg);
   let box = document.getElementById('toastBox');
   if(!box){
     box = document.createElement('div');
     box.id = 'toastBox';
-    box.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:200;'
-      + 'display:flex;flex-direction:column;gap:8px;align-items:flex-end';
+    box.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:9999;'
+      + 'display:flex;flex-direction:column;gap:10px;align-items:flex-end;pointer-events:none';
     document.body.appendChild(box);
   }
   const item = document.createElement('div');
-  item.textContent = msg;
-  item.style.cssText = 'background:var(--panel);border:1px solid var(--line);'
-    + 'border-left:3px solid ' + (kind === 'err' ? 'var(--bad)' : 'var(--accent2)') + ';'
-    + 'border-radius:8px;padding:9px 14px;font-size:13px;color:var(--fg);'
-    + 'box-shadow:0 6px 20px rgba(0,0,0,.35);max-width:360px';
+  const isBad = (kind === 'bad' || kind === 'err' || kind === 'error');
+  const isWarn = (kind === 'warn' || kind === 'warning');
+  const isOk = (kind === 'ok' || kind === 'success');
+  const borderColor = isBad ? 'var(--bad)' : (isWarn ? 'var(--warn)' : (isOk ? 'var(--accent2)' : 'var(--accent)'));
+  const textColor = isBad ? '#b91c1c' : (isWarn ? '#b45309' : (isOk ? '#15803d' : 'var(--fg)'));
+  const icon = '';
+  const bg = isBad ? 'rgba(254,242,242,.98)' : (isWarn ? 'rgba(255,251,235,.98)' : 'var(--panel)');
+
+  item.textContent = icon + msg;
+  item.style.cssText = 'background:' + bg + ';border:1px solid var(--line);'
+    + 'border-left:4px solid ' + borderColor + ';'
+    + 'border-radius:8px;padding:10px 16px;font-size:13px;font-weight:500;color:' + textColor + ';'
+    + 'box-shadow:0 10px 25px -5px rgba(0,0,0,.15),0 8px 10px -6px rgba(0,0,0,.1);'
+    + 'max-width:380px;word-break:break-all;pointer-events:auto;transition:all .2s ease;';
   box.appendChild(item);
-  setTimeout(() => item.remove(), 4200);
+  setTimeout(() => {
+    item.style.opacity = '0';
+    item.style.transform = 'translateY(6px)';
+    setTimeout(() => item.remove(), 250);
+  }, 4200);
 }
 
 /* ------------------------------- accounts ------------------------------- */
@@ -1202,11 +1351,18 @@ function accountRow(a){
     + '<td style="text-align:right">' + fmt(usage.requests) + '</td>'
     + '<td style="text-align:right">' + fmt(usage.total_tokens) + '</td>'
     + '<td style="text-align:right">' + fmt(usage.cached_tokens) + '</td>'
-    + '<td style="text-align:right;white-space:nowrap">'
-    + '<button class="sec mini" onclick="toggleAccount(&quot;' + uidAttr + '&quot;,' + (!a.enabled) + ', this)">' + (a.enabled ? '停用' : '启用') + '</button> '
-    + '<button class="sec mini" onclick="refreshOne(&quot;' + uidAttr + '&quot;, this)">刷新</button> '
-    + '<button class="sec mini" onclick="exportOne(&quot;' + uidAttr + '&quot;)">导出</button> '
-    + '<button class="danger mini" onclick="deleteAccount(&quot;' + uidAttr + '&quot;,&quot;' + nameAttr + '&quot;, this)">删除</button>'
+    + '<td style="text-align:center;white-space:nowrap;vertical-align:middle">'
+    + '<div style="display:flex;flex-direction:column;gap:5px;align-items:center;justify-content:center">'
+    +   '<div style="display:flex;gap:4px;justify-content:center">'
+    +     '<button class="sec mini" onclick="toggleAccount(&quot;' + uidAttr + '&quot;,' + (!a.enabled) + ', this)">' + (a.enabled ? '停用' : '启用') + '</button>'
+    +     '<button class="sec mini" onclick="testAccount(&quot;' + uidAttr + '&quot;, this)">测试</button>'
+    +     '<button class="sec mini" onclick="refreshOne(&quot;' + uidAttr + '&quot;, this)">刷新</button>'
+    +   '</div>'
+    +   '<div style="display:flex;gap:4px;justify-content:center">'
+    +     '<button class="sec mini" onclick="exportOne(&quot;' + uidAttr + '&quot;)">导出</button>'
+    +     '<button class="danger mini" onclick="deleteAccount(&quot;' + uidAttr + '&quot;,&quot;' + nameAttr + '&quot;, this)">删除</button>'
+    +   '</div>'
+    + '</div>'
     + '</td></tr>';
 }
 
@@ -1215,45 +1371,44 @@ function renderAccounts(){
   const currentView = (window.VIEW_REALM || "intl");
   let list = (window.ACCOUNTS || []).filter(a => !a.realm || a.realm === currentView);
   const usable = list.filter(a => a.enabled).length;
+  const viewName = currentView === 'cn' ? '国内版' : '国际版';
   document.getElementById('acctCount').textContent =
-    window.ACCOUNTS.length ? ('共 ' + window.ACCOUNTS.length + ' 个，启用 ' + usable + ' 个') : '';
-  if(!window.ACCOUNTS.length){
+    list.length ? ('（' + viewName + '共 ' + list.length + ' 个，启用 ' + usable + ' 个）') : '';
+  if(!list.length){
     box.innerHTML =
       '<div style="text-align:center;padding:30px 16px">'
-      + '<div style="font-size:15px;margin-bottom:8px">还没有账号</div>'
+      + '<div style="font-size:15px;margin-bottom:8px">当前' + viewName + '还没有账号</div>'
       + '<div style="color:var(--dim);font-size:13px;margin-bottom:18px">'
-      +   '请先登录一个 WorkBuddy 账号，之后所有请求都会走这个账号'
+      +   '请先登录或导入一个 ' + viewName + ' 账号，之后相关请求都会走该账号'
       + '</div>'
       + '<button onclick="startLogin()" style="font-size:14px;padding:10px 22px">'
-      +   '登录新账号'
+      +   '登录新账号 (OAuth)'
       + '</button>'
-      + '<div style="color:var(--dim);font-size:12px;margin-top:16px;line-height:1.9">'
-      +   '点上面的按钮会弹出一个登录链接，<br>'
-      +   '在浏览器里登录完成后账号会自动加入。'
-      + '</div>'
       + '</div>';
     return;
   }
   box.innerHTML = '<table><thead><tr>'
+  box.innerHTML = '<div class="table-wrap"><table><thead><tr>'
     + '<th style="text-align:center;width:76px">版本</th>'
     + '<th style="text-align:left">账号</th>'
     + '<th style="text-align:center;width:84px">状态</th>'
-    + '<th style="text-align:left;width:120px">积分额度</th>'
+    + '<th style="text-align:left;width:120px">积分</th>'
     + '<th style="text-align:right;width:70px">请求</th>'
     + '<th style="text-align:right;width:88px">总 token</th>'
     + '<th style="text-align:right;width:80px">缓存</th>'
-    + '<th style="text-align:right;width:180px">操作</th>'
-    + '</tr></thead><tbody>' + list.map(accountRow).join('') + '</tbody></table>'
+    + '<th style="text-align:center;width:150px">操作</th>'
+    + '</tr></thead><tbody>' + list.map(accountRow).join('') + '</tbody></table></div>'
     + '<div class="legend"><span>多个账号按会话粘性 + 轮询使用；某个账号被上游拒绝时自动切到下一个</span></div>';
 }
 
 async function loadAccounts(){
   try{
-    const [acct, byAcct] = await Promise.all([getJSON('/accounts?realm=' + encodeURIComponent(window.VIEW_REALM)), getJSON('/usage/by-account')]);
+    const [acct, byAcct] = await Promise.all([getJSON('/accounts?realm=all'), getJSON('/usage/by-account')]);
     window.ACCOUNTS = acct.accounts || [];
     USAGE_BY_ACCOUNT = {};
     (byAcct.accounts || []).forEach(a => { USAGE_BY_ACCOUNT[a.account] = a; });
     renderAccounts();
+    updateUI();
     // Auto-fetch credits once if not present
     if(window.ACCOUNTS.length && window.ACCOUNTS.some(a => !a.credits)){
       postJSON('/accounts/credits', {}).then(r => {
@@ -1266,17 +1421,18 @@ async function loadAccounts(){
 
 async function fetchCredits(btn){
   if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
+  const currentView = (window.VIEW_REALM || "intl");
+  const viewName = currentView === 'cn' ? '国内版' : '国际版';
   try{
-    const r = await postJSON('/accounts/credits', {});
-    window.ACCOUNTS = r.accounts || window.ACCOUNTS || [];
-    renderAccounts();
+    const r = await postJSON('/accounts/credits', {realm: currentView});
+    await loadAccounts();
     refresh();
-    const count = (window.ACCOUNTS || []).length;
-    toast('已成功刷新 ' + count + ' 个账号的额度与积分', 'ok');
+    const count = (r.results || []).length;
+    toast('已成功刷新当前' + viewName + ' ' + count + ' 个账号的积分', 'ok');
   }catch(e){
-    toast('刷新额度失败: ' + e.message, 'bad');
+    toast('刷新积分失败: ' + e.message, 'bad');
   }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '刷新额度/积分'; }
+    if(btn){ btn.disabled = false; btn.textContent = '刷新积分'; }
   }
 }
 const queryCredits = fetchCredits;
@@ -1304,6 +1460,22 @@ async function refreshOne(uid, btn){
     toast('刷新失败: ' + e.message, 'bad');
   }finally{
     if(btn){ btn.disabled = false; btn.textContent = '刷新'; }
+  }
+}
+async function testAccount(uid, btn){
+  if(btn){ btn.disabled = true; btn.textContent = '测试中...'; }
+  try{
+    const r = await postJSON('/accounts/test', {uid: uid});
+    if(r.ok){
+      toast('测试通过 (' + r.elapsed_ms + 'ms) [' + r.model + ']: ' + (r.reply || '正常'), 'ok');
+    } else {
+      toast('测试失败: ' + (r.error || r.status || '异常'), 'bad');
+    }
+    await loadAccounts();
+  }catch(e){
+    toast('测试请求失败: ' + e.message, 'bad');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '测试'; }
   }
 }
 async function refreshAccounts(){
@@ -1665,7 +1837,7 @@ async function refreshInner(){
   try{
     [usage, recent, perf] = await Promise.all([
       getJSON('/usage?realm=' + encodeURIComponent(window.VIEW_REALM)),
-      getJSON('/usage/recent?limit=60&realm=' + encodeURIComponent(window.VIEW_REALM)),
+      getJSON('/usage/recent?limit=' + RECENT_LIMIT + '&page=' + RECENT_PAGE + '&realm=' + encodeURIComponent(window.VIEW_REALM)),
       getJSON('/usage/perf?realm=' + encodeURIComponent(window.VIEW_REALM)),
     ]);
     document.getElementById('statusDot').className = 'dot';
@@ -1678,10 +1850,8 @@ async function refreshInner(){
   }
 
   const t = usage;
-  document.getElementById('meta').innerHTML =
-    '账号 <b>' + esc((t.account && t.account.uid || '—').slice(0,8)) + '</b>'
-    + (t.accounts ? ' · 池 <b>' + t.accounts_ready + '/' + t.accounts + '</b>' : '')
-    + '<br>统计开始于 <b>' + esc(t.since || '—') + '</b> · 明细 <b>' + fmt(recent.total) + '</b> 条';
+  const metaEl = document.getElementById('meta');
+  if(metaEl) metaEl.innerHTML = '';
   document.getElementById('logfile').textContent = t.log_file || '';
   const rEl = document.getElementById('realm'); if(rEl) rEl.textContent = t.realm ? ' · ' + t.realm : '';
 
@@ -1698,13 +1868,13 @@ async function refreshInner(){
   const activeAccts = (window.ACCOUNTS || []).filter(a => a.enabled).length;
   const totalAccts = (window.ACCOUNTS || []).length;
   const pctRemain = totSize > 0 ? ((totRemain / totSize) * 100).toFixed(1) + '%' : '';
-  const subCredit = totSize > 0 ? ('总额度 ' + fmt(totSize) + ' · 剩余 ' + pctRemain) : '当前账号正常';
+  const subCredit = totSize > 0 ? ('总积分 ' + fmt(totSize) + ' · 剩余 ' + pctRemain) : '当前账号正常';
   const succStr = perf.success_rate_pct != null ? pct(perf.success_rate_pct) : '100.0%';
   const errSub = perf.errors ? (perf.errors + ' 次异常拦截') : '服务运行平稳';
 
   document.getElementById('cards').innerHTML =
     card('可用账号池', activeAccts + ' <span style="font-size:13px;font-weight:400;color:var(--dim)">/ ' + totalAccts + ' 正常</span>', (totalAccts - activeAccts > 0 ? (totalAccts - activeAccts) + ' 个停用' : '全部启用 · 状态健康'), 'accent') +
-    card('积分额度余额', hasCreds ? (fmt(totRemain) + ' <span style="font-size:13px;font-weight:400;color:var(--dim)">积分</span>') : '正常可用', subCredit, 'accent2') +
+    card('积分余额', hasCreds ? (fmt(totRemain) + ' <span style="font-size:13px;font-weight:400;color:var(--dim)">积分</span>') : '正常可用', subCredit, 'accent2') +
     card('网关调用量', fmt(t.requests) + ' <span style="font-size:13px;font-weight:400;color:var(--dim)">次</span>', '累计消耗 ' + fmt(t.total_tokens) + ' Token', '') +
     card('请求成功率', succStr, errSub, perf.errors ? 'warn' : 'accent2');
 
@@ -1746,8 +1916,9 @@ async function refreshInner(){
     const totWall = perf.wall_ms ? ms(perf.wall_ms.avg) : "-";
     const totCache = perf.cache_hit_pct ? (perf.cache_hit_pct.avg.toFixed(1) + "%") : "-";
     const summaryRow = '<tr style="background:rgba(37,99,235,.06);font-weight:600">'
-      + '<td><b>全部模型合计 (Total)</b></td>'
-      + '<td><span style="color:var(--dim)">全部账号</span></td>'
+      + '<td style="text-align:left"><b>全部模型合计 (Total)</b></td>'
+      + '<td style="text-align:center"><span style="color:var(--dim)">—</span></td>'
+      + '<td style="text-align:left"><span style="color:var(--dim)">全部账号</span></td>'
       + '<td>' + fmt(t.requests) + '</td>'
       + '<td><b style="color:var(--accent)">' + fmt(t.total_tokens) + '</b></td>'
       + '<td>' + fmt(t.prompt_tokens) + ' / ' + fmt(t.completion_tokens) + (t.reasoning_tokens ? (' (<span style="color:var(--think)">' + fmt(t.reasoning_tokens) + '</span>)') : '') + '</td>'
@@ -1769,24 +1940,38 @@ async function refreshInner(){
       const acctsMap = t.accounts_map || {};
       const mAccts = m.accounts || {};
       const acctEntries = Object.entries(mAccts);
+      let realmCell = '<span style="color:var(--dim)">—</span>';
       let acctCell = '<span style="color:var(--dim)">—</span>';
+      const realms = new Set();
+      acctEntries.forEach(([uid]) => {
+        const info = acctsMap[uid] || {};
+        if(info.realm) realms.add(info.realm);
+      });
+      if(realms.size === 1){
+        const r = Array.from(realms)[0];
+        realmCell = r === 'cn' ? '<span class="realm-badge-cn">国内版</span>' : '<span class="realm-badge-intl">国际版</span>';
+      } else if(realms.size > 1){
+        realmCell = '<span class="realm-badge-intl">国际版</span> <span class="realm-badge-cn">国内版</span>';
+      } else {
+        const isIntlOnly = ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex', 'gemini-3.5-flash'].includes(m.id);
+        realmCell = isIntlOnly ? '<span class="realm-badge-intl">国际版</span>' : (window.VIEW_REALM === 'cn' ? '<span class="realm-badge-cn">国内版</span>' : '<span class="realm-badge-intl">国际版</span>');
+      }
       if(acctEntries.length === 1){
         const [uid, count] = acctEntries[0];
         const info = acctsMap[uid] || {};
         const name = esc(info.nickname || uid.slice(0, 8));
-        const flag = info.realm === 'cn' ? '<span class="badge warn mini">🇨🇳</span>' : '<span class="badge s mini">🌐</span>';
-        acctCell = '<b>' + name + '</b> ' + flag;
+        acctCell = '<b>' + name + '</b>';
       } else if(acctEntries.length > 1){
         acctCell = acctEntries.map(([uid, count]) => {
           const info = acctsMap[uid] || {};
           const name = esc(info.nickname || uid.slice(0, 6));
-          const flag = info.realm === 'cn' ? '' : '';
-          return '<span class="badge mini" style="margin:1px 2px">' + flag + ' ' + name + ' <span style="color:var(--dim)">(' + count + ')</span></span>';
+          return '<span class="badge mini" style="margin:1px 2px">' + name + ' <span style="color:var(--dim)">(' + count + ')</span></span>';
         }).join('');
       }
       return '<tr>'
-        + '<td class="mono"><b>' + esc(m.id) + '</b>' + errText + '</td>'
-        + '<td>' + acctCell + '</td>'
+        + '<td style="text-align:left" class="mono"><b>' + esc(m.id) + '</b>' + errText + '</td>'
+        + '<td style="text-align:center;white-space:nowrap">' + realmCell + '</td>'
+        + '<td style="text-align:left">' + acctCell + '</td>'
         + '<td>' + fmt(m.requests) + '</td>'
         + '<td><b>' + fmt(m.total_tokens) + '</b></td>'
         + '<td>' + fmt(m.prompt_tokens) + ' / ' + fmt(m.completion_tokens) + (m.reasoning_tokens ? (' (<span style="color:var(--think)">' + fmt(m.reasoning_tokens) + '</span>)') : '') + '</td>'
@@ -1799,15 +1984,37 @@ async function refreshInner(){
     }).join('');
 
     matrixEl.innerHTML = '<table><thead><tr>'
-      + '<th>模型名称</th><th>账号</th><th>请求数</th><th>总 Token</th><th>输入 / 输出 (思考)</th>'
+      + '<th style="text-align:left">模型名称</th>'
+      + '<th style="text-align:center;width:76px">区域</th>'
+      + '<th style="text-align:left">账号</th>'
+      + '<th>请求数</th><th>总 Token</th><th>输入 / 输出 (思考)</th>'
       + '<th>首字延迟 (TTFT)</th><th>生成速度</th><th>端到端耗时</th><th>缓存命中率</th><th>用量占比</th>'
       + '</tr></thead><tbody>' + summaryRow + rows + '</tbody></table>';
   }
 
-  const last = (recent.rows || []).slice(-60).reverse();
-  document.getElementById('recent').innerHTML = last.length ?
+  const total = recent.total || 0;
+  RECENT_PAGE = recent.page || 1;
+  RECENT_TOTAL_PAGES = recent.total_pages || Math.max(1, Math.ceil(total / RECENT_LIMIT));
+
+  const pageInfo = document.getElementById('recentPageInfo');
+  if(pageInfo){
+    pageInfo.textContent = '第 ' + RECENT_PAGE + ' / ' + RECENT_TOTAL_PAGES + ' 页 · 共 ' + fmt(total) + ' 条记录';
+  }
+  const pageIndicator = document.getElementById('recentPageIndicator');
+  if(pageIndicator){
+    pageIndicator.textContent = RECENT_PAGE;
+  }
+  const btnPrev = document.getElementById('btnRecentPrev');
+  if(btnPrev) btnPrev.disabled = (RECENT_PAGE <= 1);
+  const btnNext = document.getElementById('btnRecentNext');
+  if(btnNext) btnNext.disabled = (RECENT_PAGE >= RECENT_TOTAL_PAGES);
+
+  const rows = recent.rows || [];
+  const countEl = document.getElementById('recentCount');
+  if(countEl) countEl.textContent = '(第 ' + RECENT_PAGE + ' 页 / 共 ' + fmt(total) + ' 条)';
+  document.getElementById('recent').innerHTML = rows.length ?
     '<table><thead><tr><th>时间</th><th>模型</th><th>账号</th><th>模式</th><th>耗时</th><th>首字</th><th>速度</th><th>输入</th><th>输出</th><th>思考</th><th>缓存</th><th>总 token</th></tr></thead><tbody>'
-    + last.map(r => '<tr>'
+    + rows.map(r => '<tr>'
         + '<td class="mono">' + esc((r.iso||'').replace('T',' ').slice(5)) + '</td>'
         + '<td class="mono">' + esc(r.model) + '</td>'
         + '<td class="mono" style="font-size:11px;color:var(--dim)">' + esc((r.account||'—').slice(0,8)) + '</td>'
@@ -1827,6 +2034,33 @@ async function refreshInner(){
 (async function initDashboard(){
   await bootPanel();
 })();
+
+let RECENT_LIMIT = parseInt(localStorage.getItem('WB_RECENT_LIMIT') || '20', 10);
+if(![10, 20, 50, 100].includes(RECENT_LIMIT)) RECENT_LIMIT = 20;
+let RECENT_PAGE = 1;
+let RECENT_TOTAL_PAGES = 1;
+
+function updateRecentLimitButtons(){
+  [10, 20, 50, 100].forEach(n => {
+    const btn = document.getElementById('btnRecentLimit' + n);
+    if(btn) btn.classList.toggle('active', RECENT_LIMIT === n);
+  });
+}
+
+function setRecentLimit(n){
+  RECENT_LIMIT = n;
+  RECENT_PAGE = 1;
+  try { localStorage.setItem('WB_RECENT_LIMIT', String(n)); } catch(e){}
+  updateRecentLimitButtons();
+  refresh();
+}
+
+async function changeRecentPage(delta){
+  const next = RECENT_PAGE + delta;
+  if(next < 1 || next > RECENT_TOTAL_PAGES) return;
+  RECENT_PAGE = next;
+  await refresh();
+}
 
 let currentMainTab = 'gateway';
 let analyticsRange = 'today';
@@ -1915,13 +2149,14 @@ let PANEL_TIMERS = [];
 async function startDashboard(){
   if(PANEL_READY) return;
   PANEL_READY = true;
+  await loadSettings();
   await initRealm();
   await loadAccounts();
   await loadModels();
   await loadGrowthTasks();
   await loadSchedulerStatus();
   await refresh();
-  await loadSettings();
+  updateRecentLimitButtons();
   const tabFromUrl = new URLSearchParams(window.location.search).get('tab');
   if(tabFromUrl && ['gateway', 'analytics', 'logs', 'settings'].includes(tabFromUrl)){
     switchMainTab(tabFromUrl);
@@ -1954,21 +2189,6 @@ async function loadSettings(showToast){
       keyState.textContent = count ? ('(' + count + ' 个生效)') : '(当前不校验)';
       keyState.style.color = count ? 'var(--accent2)' : 'var(--dim)';
     }
-    const keyHint = document.getElementById('setKeyHint');
-    if(keyHint){
-      const bound = (data.api_keys || []).filter(k => k.enabled && k.realm);
-      if(!(data.api_keys || []).length){
-        keyHint.textContent = data.api_key_set
-          ? ('当前仅使用启动参数中的 Key: ' + (data.api_key_masked || '') + '（保存后将改由面板管理）')
-          : '当前未设置 API Key，/v1 接口不校验密钥。';
-      } else if(!bound.length){
-        keyHint.textContent = '目前没有 Key 绑定出口，所有请求跟随「网关与运维」页的全局切换。';
-      } else {
-        keyHint.textContent = bound.map(k =>
-          (k.name || '未命名') + ' → ' + (k.realm === 'cn' ? '国内版' : '国际版')
-        ).join(' · ');
-      }
-    }
     // Rebuild the editable rows, keeping stored values so an untouched field
     // is not accidentally blanked.
     API_KEY_ROWS = (data.api_keys || []).map(k => ({
@@ -1981,8 +2201,12 @@ async function loadSettings(showToast){
       masked: k.masked || '',
       realm: k.realm || '',
       enabled: k.enabled !== false,
+      created_at: k.created_at || '',
+      _editing: false,
     }));
+    window.API_KEY_ROWS = API_KEY_ROWS;
     renderKeyRows();
+    updateUI();
     const set = (id, value) => { const el = document.getElementById(id); if(el) el.textContent = value || '-'; };
     set('setVersion', data.version);
     set('setAccountsDir', data.accounts_dir);
@@ -2039,49 +2263,178 @@ function renderKeyRows(){
   const box = document.getElementById('keyList');
   if(!box) return;
   if(!API_KEY_ROWS.length){
-    box.innerHTML = '<div class="empty" style="padding:14px 0">还没有配置 Key，点击下方按钮添加。</div>';
+    box.innerHTML = '<div class="empty" style="padding:24px 0">还没有配置 API Key，点击右上角「+ 添加 API Key」创建。</div>';
     return;
   }
   box.innerHTML = API_KEY_ROWS.map((row, i) => {
-    const options = REALM_CHOICES.map(([value, label]) =>
-      '<option value="' + value + '"' + (row.realm === value ? ' selected' : '') + '>' + label + '</option>'
-    ).join('');
-    const maskedHint = row.masked
-      ? '<span style="color:var(--dim);font-size:11px">已保存: ' + esc(row.masked) + '</span>'
-      : '';
-    return '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;'
-      + 'background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px">'
-      + '<input type="text" value="' + esc(row.name || '') + '" placeholder="备注名" '
-      +   'oninput="updateKeyRow(' + i + ',\'name\', this.value)" '
-      +   'style="width:130px;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:6px 9px;color:var(--fg);font:inherit">'
-      + '<input type="text" value="' + esc(row.key || '') + '" placeholder="API Key（留空表示不改）" '
-     +   'oninput="updateKeyRow(' + i + ',\'key\', this.value)" '
-      +   'style="flex:1;min-width:190px;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:6px 9px;color:var(--fg);font:inherit">'
-      + '<button class="sec mini" id="copyBtn' + i + '" onclick="copyKeyRow(' + i + ')">复制</button>'
-      + '<select onchange="updateKeyRow(' + i + ',\'realm\', this.value)" '
-      +   'style="background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:6px 9px;color:var(--fg);font:inherit">'
-      + options + '</select>'
-      + '<label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--dim)">'
-      +   '<input type="checkbox"' + (row.enabled ? ' checked' : '') + ' onchange="updateKeyRow(' + i + ',\'enabled\', this.checked)">启用</label>'
-      + '<button class="sec mini" onclick="generateKeyRow(' + i + ')">随机生成</button>'
-      + '<button class="danger mini" onclick="removeKeyRow(' + i + ')">删除</button>'
-      + maskedHint
+    if(row._editing){
+      const options = REALM_CHOICES.map(([val, lbl]) =>
+        '<option value="' + val + '"' + ((row.realm || '') === val ? ' selected' : '') + '>' + lbl + '</option>'
+      ).join('');
+      return '<div class="key-card" style="border-color:var(--accent);background:#ffffff;box-shadow:0 0 0 1px var(--accent), var(--shadow-md)">'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'
+        +   '<div style="font-size:14px;font-weight:700;color:var(--fg)">' + (row.id ? '编辑 API Key' : '新建 API Key') + '</div>'
+        +   '<span class="badge s mini">设置出口</span>'
+        + '</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px">'
+        +   '<div>'
+        +     '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:500">备注名称</div>'
+        +     '<input type="text" id="editKeyName_' + i + '" value="' + esc(row.name || '') + '" placeholder="如: Cursor / DSH / 本地测试" '
+        +       'style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
+        +   '</div>'
+        +   '<div>'
+        +     '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:500">出口绑定</div>'
+        +     '<select id="editKeyRealm_' + i + '" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
+        +       options
+        +     '</select>'
+        +   '</div>'
+        +   '<div style="grid-column:1 / -1">'
+        +     '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:500">API Key 内容 ' + (row.masked ? '<span style="color:var(--dim-light)">(已保存: ' + esc(row.masked) + '，留空表示不改)</span>' : '') + '</div>'
+        +     '<div style="display:flex;gap:8px">'
+        +       '<input type="text" id="editKeyValue_' + i + '" value="' + esc(row.key || '') + '" placeholder="' + (row.masked ? '留空表示保持原 Key 不变' : '输入自定义密钥，或点击右侧生成') + '" '
+        +         'style="flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
+        +       '<button class="sec mini" style="white-space:nowrap;border-radius:8px;padding:7px 14px" onclick="generateKeyForEdit(' + i + ')">随机生成</button>'
+        +     '</div>'
+        +   '</div>'
+        + '</div>'
+        + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+        +   '<button class="sec mini" style="border-radius:8px;padding:6px 16px" onclick="cancelEditKey(' + i + ')">取消</button>'
+        +   '<button class="mini" style="border-radius:8px;padding:6px 18px" onclick="saveSingleKey(' + i + ', this)">保存</button>'
+        + '</div>'
+        + '</div>';
+    }
+
+    const statusBadge = row.enabled
+      ? '<span class="badge ok" style="font-size:11px;font-weight:600;padding:2px 10px">已启用</span>'
+      : '<span class="badge off" style="font-size:11px;font-weight:600;padding:2px 10px">已禁用</span>';
+
+    const realmBadge = (row.realm === 'intl')
+      ? '<span class="realm-badge-intl" style="font-size:11px">固定国际版出口</span>'
+      : (row.realm === 'cn')
+      ? '<span class="realm-badge-cn" style="font-size:11px">固定国内版出口</span>'
+      : '<span class="badge s" style="font-size:11px">跟随面板切换</span>';
+
+    const displayKey = row.masked || (row.key ? (row.key.slice(0, 4) + '******' + row.key.slice(-4)) : '未设置');
+    const createdStr = row.created_at ? ('创建时间 ' + esc(row.created_at)) : '';
+
+    return '<div class="key-card' + (row.enabled ? '' : ' disabled') + '">'
+      + '<div class="key-card-main">'
+      +   '<div>'
+      +     '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">'
+      +       '<span style="font-size:15px;font-weight:700;color:var(--fg)">' + esc(row.name || '未命名') + '</span>'
+      +       statusBadge
+      +       realmBadge
+      +     '</div>'
+      +     '<div style="font-size:12px;color:var(--dim);display:flex;align-items:center;gap:16px;flex-wrap:wrap">'
+      +       '<span>Key: <span class="mono" style="color:var(--fg);font-weight:500">' + esc(displayKey) + '</span></span>'
+      +       (createdStr ? ('<span>' + createdStr + '</span>') : '')
+      +     '</div>'
+      +   '</div>'
+      +   '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+      +     '<button class="key-action-btn" id="copyBtn' + i + '" onclick="copyKeyRow(' + i + ')">复制</button>'
+      +     '<button class="key-action-btn" onclick="openEditKey(' + i + ')">编辑</button>'
+      +     '<button class="key-action-btn" onclick="toggleKeyRow(' + i + ')">' + (row.enabled ? '禁用' : '启用') + '</button>'
+      +     '<button class="key-action-btn danger" onclick="removeKeyRow(' + i + ')">删除</button>'
+      +   '</div>'
+      + '</div>'
       + '</div>';
   }).join('');
 }
 
-function updateKeyRow(index, field, value){
+function openEditKey(index){
   if(!API_KEY_ROWS[index]) return;
-  API_KEY_ROWS[index][field] = value;
-  if(field === 'enabled' || field === 'realm') renderKeyRows();
-}
-
-function generateKeyRow(index){
-  if(!API_KEY_ROWS[index]) return;
-  API_KEY_ROWS[index].key = randomKeyValue();
+  API_KEY_ROWS[index]._editing = true;
   renderKeyRows();
 }
 
+function cancelEditKey(index){
+  if(!API_KEY_ROWS[index]) return;
+  if(!API_KEY_ROWS[index].id && !API_KEY_ROWS[index].masked){
+    API_KEY_ROWS.splice(index, 1);
+  } else {
+    API_KEY_ROWS[index]._editing = false;
+  }
+  renderKeyRows();
+}
+
+function generateKeyForEdit(index){
+  const el = document.getElementById('editKeyValue_' + index);
+  if(el){
+    el.value = randomKeyValue();
+  }
+}
+
+async function saveSingleKey(index, btn){
+  const row = API_KEY_ROWS[index];
+  if(!row) return;
+  const nameInput = document.getElementById('editKeyName_' + index);
+  const realmSelect = document.getElementById('editKeyRealm_' + index);
+  const keyInput = document.getElementById('editKeyValue_' + index);
+
+  const name = nameInput ? nameInput.value.trim() : (row.name || '');
+  const realm = realmSelect ? realmSelect.value : (row.realm || '');
+  const keyVal = keyInput ? keyInput.value.trim() : (row.key || '');
+
+  if(!keyVal && !row.masked){
+    toast('API Key 不能为空', 'warn');
+    return;
+  }
+
+  row.name = name || '未命名';
+  row.realm = realm;
+  if(keyVal) row.key = keyVal;
+  row._editing = false;
+
+  if(btn) btn.disabled = true;
+  try {
+    await saveApiKeys();
+    toast('API Key [' + row.name + '] 已保存', 'ok');
+  } catch(e){
+    toast('保存失败: ' + e.message, 'bad');
+  }
+}
+
+async function toggleKeyRow(index){
+  const row = API_KEY_ROWS[index];
+  if(!row) return;
+  row.enabled = !row.enabled;
+  try {
+    await saveApiKeys();
+    toast(row.enabled ? 'Key [' + row.name + '] 已启用' : 'Key [' + row.name + '] 已禁用', 'ok');
+  } catch(e){
+    toast('操作失败: ' + e.message, 'bad');
+  }
+}
+
+async function removeKeyRow(index){
+  const row = API_KEY_ROWS[index];
+  if(!row) return;
+  if(!confirm('确定删除 API Key [' + (row.name || '未命名') + '] 吗？此操作不可撤销。')) return;
+  API_KEY_ROWS.splice(index, 1);
+  try {
+    await saveApiKeys();
+    toast('已删除 API Key', 'ok');
+  } catch(e){
+    toast('删除失败: ' + e.message, 'bad');
+  }
+}
+
+function addApiKeyRow(){
+  API_KEY_ROWS.push({
+    id: '',
+    name: '',
+    key: randomKeyValue(),
+    realm: '',
+    enabled: true,
+    masked: '',
+    _editing: true
+  });
+  renderKeyRows();
+  setTimeout(() => {
+    const el = document.getElementById('editKeyName_' + (API_KEY_ROWS.length - 1));
+    if(el) el.focus();
+  }, 50);
+}
 /* Copy the key in a row, fetching the stored value when the field is blank
    (the panel only ever displays a masked key). */
 async function copyKeyRow(index){
@@ -2322,11 +2675,11 @@ function toggleLogAuto(){
   const btn = document.getElementById('btnToggleLogAuto');
   if(btn){
     if(logAutoRefresh){
-      btn.textContent = '● 实时监听中';
+      btn.textContent = '实时监听中';
       btn.style.color = 'var(--accent2)';
       startLogPolling();
     } else {
-      btn.textContent = '⏸ 已暂停监听';
+      btn.textContent = '已暂停监听';
       btn.style.color = 'var(--dim)';
       stopLogPolling();
     }
@@ -2337,7 +2690,7 @@ function toggleLogScroll(){
   logAutoScroll = !logAutoScroll;
   const btn = document.getElementById('btnToggleLogScroll');
   if(btn){
-    btn.textContent = logAutoScroll ? '↓ 自动滚屏: 开' : '↓ 自动滚屏: 关';
+    btn.textContent = logAutoScroll ? '自动滚屏: 开' : '自动滚屏: 关';
   }
   if(logAutoScroll){
     const body = document.getElementById('logTerminalBody');
