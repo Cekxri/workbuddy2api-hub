@@ -275,8 +275,8 @@ a:hover{text-decoration:underline}
     <button class="sec" onclick="exportAccounts(this)">导出账号</button>
     <button class="sec" onclick="openImport()">导入账号</button>
     <button class="sec" onclick="fetchCredits(this)">刷新额度/积分</button>
-    <button class="sec" onclick="setAll(true)">全部启用</button>
-    <button class="sec" onclick="setAll(false)">全部停用</button>
+    <button class="sec" onclick="setAll(true, this)">全部启用</button>
+    <button class="sec" onclick="setAll(false, this)">全部停用</button>
     
   </div>
     <div id="accounts"></div>
@@ -988,20 +988,20 @@ async function runGrowthTasks(btn){
 }
 
 async function triggerCatTravel(btn){
-  btn.disabled = true;
+  if(btn){ btn.disabled = true; btn.textContent = '旅行中...'; }
   try{
     const payload = {};
     if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
       payload.uid = CURRENT_GROWTH_UID;
     }
     const r = await postJSON("/tasks/travel", payload);
-    alert(r.msg || (r.ok ? "操作成功" : "操作失败"));
+    toast(r.msg || (r.ok ? "猫猫旅行结算完成" : "操作失败"), r.ok ? "ok" : "warn");
     await loadAccounts();
     await loadGrowthTasks();
   }catch(e){
-    alert("猫猫旅行失败: " + e.message);
+    toast("猫猫旅行失败: " + e.message, "bad");
   }finally{
-    btn.disabled = false;
+    if(btn){ btn.disabled = false; btn.textContent = '猫猫旅行'; }
   }
 }
 
@@ -1028,27 +1028,28 @@ async function loadSchedulerStatus(){
 }
 
 async function triggerSchedulerNow(btn){
-  btn.disabled = true;
+  if(btn){ btn.disabled = true; btn.textContent = '巡检中...'; }
   try{
     const r = await postJSON("/scheduler/trigger", {});
-    toast(r.msg || "已触发巡检");
+    toast(r.msg || "已触发巡检保活", "ok");
     setTimeout(loadSchedulerStatus, 2000);
   }catch(e){
-    alert("触发失败: " + e.message);
+    toast("触发失败: " + e.message, "bad");
   }finally{
-    btn.disabled = false;
+    if(btn){ btn.disabled = false; btn.textContent = (window.VIEW_REALM === 'intl') ? '立即保活刷新' : '立即巡检保活'; }
   }
 }
 
 async function toggleScheduler(btn){
-  btn.disabled = true;
+  if(btn){ btn.disabled = true; }
   try{
-    await postJSON("/scheduler/toggle", {});
+    const r = await postJSON("/scheduler/toggle", {});
     await loadSchedulerStatus();
+    toast("后台调度器已" + (r.enabled ? "启用" : "暂停"), "ok");
   }catch(e){
-    alert("切换失败: " + e.message);
+    toast("切换失败: " + e.message, "bad");
   }finally{
-    btn.disabled = false;
+    if(btn){ btn.disabled = false; }
   }
 }
 function filterRealm(m){
@@ -1063,12 +1064,13 @@ async function doCheckin(btn){
   try {
     const r = await postJSON("/accounts/checkin", {});
     const res = r.results || [];
-    if(!res.length) toast("未发现国内版账号");
+    if(!res.length) toast("未发现国内版账号", "warn");
     else {
-      alert("每日签到结果：\n" + res.map(x => (x.nickname||x.uid.slice(0,6)) + ": " + (x.ok ? "签到成功" : (x.error||x.msg))).join("\n"));
+      const summary = res.map(x => (x.nickname||x.uid.slice(0,6)) + ": " + (x.ok ? "签到成功" : (x.error||x.msg))).join("；");
+      toast("每日签到: " + summary, res.some(x => x.ok) ? "ok" : "warn");
     }
     await initRealm(); loadAccounts(); loadModels();
-  }catch(e){ toast("签到失败: " + e.message); }
+  }catch(e){ toast("签到失败: " + e.message, "bad"); }
   finally { btn.disabled = false; btn.textContent = ot; }
 }
 
@@ -1201,10 +1203,10 @@ function accountRow(a){
     + '<td style="text-align:right">' + fmt(usage.total_tokens) + '</td>'
     + '<td style="text-align:right">' + fmt(usage.cached_tokens) + '</td>'
     + '<td style="text-align:right;white-space:nowrap">'
-    + '<button class="sec mini" onclick="toggleAccount(&quot;' + uidAttr + '&quot;,' + (!a.enabled) + ')">' + (a.enabled ? '停用' : '启用') + '</button> '
-    + '<button class="sec mini" onclick="refreshOne(&quot;' + uidAttr + '&quot;)">刷新</button> '
+    + '<button class="sec mini" onclick="toggleAccount(&quot;' + uidAttr + '&quot;,' + (!a.enabled) + ', this)">' + (a.enabled ? '停用' : '启用') + '</button> '
+    + '<button class="sec mini" onclick="refreshOne(&quot;' + uidAttr + '&quot;, this)">刷新</button> '
     + '<button class="sec mini" onclick="exportOne(&quot;' + uidAttr + '&quot;)">导出</button> '
-    + '<button class="danger mini" onclick="deleteAccount(&quot;' + uidAttr + '&quot;,&quot;' + nameAttr + '&quot;)">删除</button>'
+    + '<button class="danger mini" onclick="deleteAccount(&quot;' + uidAttr + '&quot;,&quot;' + nameAttr + '&quot;, this)">删除</button>'
     + '</td></tr>';
 }
 
@@ -1262,27 +1264,47 @@ async function loadAccounts(){
   }catch(e){ toast('账号加载失败: ' + e.message); }
 }
 
-async function queryCredits(btn){
-  btn.disabled = true;
+async function fetchCredits(btn){
+  if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
   try{
     const r = await postJSON('/accounts/credits', {});
-    window.ACCOUNTS = r.accounts || ACCOUNTS;
+    window.ACCOUNTS = r.accounts || window.ACCOUNTS || [];
     renderAccounts();
     refresh();
-  }catch(e){ toast('积分查询失败: ' + e.message); }
-  finally{ btn.disabled = false; }
+    const count = (window.ACCOUNTS || []).length;
+    toast('已成功刷新 ' + count + ' 个账号的额度与积分', 'ok');
+  }catch(e){
+    toast('刷新额度失败: ' + e.message, 'bad');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '刷新额度/积分'; }
+  }
 }
+const queryCredits = fetchCredits;
 
-async function toggleAccount(uid, enable){
-  try{ await postJSON('/accounts/set', {uid: uid, enabled: enable}); await loadAccounts(); }
-  catch(e){ toast(e.message); }
+async function toggleAccount(uid, enable, btn){
+  if(btn) btn.disabled = true;
+  try{
+    await postJSON('/accounts/set', {uid: uid, enabled: enable});
+    await loadAccounts();
+    toast(enable ? '账号已成功启用' : '账号已停用', 'ok');
+  }catch(e){
+    toast('操作失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
 }
-async function refreshOne(uid){
-  try{ const r = await postJSON('/accounts/refresh', {uid: uid});
-       const ok = (r.results||[])[0];
-       toast(ok && ok.ok ? '刷新成功' : ('刷新失败: ' + (ok && ok.error)));
-       await loadAccounts(); }
-  catch(e){ toast(e.message); }
+async function refreshOne(uid, btn){
+  if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
+  try{
+    const r = await postJSON('/accounts/refresh', {uid: uid});
+    const ok = (r.results||[])[0];
+    toast(ok && ok.ok ? '账号凭证刷新成功' : ('刷新失败: ' + (ok && ok.error || '未知错误')), ok && ok.ok ? 'ok' : 'bad');
+    await loadAccounts();
+  }catch(e){
+    toast('刷新失败: ' + e.message, 'bad');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '刷新'; }
+  }
 }
 async function refreshAccounts(){
   try{ const r = await postJSON('/accounts/refresh', {});
@@ -1291,14 +1313,30 @@ async function refreshAccounts(){
        await loadAccounts(); }
   catch(e){ toast(e.message); }
 }
-async function setAll(enable){
-  try{ await postJSON('/accounts/set-all', {enabled: enable}); await loadAccounts(); }
-  catch(e){ toast(e.message); }
+async function setAll(enable, btn){
+  if(btn) btn.disabled = true;
+  try{
+    await postJSON('/accounts/set-all', {enabled: enable});
+    await loadAccounts();
+    toast(enable ? '已全部启用所有账号' : '已全部停用所有账号', 'ok');
+  }catch(e){
+    toast('批量操作失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
 }
-async function deleteAccount(uid, name){
+async function deleteAccount(uid, name, btn){
   if(!confirm("确定删除账号 " + name + "？")) return;
-  try{ await postJSON('/accounts/delete', {uid: uid}); await loadAccounts(); }
-  catch(e){ toast(e.message); }
+  if(btn) btn.disabled = true;
+  try{
+    await postJSON('/accounts/delete', {uid: uid});
+    await loadAccounts();
+    toast('已成功删除账号 ' + name, 'ok');
+  }catch(e){
+    toast('删除失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
 }
 
 /* ---- 账号导出 / 导入 ---- */
