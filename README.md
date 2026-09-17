@@ -193,6 +193,12 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
   - 提供了关于网关通信与多插件管理的原型参考。
 - **[ardeyouxipianyi/workbuddy2api](https://github.com/ardeyouxipianyi/workbuddy2api)**：
   - 提供了国内版分发包逆向分析与出站 User-Agent 规范参考。
+- **[@ddddd-ren](https://github.com/ddddd-ren)**：
+  - **用量日志高性能倒序检索与看板防堆叠**（PR #14）：实现倒序分块 Seek 读取日志末尾数据，TTL 内存缓存化高频聚合接口，彻底消除大文件（20MB+ / 45k+ 行）下前端看板 60 秒超时与 GIL 卡死问题；
+  - **原子写入与并发竞争修复**（PR #13）：消除多线程重写用量摘要文件时的 `ENOENT` 异常与临时文件残留；
+  - **账号池 JSON 导出/导入支持**（PR #5）：实现了全量/单账号导出与 Dry-Run 安全导入机制。
+- **[@wylftw0314-glitch](https://github.com/wylftw0314-glitch)**：
+  - **Responses API custom 工具协议双向转译**（PR #12）：出站降级与入站重构还原 freeform 工具调用，彻底解决 Codex CLI (`apply_patch`) 工具调用静默失效问题，并补充了完整单元测试。
 
 ---
 
