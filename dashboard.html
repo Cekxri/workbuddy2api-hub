@@ -1193,11 +1193,11 @@ function accountRow(a){
   const cred = a.credits;
   const credText = cred ? ('<b style="color:var(--accent2)">' + fmt(cred.remain) + '</b> / ' + fmt(cred.size)) : '<span style="color:var(--dim)">未查询</span>';
   return '<tr>'
-    + '<td><div>' + esc(a.nickname) + ' ' + state + ' ' + realmBadge + '</div>'
+    + '<td><div>' + esc(a.nickname) + ' ' + realmBadge + '</div>'
     + '<div class="mono" style="color:var(--dim);font-size:11px">' + esc(a.uid.slice(0,8)) + ' · ' + esc(a.source) + ' · 到期 ' + esc(a.expiresIn || '?') + '</div>'
     + (a.machineId ? ('<div class="mono" style="color:var(--dim);font-size:10px;margin-top:2px" title="由账号UID稳定派生的专属设备码，防多号关联风控">设备码: ' + esc(a.machineId.slice(0,14)) + '...</div>') : '')
     + err + '</td>'
-    + '<td class="mono" style="font-size:11px">' + esc(a.domain) + '</td>'
+    + '<td>' + state + '</td>'
     + '<td style="white-space:nowrap">' + credText + '</td>'
     + '<td>' + fmt(usage.requests) + '</td>'
     + '<td>' + fmt(usage.total_tokens) + '</td>'
@@ -1235,7 +1235,7 @@ function renderAccounts(){
     return;
   }
   box.innerHTML = '<table><thead><tr>'
-    + '<th>账号</th><th>域名</th><th>积分额度</th><th>请求</th><th>总 token</th><th>缓存</th><th></th>'
+    + '<th>账号</th><th>状态</th><th>积分额度</th><th>请求</th><th>总 token</th><th>缓存</th><th>操作</th>'
     + '</tr></thead><tbody>' + list.map(accountRow).join('') + '</tbody></table>'
     + '<div class="legend"><span>多个账号按会话粘性 + 轮询使用；某个账号被上游拒绝时自动切到下一个</span></div>';
 }
