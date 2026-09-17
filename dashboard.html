@@ -1609,7 +1609,15 @@ async function doImportDesktop(btn, path, realm){
 }
 
 /* ------------------------------- dashboard ------------------------------ */
+let REFRESH_BUSY = false;
 async function refresh(){
+  // 5 秒轮询：上一轮尚未返回就跳过本轮，避免请求堆积把服务端拖慢
+  if(REFRESH_BUSY) return;
+  REFRESH_BUSY = true;
+  try { await refreshInner(); }
+  finally { REFRESH_BUSY = false; }
+}
+async function refreshInner(){
   let usage, recent, perf;
   try{
     [usage, recent, perf] = await Promise.all([
