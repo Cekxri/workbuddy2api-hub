@@ -162,7 +162,6 @@ _models_cache = {"intl": {"at": 0.0, "data": None}, "cn": {"at": 0.0, "data": No
 USAGE_DIR = os.environ.get("WB_PROXY_USAGE_DIR") \
     or os.path.join(os.path.dirname(os.path.abspath(__file__)), "usage")
 USAGE_LOG = os.path.join(USAGE_DIR, "usage.jsonl")
-USAGE_SUMMARY = os.path.join(USAGE_DIR, "usage-summary.json")
 DASHBOARD_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "reasoning_tokens",
                 "cached_tokens", "total_tokens", "credit")
@@ -276,8 +275,7 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
         for k in USAGE_FIELDS:
             if k in fields:
                 per[k] += fields[k]
-        summary = json.loads(json.dumps(_usage))
-    _persist_usage(row, summary, "usage persist failed")
+    _persist_usage(row, "usage persist failed")
     try:
         t_tokens = fields.get("total_tokens", 0)
         dur = f" {elapsed_ms:.0f}ms" if elapsed_ms is not None else ""
@@ -289,34 +287,29 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
     return row
 
 
-def _persist_usage(row, summary, fail_label):
-    """Append one JSONL row and atomically rewrite the summary.
+def _persist_usage(row, fail_label):
+    """Append one usage row as a JSONL line.
 
-    The temp file carries a unique suffix: two threads writing the same
-    "<summary>.tmp" race, and the loser's os.replace() fails with ENOENT
-    because the winner already renamed the file away.
+    usage-summary.json used to be rewritten on every single request - a full
+    json.dumps of the running totals, a uniquely named temp file and an
+    os.replace, plus the deep copy that fed it. Nothing in the tree ever
+    loads that file (every aggregate re-reads usage.jsonl), so the work was
+    pure overhead on the request path. One append per request now.
     """
     try:
         os.makedirs(USAGE_DIR, exist_ok=True)
         with open(USAGE_LOG, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-        tmp_summary = "%s.%d.%d.tmp" % (USAGE_SUMMARY, os.getpid(), threading.get_ident())
-        try:
-            with open(tmp_summary, "w", encoding="utf-8") as fh:
-                json.dump(summary, fh, ensure_ascii=False, indent=2)
-            os.replace(tmp_summary, USAGE_SUMMARY)
-        except Exception:
-            # Never leave a stray temp file behind on the failure path.
-            try:
-                os.unlink(tmp_summary)
-            except Exception:
-                pass
-            raise
     except Exception as exc:
         log("%s: %s" % (fail_label, exc))
 
-def record_error(model, status, message, elapsed_ms=None):
-    """Count a failed request and append it to the log so errors are visible."""
+def record_error(model, status, message, elapsed_ms=None, account=None):
+    """Count a failed request and append it to the log so errors are visible.
+
+    Passing the account uid records which account the request was bound to, so
+    per-realm success rates attribute the failure by fact instead of falling
+    back to guessing from the model name.
+    """
     row = {
         "at": time.time(),
         "iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -326,13 +319,16 @@ def record_error(model, status, message, elapsed_ms=None):
         "message": str(message)[:200],
         "elapsed_ms": elapsed_ms,
     }
+    if account:
+        row["account"] = account
+        acc = POOL.get(account) if POOL else None
+        row["realm"] = acc.realm if acc else CURRENT_REALM
     with _lock:
         _usage["errors"] += 1
         if elapsed_ms is not None:
             _usage["wall_ms_sum"] += elapsed_ms
             _usage["wall_samples"] += 1
-        summary = json.loads(json.dumps(_usage))
-    _persist_usage(row, summary, "error persist failed")
+    _persist_usage(row, "error persist failed")
     dur = f" {elapsed_ms:.0f}ms" if elapsed_ms is not None else ""
     log(f"request error: model={model}{dur} status={status} msg={str(message)[:180]}", level="ERROR", tag="chat")
     return row
@@ -659,12 +655,24 @@ def recent_usage(limit=100, realm=None, page=1):
 POOL = None
 SCHEDULER = None
 ACCOUNTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'accounts')
-REALM_STATE_FILE = os.path.join(ACCOUNTS_DIR, "active_realm.json")
+def realm_state_file():
+    """Path of the persisted realm switch.
+
+    Computed on every access rather than cached in a module constant: the
+    constant was built from the default ACCOUNTS_DIR at import time, so a
+    later --accounts-dir (or a Docker volume pointing somewhere else) still
+    read and wrote the realm switch next to the script - the panel then
+    reported an exit that did not match the configured account store.
+    """
+    return os.path.join(ACCOUNTS_DIR, "active_realm.json")
+
+
 def load_persisted_realm():
     global CURRENT_REALM
-    if os.path.isfile(REALM_STATE_FILE):
+    path = realm_state_file()
+    if os.path.isfile(path):
         try:
-            with open(REALM_STATE_FILE, "r", encoding="utf-8") as fh:
+            with open(path, "r", encoding="utf-8") as fh:
                 d = json.load(fh)
                 r = d.get("realm")
                 if r in ("intl", "cn"):
@@ -679,7 +687,7 @@ def save_persisted_realm(realm):
         CURRENT_REALM = realm
         try:
             os.makedirs(ACCOUNTS_DIR, exist_ok=True)
-            with open(REALM_STATE_FILE, "w", encoding="utf-8") as fh:
+            with open(realm_state_file(), "w", encoding="utf-8") as fh:
                 json.dump({"realm": realm, "updated_at": time.time(), "updated_iso": time.strftime("%Y-%m-%d %H:%M:%S")}, fh, indent=2)
             log("persisted active realm '%s' to disk" % realm)
         except Exception as exc:
@@ -759,7 +767,30 @@ def _usage_by_account_uncached():
     for item in out:
         item["models"] = sorted(item["models"].items(), key=lambda kv: -kv[1])[:5]
     return out
-def compute_usage_analytics():
+_analytics_cache = {"at": 0.0, "data": None}
+_analytics_lock = threading.Lock()
+
+
+def compute_usage_analytics(ttl=10):
+    """Cached analytics payload.
+
+    Unlike perf_stats/usage_snapshot/usage_by_account this used to run
+    uncached, re-reading the whole JSONL on every call while the metrics tab
+    polls it every 5 seconds. Same 10s TTL as its siblings now.
+    """
+    now = time.time()
+    with _analytics_lock:
+        hit = _analytics_cache["data"]
+        if hit is not None and (now - _analytics_cache["at"]) < ttl:
+            return hit
+    data = _compute_usage_analytics_uncached()
+    with _analytics_lock:
+        _analytics_cache["at"] = time.time()
+        _analytics_cache["data"] = data
+    return data
+
+
+def _compute_usage_analytics_uncached():
     """Detailed analytics for Token, Cache, and Reasoning metrics page."""
     now = time.localtime()
     today_ts = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, 0, 0, 0, 0, 0, -1))
@@ -1661,6 +1692,7 @@ def open_upstream(payload, session_key=None, target_realm=None):
     total = max(1, POOL.count_ready(realm)) if POOL else 1
     tried = set()
     last_error = None
+    last_uid = None
     for _ in range(total):
         account = POOL.pick_for_session(realm=realm, session_key=session_key, exclude=tried) if POOL else None
         if account is None:
@@ -1669,6 +1701,7 @@ def open_upstream(payload, session_key=None, target_realm=None):
             if session_key and POOL: POOL.affinity.unbind(session_key)
             continue
         tried.add(account.uid)
+        last_uid = account.uid
         cfg = wb_accounts.get_realm_config(account.realm)
         chat_url = cfg["chat_upstream"] + CHAT_PATH
         req = urllib.request.Request(chat_url, data=body, method="POST",
@@ -1695,6 +1728,13 @@ def open_upstream(payload, session_key=None, target_realm=None):
             last_error = exc
             continue
     if last_error is not None:
+        # Carry the account that produced the failure out to the caller, so
+        # the error row can name it even though the local variable that would
+        # have held it was never assigned in the caller.
+        try:
+            last_error.account_uid = last_uid
+        except Exception:
+            pass
         raise last_error
     raise RuntimeError(f"no usable account for realm '{realm}': all are disabled, cooling down, or expired")
 def extract_session_key(headers, payload):
@@ -2809,7 +2849,9 @@ class Handler(BaseHTTPRequestHandler):
             rep = current_account()
             info = {
                 "ok": True,
-                "realm": "intl",
+                # Report the realm actually in use; this used to be the
+                # literal "intl" and drifted from the panel switch.
+                "realm": CURRENT_REALM,
                 "accounts": len(POOL.accounts) if POOL else 0,
                 "accounts_ready": POOL.count_ready() if POOL else 0,
                 "api_key_required": bool(API_KEY),
@@ -3215,7 +3257,10 @@ class Handler(BaseHTTPRequestHandler):
                 nick = acc.nickname or uid_str
                 combined_logs.append(f"====== 正在为账号 [{nick} ({acc.uid})] 执行全自动成长任务 ({i+1}/{len(targets)}) ======")
                 res = run_growth_tasks(acc, gap=1.0)
-                total_credit += res.get("credit_added") or 0
+                # run_growth_tasks() reports its total as "earned_credit";
+                # reading the old "credit_added" name silently summed zeros
+                # and the dashboard always showed "+0 积分".
+                total_credit += res.get("earned_credit") or 0
                 for l in res.get("logs") or []:
                     combined_logs.append(f"  {l}")
                 if i < len(targets) - 1:
@@ -3251,7 +3296,8 @@ class Handler(BaseHTTPRequestHandler):
                     "nickname": nick,
                     "action": res.get("action"),
                     "msg": res.get("msg") or "",
-                    "reward_credit": res.get("reward_credit", 0)
+                    # do_cat_travel() returns the amount as "credit".
+                    "reward_credit": res.get("credit", 0)
                 })
                 if i < len(targets) - 1:
                     time.sleep(1.0)
@@ -3497,12 +3543,14 @@ class Handler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as exc:
             detail = exc.read(600).decode("utf-8", "replace")
             record_error(model, exc.code, detail,
-                         elapsed_ms=int((time.time() - t_start) * 1000))
+                         elapsed_ms=int((time.time() - t_start) * 1000),
+                         account=getattr(exc, "account_uid", None))
             return self._error(exc.code, f"upstream {exc.code}: {detail}")
         except Exception as exc:
             message = str(exc)
             record_error(model, 502, message,
-                         elapsed_ms=int((time.time() - t_start) * 1000))
+                         elapsed_ms=int((time.time() - t_start) * 1000),
+                         account=getattr(exc, "account_uid", None))
             if message.startswith("no usable account"):
                 return self._error(503, message +
                                    " - add or enable one at the dashboard (/)")
@@ -3534,6 +3582,24 @@ class Handler(BaseHTTPRequestHandler):
                                  gen_ms=(wall - first_ms) if first_ms is not None else None,
                                  fp=fp, account=account.uid)
                     return
+                except Exception as exc:
+                    # Upstream died mid-stream (timeout, incomplete read, ...).
+                    # Without this the traceback escapes to the HTTP layer and
+                    # the client is left holding a half-finished stream with no
+                    # terminal event.
+                    wall = int((time.time() - t_start) * 1000)
+                    record_error(model, 502, "stream aborted: %s" % exc,
+                                 elapsed_ms=wall, account=account.uid)
+                    record_usage(model, holder.get("usage"), stream=True, elapsed_ms=wall,
+                                 ttft_ms=first_ms,
+                                 gen_ms=(wall - first_ms) if first_ms is not None else None,
+                                 fp=fp, account=account.uid)
+                    try:
+                        self.wfile.write(b"data: [DONE]\n\n")
+                        self.wfile.flush()
+                    except Exception:
+                        pass
+                    return
                 wall = int((time.time() - t_start) * 1000)
                 record_usage(model, holder.get("usage"), stream=True, elapsed_ms=wall,
                              ttft_ms=first_ms,
@@ -3544,7 +3610,8 @@ class Handler(BaseHTTPRequestHandler):
                 chat_obj = aggregate_stream(upstream, model, None)
             except Exception as exc:
                 record_error(model, 502, str(exc),
-                             elapsed_ms=int((time.time() - t_start) * 1000))
+                             elapsed_ms=int((time.time() - t_start) * 1000),
+                             account=account.uid)
                 return self._error(502, f"upstream stream error: {exc}")
             wall = int((time.time() - t_start) * 1000)
             result = chat_to_response(chat_obj, model, custom_names)
@@ -3610,11 +3677,13 @@ class Handler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as exc:
             detail = exc.read(600).decode("utf-8", "replace")
             record_error(model, exc.code, detail,
-                         elapsed_ms=int((time.time() - t_start) * 1000))
+                         elapsed_ms=int((time.time() - t_start) * 1000),
+                         account=getattr(exc, "account_uid", None))
             return self._error(exc.code, f"upstream {exc.code}: {detail}")
         except Exception as exc:
             message = str(exc)
-            record_error(model, 502, message, elapsed_ms=int((time.time() - t_start) * 1000))
+            record_error(model, 502, message, elapsed_ms=int((time.time() - t_start) * 1000),
+                         account=getattr(exc, "account_uid", None))
             if message.startswith("no usable account"):
                 return self._error(503, message +
                                    " - add or enable one at the dashboard (/)")
@@ -3658,6 +3727,23 @@ class Handler(BaseHTTPRequestHandler):
                                  gen_ms=(wall - first_ms) if first_ms is not None else None,
                                  fp=fp, account=account.uid)
                     return
+                except Exception as exc:
+                    # Upstream quit mid-stream (timeout, incomplete read, ...).
+                    # The client would otherwise get a truncated stream with no
+                    # terminal marker, and the traceback reached the HTTP layer.
+                    wall = int((time.time() - t_start) * 1000)
+                    record_error(model, 502, "stream aborted: %s" % exc,
+                                 elapsed_ms=wall, account=account.uid)
+                    record_usage(model, last_usage, stream=True,
+                                 elapsed_ms=wall, ttft_ms=first_ms,
+                                 gen_ms=(wall - first_ms) if first_ms is not None else None,
+                                 fp=fp, account=account.uid)
+                    try:
+                        self.wfile.write(b"data: [DONE]\n\n")
+                        self.wfile.flush()
+                    except Exception:
+                        pass
+                    return
                 if not emitted:
                     err = json.dumps({"error": {"message": "empty upstream stream", "type": "server_error"}})
                     self.wfile.write(f"data: {err}\n\n".encode("utf-8"))
@@ -3672,7 +3758,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 result = aggregate_stream(upstream, model, None)
             except Exception as exc:
-                record_error(model, 502, str(exc), elapsed_ms=int((time.time() - t_start) * 1000))
+                record_error(model, 502, str(exc), elapsed_ms=int((time.time() - t_start) * 1000),
+                             account=account.uid)
                 return self._error(502, f"upstream stream error: {exc}")
             wall = int((time.time() - t_start) * 1000)
             first_at = result.get("first_chunk_at")
@@ -3684,7 +3771,7 @@ class Handler(BaseHTTPRequestHandler):
                          fp=fp, account=account.uid)
             return self._json(200, result)
 def main():
-    global POOL, ACCOUNTS_DIR, API_KEY, SYSTEM_PROMPT, USAGE_DIR, USAGE_LOG, USAGE_SUMMARY
+    global POOL, ACCOUNTS_DIR, API_KEY, SYSTEM_PROMPT, USAGE_DIR, USAGE_LOG
     API_KEY_GENERATED = False
     ap = argparse.ArgumentParser(description="WorkBuddy (workbuddy.ai) -> OpenAI-compatible proxy")
     ap.add_argument("--info", help="path to the WorkBuddy *.info credential file")
@@ -3701,7 +3788,7 @@ def main():
                     help="override the upstream User-Agent (default: mirror the official "
                          "WorkBuddy AI client)")
     ap.add_argument("--usage-dir", default=None,
-                    help="where to store usage.jsonl / usage-summary.json (default: ./usage)")
+                    help="where to store usage.jsonl (default: ./usage)")
     ap.add_argument("--accounts-dir", default=os.environ.get("ACCOUNTS_DIR") or None,
                     help="where the per-account credential files live (default: ./accounts)")
     ap.add_argument("--import-desktop", action="store_true",
@@ -3719,7 +3806,6 @@ def main():
     if args.usage_dir:
         USAGE_DIR = os.path.abspath(args.usage_dir)
         USAGE_LOG = os.path.join(USAGE_DIR, "usage.jsonl")
-        USAGE_SUMMARY = os.path.join(USAGE_DIR, "usage-summary.json")
     # Refuse to start a second copy. On Windows SO_REUSEADDR lets two sockets
     # bind the same port, which silently splits incoming connections between
     # them - confusing and hard to diagnose.
