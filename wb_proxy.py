@@ -920,7 +920,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "1.3.0",
+        "version": "1.4.0",
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -1979,6 +1979,7 @@ def responses_to_chat(payload):
     if isinstance(instructions, str) and instructions.strip():
         messages.append({"role": "system", "content": instructions})
     inp = payload.get("input")
+    pending_reasoning = ""
     if isinstance(inp, str):
         messages.append({"role": "user", "content": inp})
     elif isinstance(inp, list):
@@ -2004,8 +2005,38 @@ def responses_to_chat(payload):
                             prev["content"] = str(prev["content"]) + chr(10) + str(body)
                         else:
                             prev["content"] = body
+                        if pending_reasoning and "reasoning_content" not in prev:
+                            prev["reasoning_content"] = pending_reasoning
+                            pending_reasoning = ""
                     else:
-                        messages.append({"role": role, "content": body})
+                        msg_dict = {"role": role, "content": body}
+                        if role == "assistant" and pending_reasoning:
+                            msg_dict["reasoning_content"] = pending_reasoning
+                            pending_reasoning = ""
+                        messages.append(msg_dict)
+            elif itype == "reasoning":
+                # Reasoning item from previous assistant turn in Responses API.
+                # In standard Chat Completions, reasoning is either backfilled into
+                # the assistant message's reasoning_content or omitted.
+                r_text = ""
+                summ = item.get("summary")
+                if isinstance(summ, list):
+                    r_text = chr(10).join(
+                        p.get("text", "") for p in summ if isinstance(p, dict) and p.get("text")
+                    )
+                elif isinstance(summ, str):
+                    r_text = summ
+                if not r_text:
+                    cnt = item.get("content")
+                    if isinstance(cnt, str):
+                        r_text = cnt
+                    elif isinstance(cnt, list):
+                        r_text = _flatten_content(cnt)
+                if r_text:
+                    if messages and messages[-1].get("role") == "assistant":
+                        messages[-1]["reasoning_content"] = r_text
+                    else:
+                        pending_reasoning = r_text
             elif itype == "function_call_output":
                 raw_out = item.get("output")
                 if isinstance(raw_out, list):
@@ -2040,12 +2071,19 @@ def responses_to_chat(payload):
                         prev["tool_calls"].append(tc_item)
                     else:
                         prev["tool_calls"] = [tc_item]
+                    if pending_reasoning and "reasoning_content" not in prev:
+                        prev["reasoning_content"] = pending_reasoning
+                        pending_reasoning = ""
                 else:
-                    messages.append({
+                    msg_dict = {
                         "role": "assistant",
                         "content": "",
                         "tool_calls": [tc_item],
-                    })
+                    }
+                    if pending_reasoning:
+                        msg_dict["reasoning_content"] = pending_reasoning
+                        pending_reasoning = ""
+                    messages.append(msg_dict)
             elif itype == "custom_tool_call":
                 # Freeform tool call coming back as conversation history.
                 raw_input = item.get("input")
@@ -2068,12 +2106,19 @@ def responses_to_chat(payload):
                         prev["tool_calls"].append(tc_item)
                     else:
                         prev["tool_calls"] = [tc_item]
+                    if pending_reasoning and "reasoning_content" not in prev:
+                        prev["reasoning_content"] = pending_reasoning
+                        pending_reasoning = ""
                 else:
-                    messages.append({
+                    msg_dict = {
                         "role": "assistant",
                         "content": "",
                         "tool_calls": [tc_item],
-                    })
+                    }
+                    if pending_reasoning:
+                        msg_dict["reasoning_content"] = pending_reasoning
+                        pending_reasoning = ""
+                    messages.append(msg_dict)
             elif itype == "custom_tool_call_output":
                 # Result of a freeform tool call (e.g. apply_patch output).
                 raw_out = item.get("output")
@@ -2589,7 +2634,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/1.3.0"
+    server_version = "wb-proxy/1.4.0"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
