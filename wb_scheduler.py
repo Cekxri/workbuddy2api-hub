@@ -161,6 +161,14 @@ class Scheduler:
                     self.log(f"🐱 账号 [{uid8}] 猫猫日常处理: {tr.get('msg')}")
                 time.sleep(1.0)
 
+                # 01:00 夜猫子专属任务: black_cat 只在 23:00-08:00 上报计数,
+                # 之前这个整点只是空转通用巡检, 从未真正上报过夜猫事件。
+                if time.localtime().tm_hour in self.cat_hours:
+                    night = wb_tasks.run_night_growth(acc)
+                    for line in night.get("logs", []):
+                        self.log(f"🌙 {line}")
+                    time.sleep(1.0)
+
         self.log(f"巡检完成：Token保活 {refreshed_count} 个，每日签到 {checkin_count} 个，猫猫日常 {travel_count} 个")
 
     def status(self):
