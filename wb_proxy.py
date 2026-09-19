@@ -4448,7 +4448,7 @@ def _bootstrap_runtime(args):
     # upstream quota, so a guessable default lets anyone on the network drain
     # it. Generate one on first use, persist it, and reuse it afterwards.
     if args.lan and not API_KEY:
-        API_KEY, API_KEY_GENERATED = wb_settings.ensure_launcher_key(ACCOUNTS_DIR)
+        API_KEY, api_key_generated = wb_settings.ensure_launcher_key(ACCOUNTS_DIR)
     # A key saved from the panel wins over an auto-generated LAN key so a
     # change made in the browser survives a restart of the .bat file. An
     # explicit --api-key on the command line still takes precedence.
@@ -4529,7 +4529,7 @@ def _log_startup_summary(args, api_key_generated):
             print("    Dashboard : http://%s:%s/" % (ip, args.port))
         print()
         print("    API Key   : %s" % API_KEY)
-        if API_KEY_GENERATED:
+        if api_key_generated:
             print("                (newly generated & saved to accounts/settings.json)")
         else:
             print("                (reused from accounts/settings.json)")
