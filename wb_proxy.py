@@ -4084,62 +4084,55 @@ class Handler(BaseHTTPRequestHandler):
         with upstream:
             if want_stream:
                 return self._responses_stream_response(
-                    upstream, model, holder, fp, account, t_start)
+                    upstream, model, custom_names, request_meta, fp, account, t_start)
             return self._responses_nonstream_response(
                 upstream, model, custom_names, request_meta, fp, account, t_start)
 
-    def _responses_stream_response(self, upstream, model, holder, fp, account, t_start):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "close")
-            if cors_origin_allowed(self.path):
-                self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            holder = {"usage": None, "custom_names": custom_names,
-                      "request_meta": request_meta}
-            first_ms = None
-            try:
-                for frame in stream_responses_events(upstream, model, holder):
-                    if first_ms is None:
-                        first_ms = int((time.time() - t_start) * 1000)
-                    # PATCHED-BY-OPS: 与 chat completions 路径对齐，清洗噪音帧
-                    # （空 function_call 占位会让 sub2api 等严格解析器卡在
-                    #  legacy 工具调用分支，报 "no terminal response event"）
-                    self.wfile.write(clean_responses_frame(frame))
-                    self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-                wall = int((time.time() - t_start) * 1000)
-                record_usage(model, holder.get("usage"), stream=True, elapsed_ms=wall,
-                             ttft_ms=first_ms,
-                             gen_ms=(wall - first_ms) if first_ms is not None else None,
-                             fp=fp, account=account.uid,
-                             outcome="client_aborted")
-                return
-            except Exception as exc:
-                # Upstream died mid-stream (timeout, incomplete read, ...).
-                # Without this the traceback escapes to the HTTP layer and
-                # the client is left holding a half-finished stream with no
-                # terminal event.
-                wall = int((time.time() - t_start) * 1000)
-                record_error(model, 502, "stream aborted: %s" % exc,
-                             elapsed_ms=wall, account=account.uid,
-                             usage=holder.get("usage"), stream=True,
-                             ttft_ms=first_ms,
-                             gen_ms=(wall - first_ms) if first_ms is not None else None,
-                             fp=fp, outcome="upstream_aborted")
-                try:
-                    self.wfile.write(b"data: [DONE]\n\n")
-                    self.wfile.flush()
-                except Exception:
-                    pass
-                return
+    def _responses_stream_response(self, upstream, model, custom_names, request_meta, fp, account, t_start):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        if cors_origin_allowed(self.path):
+            self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        holder = {"usage": None, "custom_names": custom_names,
+                  "request_meta": request_meta}
+        first_ms = None
+        try:
+            for frame in stream_responses_events(upstream, model, holder):
+                if first_ms is None:
+                    first_ms = int((time.time() - t_start) * 1000)
+                self.wfile.write(clean_responses_frame(frame))
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             wall = int((time.time() - t_start) * 1000)
             record_usage(model, holder.get("usage"), stream=True, elapsed_ms=wall,
                          ttft_ms=first_ms,
                          gen_ms=(wall - first_ms) if first_ms is not None else None,
-                         fp=fp, account=account.uid)
+                         fp=fp, account=account.uid,
+                         outcome="client_aborted")
             return
+        except Exception as exc:
+            wall = int((time.time() - t_start) * 1000)
+            record_error(model, 502, "stream aborted: %s" % exc,
+                         elapsed_ms=wall, account=account.uid,
+                         usage=holder.get("usage"), stream=True,
+                         ttft_ms=first_ms,
+                         gen_ms=(wall - first_ms) if first_ms is not None else None,
+                         fp=fp, outcome="upstream_aborted")
+            try:
+                self.wfile.write(b"data: [DONE]" + bytes([10, 10]))
+                self.wfile.flush()
+            except Exception:
+                pass
+            return
+        wall = int((time.time() - t_start) * 1000)
+        record_usage(model, holder.get("usage"), stream=True, elapsed_ms=wall,
+                     ttft_ms=first_ms,
+                     gen_ms=(wall - first_ms) if first_ms is not None else None,
+                     fp=fp, account=account.uid)
+        return
 
     def _responses_nonstream_response(self, upstream, model, custom_names, request_meta, fp, account, t_start):
         try:
