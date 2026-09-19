@@ -1677,6 +1677,23 @@ def build_upstream_body(payload):
     if "stream_options" not in body:
         body["stream_options"] = {"include_usage": True}
     return body
+class ContentRejected(Exception):
+    """Upstream content review rejected this request (403 / code 11140).
+
+    Not an account problem: another credential gets the same 403 for the same
+    content, so it is passed straight through instead of cooling the pool.
+    """
+
+    def __init__(self, http_error=None, detail=""):
+        self.http_error = http_error
+        self.detail = detail or ""
+        super().__init__("upstream rejected the request content (403)")
+
+    @property
+    def code(self):
+        return 403
+
+
 class RateLimited(Exception):
     """Upstream throttled this model (429 / code 6004). Distinct from a dead
     pool: the credential is fine, only the model is cooling down for a while."""
@@ -1699,17 +1716,43 @@ def retry_after_seconds(model, realm):
 
 
 def realm_model_throttled(realm, model):
-    """True when accounts exist and are healthy but all are cooling this model."""
+    """True when accounts exist and are healthy but all are cooling this model.
+
+    Only a *model* cooldown counts. A plain account cooldown usually comes from
+    a transient network error, and reporting that as "rate limited" told
+    clients to back off from a model that was never throttled.
+    """
     if not POOL:
         return (False, 0)
     existing = [a for a in POOL.accounts
                 if a.realm == realm and a.enabled and a.access_token]
     if not existing:
         return (False, 0)
-    waits = [a.throttle_wait(model=model) for a in existing]
+    waits = []
+    for a in existing:
+        wait = getattr(a, "model_cooldowns", {}).get(model, 0.0) - time.time()
+        waits.append(max(0.0, wait))
     if waits and all(w > 0 for w in waits):
         return (True, int(min(waits)))
     return (False, 0)
+
+
+def is_transient(exc):
+    """Network-level flakiness that deserves a retry, not a cooldown.
+
+    Upstream occasionally drops a TLS handshake mid-stream
+    (SSL: UNEXPECTED_EOF_WHILE_READING / Remote end closed connection).
+    Treating that as a dead account took the only intl account offline for 60s
+    and turned one hiccup into a 502 storm.
+    """
+    text = ("%s %s" % (type(exc).__name__, exc)).lower()
+    markers = (
+        "ssl", "unexpected_eof", "eof occurred", "remote end closed",
+        "connection reset", "connection aborted", "connectionreseterror",
+        "connectionabortederror", "timed out", "timeout", "temporarily unavailable",
+        "bad gateway", "502", "503", "504", "incompleteread",
+    )
+    return any(m in text for m in markers)
 
 
 def parse_rate_limit_reset(detail):
@@ -1757,10 +1800,22 @@ def open_upstream(payload, session_key=None, target_realm=None):
     last_uid = None
     last_429 = None
     last_429_detail = ""
-    for _ in range(total):
+    last_403_detail = ""
+    # Upstream occasionally drops a TLS handshake mid-stream. Retrying that is
+    # right; cooling the account down is not (intl has one account, so a single
+    # hiccup used to 502 every following request).
+    transient_hits = 0
+    max_attempts = max(2, total) + 1
+    for _attempt in range(max_attempts):
         account = POOL.pick_for_session(realm=realm, session_key=session_key,
                                         exclude=tried, model=model) if POOL else None
         if account is None:
+            # Every account was tried this round. On a transient error, clear
+            # the set and give it one more pass after a short backoff.
+            if transient_hits and _attempt < max_attempts - 1:
+                tried.clear()
+                time.sleep(min(1.5 * transient_hits, 3.0))
+                continue
             break
         if account.realm != realm:
             if session_key and POOL: POOL.affinity.unbind(session_key)
@@ -1795,19 +1850,48 @@ def open_upstream(payload, session_key=None, target_realm=None):
                 last_429 = exc
                 last_429_detail = detail
                 continue
-            if exc.code in (401, 403):
-                log("account %s rejected (HTTP %s), rotating" % (account.uid[:8], exc.code))
+            if exc.code == 403:
+                # Content review, not a credential problem. Cooling the account
+                # down here blackholes the whole pool for a request that would
+                # be rejected identically on every other account.
+                try:
+                    detail = exc.read(400).decode("utf-8", "replace")
+                except Exception:
+                    detail = ""
+                log("upstream 403 for '%s' (content review), passing through" % model)
                 if session_key and POOL:
                     POOL.affinity.unbind(session_key)
-                account.note_error("HTTP %s" % exc.code,
+                last_error = exc
+                last_403_detail = detail
+                break
+            if exc.code == 401:
+                log("account %s rejected (HTTP 401), rotating" % account.uid[:8])
+                if session_key and POOL:
+                    POOL.affinity.unbind(session_key)
+                account.note_error("HTTP 401",
                                    cooldown=60,
                                    single_account=(total <= 1))
+                last_error = exc
+                continue
+            if exc.code in (500, 502, 503, 504):
+                # Upstream gateway hiccup: try again, do not cool the account.
+                transient_hits += 1
+                log("upstream %s for '%s', retrying" % (exc.code, model))
+                if session_key and POOL:
+                    POOL.affinity.unbind(session_key)
                 last_error = exc
                 continue
             raise
         except Exception as exc:
             if session_key and POOL:
                 POOL.affinity.unbind(session_key)
+            if is_transient(exc):
+                transient_hits += 1
+                log("upstream connection hiccup for '%s' (%s), retrying"
+                    % (model, type(exc).__name__))
+                last_error = exc
+                time.sleep(min(0.6 * transient_hits, 2.0))
+                continue
             account.note_error(str(exc)[:120], cooldown=60, single_account=(total <= 1))
             last_error = exc
             continue
@@ -1824,6 +1908,14 @@ def open_upstream(payload, session_key=None, target_realm=None):
                               wait=retry_after_seconds(model, realm))
             exc.account_uid = last_uid
             raise exc
+        if last_403_detail:
+            exc = ContentRejected(last_error, last_403_detail)
+            exc.account_uid = last_uid
+            raise exc
+        # A transient failure that survived the retries is reported as-is.
+        # Falling through to the throttle check below used to relabel a network
+        # hiccup as "usage exceeds frequency limit", sending clients to wait out
+        # a rate limit that never existed.
         raise last_error
     throttled, wait = realm_model_throttled(realm, model)
     if throttled:
@@ -3656,6 +3748,12 @@ class Handler(BaseHTTPRequestHandler):
             if blocked:
                 return self._error(400, blocked, "invalid_request_error")
             upstream, account = open_upstream(chat_req, session_key=session_key, target_realm=req_realm)
+        except ContentRejected as exc:
+            record_error(model, 403, exc.detail[:200],
+                         elapsed_ms=int((time.time() - t_start) * 1000),
+                         account=getattr(exc, "account_uid", None))
+            return self._error(403, "upstream 403: %s" % (exc.detail or "content rejected"),
+                               "invalid_request_error")
         except RateLimited as exc:
             t = time.time() - t_start
             record_error(model, 429, exc.detail[:200], elapsed_ms=int(t * 1000),
@@ -3795,6 +3893,12 @@ class Handler(BaseHTTPRequestHandler):
             if blocked:
                 return self._error(400, blocked, "invalid_request_error")
             upstream, account = open_upstream(payload, session_key=session_key, target_realm=req_realm)
+        except ContentRejected as exc:
+            record_error(model, 403, exc.detail[:200],
+                         elapsed_ms=int((time.time() - t_start) * 1000),
+                         account=getattr(exc, "account_uid", None))
+            return self._error(403, "upstream 403: %s" % (exc.detail or "content rejected"),
+                               "invalid_request_error")
         except RateLimited as exc:
             record_error(model, 429, exc.detail[:200],
                          elapsed_ms=int((time.time() - t_start) * 1000),
