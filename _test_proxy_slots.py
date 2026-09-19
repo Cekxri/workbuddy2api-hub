@@ -251,5 +251,42 @@ check(
 )
 
 print()
+print("[11] selecting direct clears a stale legacy proxy")
+d4 = tempfile.mkdtemp(prefix="wb-slots-direct-")
+S.set_proxy_slots(d4, [{"id": "slot-1", "name": "one", "url": "http://slot:1"}])
+stale = A.Account({
+    "uid": "u-stale", "domain": "www.workbuddy.ai", "realm": "intl",
+    "proxy": "http://stale-host:17901",
+})
+pool4 = A.AccountPool(d4, log=lambda m: None)
+pool4.add(stale)
+check("legacy proxy is active before", stale.proxy == "http://stale-host:17901", stale.proxy)
+pool4.set_proxy_slot("u-stale", "")
+check("explicit direct clears legacy proxy", stale.proxy_legacy == "", repr(stale.proxy_legacy))
+check("runtime proxy becomes direct", stale.proxy == "", repr(stale.proxy))
+reloaded4 = A.AccountPool(d4, log=lambda m: None)
+reloaded4.load()
+reloaded4.apply_proxy_slots()
+check(
+    "cleanup persisted to disk",
+    reloaded4.get("u-stale").proxy_legacy == "",
+    reloaded4.get("u-stale").proxy_legacy,
+)
+
+print()
+print("[12] binding a slot keeps the legacy proxy as a fallback")
+fresh = A.Account({
+    "uid": "u-fallback", "domain": "www.workbuddy.ai", "realm": "intl",
+    "proxy": "http://fallback:9",
+})
+pool4.add(fresh)
+pool4.set_proxy_slot("u-fallback", "slot-1")
+check("slot wins while enabled", fresh.proxy == "http://slot:1", fresh.proxy)
+check("legacy kept for fallback", fresh.proxy_legacy == "http://fallback:9", fresh.proxy_legacy)
+S.set_proxy_slots(d4, [{"id": "slot-1", "name": "one", "url": "http://slot:1", "enabled": False}])
+pool4.apply_proxy_slots()
+check("disabled slot falls back to legacy", fresh.proxy == "http://fallback:9", fresh.proxy)
+
+print()
 print("PASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

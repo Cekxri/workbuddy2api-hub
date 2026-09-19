@@ -2581,19 +2581,29 @@ let SLOT_DISCOVER = [];
 
 function slotSelectHtml(a){
   const current = a.proxySlot || '';
-  const opts = ['<option value="">直连</option>'].concat(
-    PROXY_SLOTS.map(s =>
-      '<option value="' + esc(s.id) + '"' + (s.id === current ? ' selected' : '') + '>'
-      + esc(s.name || s.id) + (s.enabled === false ? '（停用）' : '') + '</option>')
-  ).join('');
+  // A legacy per-account proxy URL still routes traffic while no slot is
+  // bound. Surface it instead of pretending the account is direct.
+  const legacy = (!current && a.proxy) ? String(a.proxy) : '';
+  const legacyLabel = legacy.length > 28 ? legacy.slice(0, 25) + '...' : legacy;
+  const opts = [];
+  if(legacy){
+    opts.push('<option value="__legacy__" selected>旧代理：' + esc(legacyLabel) + '</option>');
+    opts.push('<option value="">直连（清除旧代理）</option>');
+  } else {
+    opts.push('<option value=""' + (current ? '' : ' selected') + '>直连</option>');
+  }
+  opts.push.apply(opts, PROXY_SLOTS.map(s =>
+    '<option value="' + esc(s.id) + '"' + (s.id === current ? ' selected' : '') + '>'
+    + esc(s.name || s.id) + (s.enabled === false ? '（停用）' : '') + '</option>'));
   const uidAttr = esc(String(a.uid || '').replace(/[^\w.@-]/g, ''));
   return '<select onchange="setAccountSlot(&quot;' + uidAttr + '&quot;, this.value, this)" '
     + 'style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;'
     + 'padding:5px 8px;color:var(--fg);font:inherit;font-size:12px;max-width:140px">'
-    + opts + '</select>';
+    + opts.join('') + '</select>';
 }
 
 async function setAccountSlot(uid, slotId, el){
+  if(slotId === '__legacy__') return;
   if(el) el.disabled = true;
   try{
     await postJSON('/accounts/set', {uid: uid, proxySlot: slotId});

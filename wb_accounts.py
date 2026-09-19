@@ -707,7 +707,13 @@ class AccountPool(object):
         account = self.get(uid)
         if account is None:
             return None
-        account.proxy_slot = str(slot_id or "").strip()
+        slot_id = str(slot_id or "").strip()
+        account.proxy_slot = slot_id
+        if not slot_id:
+            # Selecting "direct" must mean direct. A stale legacy URL left in
+            # place kept routing traffic through it, so the panel showed
+            # direct while the account was still proxied.
+            account.proxy_legacy = ""
         account.save(self.dir)
         self.apply_proxy_slots()
         return account.public()
