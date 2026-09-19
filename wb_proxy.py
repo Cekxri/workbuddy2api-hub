@@ -1094,7 +1094,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "1.4.4",
+        "version": "1.4.5",
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -2064,6 +2064,16 @@ def extract_session_key(headers, payload):
     if key:
         return str(key).strip()
     return None
+
+def estimate_tokens(text):
+    if not text:
+        return 0
+    if not isinstance(text, str):
+        text = str(text)
+    cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff' or '\u3400' <= c <= '\u4dbf')
+    other = len(text) - cjk
+    return cjk + max(1, int(other / 3.6)) if text else 0
+
 def aggregate_stream(raw_iter, model, resp_id):
     """Fold an SSE stream into one non-streaming chat.completion object."""
     content, reasoning, finish = [], [], "stop"
@@ -2085,8 +2095,10 @@ def aggregate_stream(raw_iter, model, resp_id):
             resp_id = chunk["id"]
         if chunk.get("model"):
             model = chunk["model"]
-        if chunk.get("usage"):
-            usage = chunk["usage"]
+        u = chunk.get("usage")
+        if u:
+            if usage is None or (u.get("total_tokens") or 0) >= (usage.get("total_tokens") or 0):
+                usage = u
         for choice in chunk.get("choices") or []:
             delta = choice.get("delta") or {}
             if delta.get("content"):
@@ -2161,6 +2173,19 @@ def aggregate_stream(raw_iter, model, resp_id):
     elif finish == "tool_calls":
         # 占位被全部过滤掉，无实际工具调用，降级为正常结束，防止客户端无限挂起等待
         finish = "stop"
+    if usage is None or (usage.get("total_tokens") or 0) == 0:
+        full_c = "".join(content)
+        full_r = "".join(reasoning)
+        if full_c or full_r:
+            comp = estimate_tokens(full_c) + estimate_tokens(full_r)
+            prompt_est = max(1, comp // 2)
+            usage = {
+                "prompt_tokens": prompt_est,
+                "completion_tokens": comp,
+                "total_tokens": prompt_est + comp,
+                "completion_tokens_details": {"reasoning_tokens": estimate_tokens(full_r)},
+                "prompt_tokens_details": {"cached_tokens": 0},
+            }
     out = {
         "id": resp_id or "chatcmpl-wb",
         "object": "chat.completion",
@@ -2812,6 +2837,21 @@ def stream_responses_events(upstream, model, holder):
             })
             outputs[msg_index] = msg_item("completed")
             yield ev("response.output_item.done", {"output_index": msg_index, "item": outputs[msg_index]})
+        nonlocal usage
+        if usage is None or (usage.get("total_tokens") or 0) == 0:
+            out_txt = "".join(text_parts)
+            rs_txt = "".join(reason_parts)
+            if out_txt or rs_txt:
+                comp = estimate_tokens(out_txt) + estimate_tokens(rs_txt)
+                prompt_est = max(1, estimate_tokens(str(meta.get("input") or "")))
+                usage = {
+                    "prompt_tokens": prompt_est,
+                    "completion_tokens": comp,
+                    "total_tokens": prompt_est + comp,
+                    "completion_tokens_details": {"reasoning_tokens": estimate_tokens(rs_txt)},
+                    "prompt_tokens_details": {"cached_tokens": 0},
+                }
+                holder["usage"] = usage
         status = "completed" if finish != "length" else "incomplete"
         final = resp_obj(status)
         if finish == "length":
@@ -2828,9 +2868,11 @@ def stream_responses_events(upstream, model, holder):
             chunk = json.loads(data)
         except Exception:
             continue
-        if usage is None and chunk.get("usage"):
-            usage = chunk["usage"]
-            holder["usage"] = usage
+        u = chunk.get("usage")
+        if u:
+            if usage is None or (u.get("total_tokens") or 0) >= (usage.get("total_tokens") or 0):
+                usage = u
+                holder["usage"] = usage
         for choice in chunk.get("choices") or []:
             delta = choice.get("delta") or {}
             piece = delta.get("reasoning_content")
@@ -3019,7 +3061,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/1.4.4"
+    server_version = "wb-proxy/1.4.5"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
@@ -4261,6 +4303,7 @@ class Handler(BaseHTTPRequestHandler):
             emitted = False
             last_usage = None
             first_ms = None
+            streamed_text = []
             try:
                 for line in upstream:
                     data = strip_data_prefix(line.decode("utf-8", "replace"))
@@ -4268,8 +4311,16 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     try:
                         maybe = json.loads(data)
-                        if maybe.get("usage"):
-                            last_usage = maybe["usage"]
+                        u = maybe.get("usage")
+                        if u:
+                            if last_usage is None or (u.get("total_tokens") or 0) >= (last_usage.get("total_tokens") or 0):
+                                last_usage = u
+                        for ch in (maybe.get("choices") or []):
+                            delta = ch.get("delta") or {}
+                            if delta.get("content"):
+                                streamed_text.append(delta["content"])
+                            if delta.get("reasoning_content"):
+                                streamed_text.append(delta["reasoning_content"])
                     except Exception:
                         pass
                     cleaned = clean_chunk(data)
@@ -4311,6 +4362,17 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
             wall = int((time.time() - t_start) * 1000)
+            if last_usage is None or (last_usage.get("total_tokens") or 0) == 0:
+                full_s = "".join(streamed_text)
+                if full_s:
+                    comp = estimate_tokens(full_s)
+                    last_usage = {
+                        "prompt_tokens": max(1, comp // 2),
+                        "completion_tokens": comp,
+                        "total_tokens": max(1, comp // 2) + comp,
+                        "completion_tokens_details": {"reasoning_tokens": 0},
+                        "prompt_tokens_details": {"cached_tokens": 0},
+                    }
             record_usage(model, last_usage, stream=True,
                          elapsed_ms=wall, ttft_ms=first_ms,
                          gen_ms=(wall - first_ms) if first_ms is not None else None,
