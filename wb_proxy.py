@@ -3251,6 +3251,10 @@ class Handler(BaseHTTPRequestHandler):
     # Which configured API key the caller used, set by _key_ok(). Its bound
     # realm decides the upstream exit for this request alone.
     key_entry = None
+    # The stdlib default caps the request line at 64KB and answers an opaque
+    # bare "414 Request-URI Too Long" for anything longer. Raise it and reply in
+    # the normal JSON error shape so an over-long URL is diagnosable.
+    max_request_line = 1024 * 1024
     def handle_one_request(self):
         # Reset per-request auth state. HTTP/1.1 keeps the connection alive, so
         # one Handler instance serves many requests; a request that authenticates
@@ -3258,7 +3262,40 @@ class Handler(BaseHTTPRequestHandler):
         # it inherited the realm binding of whatever API key used the connection
         # before it - sending that request to the wrong upstream exit.
         self.key_entry = None
-        return super().handle_one_request()
+        # Body-tracking state must also start clean for every request, otherwise
+        # a later drain would skip a body that has not been read yet.
+        self._body_consumed = False
+        try:
+            self.raw_requestline = self.rfile.readline(self.max_request_line + 1)
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            self.close_connection = True
+            return
+        except Exception:
+            self.close_connection = True
+            return
+        if len(self.raw_requestline) > self.max_request_line:
+            self.requestline = ''
+            self.request_version = ''
+            self.command = ''
+            try:
+                self._error(414, "request line too long (limit %d bytes); "
+                                 "put long content in the POST body, not the URL"
+                            % self.max_request_line, "invalid_request_error")
+            except Exception:
+                pass
+            self.close_connection = True
+            return
+        if not self.raw_requestline:
+            self.close_connection = True
+            return
+        if not self.parse_request():
+            return
+        mname = 'do_' + self.command
+        if not hasattr(self, mname):
+            self.send_error(501, "Unsupported method (%r)" % self.command)
+            return
+        getattr(self, mname)()
+        self.wfile.flush()
     def handle(self):
         try:
             super().handle()
@@ -3291,11 +3328,112 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        if cors_origin_allowed(self.path):
+        # self.path is unset when parse_request() never ran (an over-long
+        # request line is rejected before it), so fall back to "".
+        if cors_origin_allowed(getattr(self, "path", "") or ""):
             self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
+        # Flush here rather than relying on the caller: with HTTP/1.1
+        # keep-alive the client blocks until the response is actually on the
+        # wire, and an error reply only flushed at the end of the handler looks
+        # like a hung request.
+        try:
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
+    def _discard_body(self):
+        """Drain the request body so the connection stays in sync.
+
+        A POST rejected before its body is read (401, 404, a panel route) leaves
+        the payload sitting in the socket. On a keep-alive connection the next
+        request then starts by parsing that leftover JSON as the request line,
+        which surfaces as a bogus "414 Request-URI Too Long" - with an empty
+        request line in the log - on an otherwise healthy connection.
+
+        Handles both Content-Length and Transfer-Encoding: chunked, since
+        clients switch to the latter for large bodies.
+        """
+        if getattr(self, "_body_consumed", False):
+            # The handler already read the body (e.g. an error raised after
+            # _read_payload). Reading Content-Length bytes again would block
+            # until the client gives up, turning an instant reply into a hang.
+            return
+        transfer_encoding = (self.headers.get("Transfer-Encoding") or "").lower()
+        try:
+            if "chunked" in transfer_encoding:
+                self._drain_chunked_body()
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+        except Exception:
+            length = 0
+        if length <= 0:
+            return
+        if length > MAX_PAYLOAD_BYTES:
+            # The client announced a body we refuse (413). Reading it would
+            # block until it finishes sending gigabytes, so close instead and
+            # let it see the reply plus the disconnect.
+            self.close_connection = True
+            return
+        remaining = length
+        try:
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except Exception:
+            # A short read means the peer went away; nothing left to align.
+            pass
+    def _drain_chunked_body(self):
+        """Consume a chunked body (terminated by a zero-length chunk)."""
+        try:
+            while True:
+                line = self.rfile.readline(65536)
+                if not line:
+                    return
+                size_field = line.split(b";", 1)[0].strip()
+                if not size_field:
+                    continue
+                size = int(size_field, 16)
+                if size == 0:
+                    # Optional trailers, then the final blank line.
+                    while True:
+                        trailer = self.rfile.readline(65536)
+                        if not trailer or trailer in (b"\r\n", b"\n"):
+                            return
+                remaining = size
+                while remaining > 0:
+                    data = self.rfile.read(min(remaining, 65536))
+                    if not data:
+                        return
+                    remaining -= len(data)
+                self.rfile.read(2)  # trailing CRLF after each chunk
+        except Exception:
+            self.close_connection = True
+    def _handle_expect_continue(self):
+        """Answer 'Expect: 100-continue' before deciding to reject a body.
+
+        Clients that send this header wait for the interim response before
+        transmitting a large payload. Rejecting outright (or draining first)
+        made both sides wait on each other until the socket timed out.
+        """
+        expect = (self.headers.get("Expect") or "").lower()
+        if "100-continue" not in expect:
+            return
+        try:
+            self.send_response_only(100)
+            self.end_headers()
+            self.wfile.flush()
+        except Exception:
+            pass
     def _error(self, code, message, err_type="server_error"):
+        # Every early rejection funnels through here, so draining the body in
+        # one place covers all of them. Unblock any client still waiting on
+        # "Expect: 100-continue" first, otherwise it never sends the body and
+        # the drain below waits for data that will never arrive.
+        self._handle_expect_continue()
+        self._discard_body()
         self._json(code, {"error": {"message": message, "type": err_type, "code": code}})
     def _rate_limited(self, exc):
         """429 with Retry-After, so clients back off instead of hammering.
@@ -3304,6 +3442,10 @@ class Handler(BaseHTTPRequestHandler):
         the shortest model cooldown we know about.
         """
         wait = max(1, int(getattr(exc, "wait", 60) or 60))
+        # 429 can be answered before the body is read (the model cooldown is
+        # checked on the way in), so drain it exactly like _error does.
+        self._handle_expect_continue()
+        self._discard_body()
         body = json.dumps({
             "error": {
                 "message": ("upstream rate limit reached for this model; retry in %ds"
@@ -3754,21 +3896,77 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+    def _read_chunked_body(self, max_bytes=MAX_PAYLOAD_BYTES):
+        """Decode a Transfer-Encoding: chunked body into bytes.
+
+        Some OpenAI-compatible clients stream large requests with chunked
+        encoding instead of a Content-Length. Reading only Content-Length saw an
+        empty body and answered 400 invalid JSON.
+        """
+        chunks = []
+        total = 0
+        while True:
+            line = self.rfile.readline(65536)
+            if not line:
+                break
+            size_field = line.split(b";", 1)[0].strip()
+            if not size_field:
+                continue
+            try:
+                size = int(size_field, 16)
+            except ValueError:
+                raise BadJSON()
+            if size == 0:
+                # Consume optional trailers up to the terminating blank line.
+                while True:
+                    trailer = self.rfile.readline(65536)
+                    if not trailer or trailer in (b"\r\n", b"\n"):
+                        break
+                break
+            total += size
+            if total > max_bytes:
+                # Keep draining so the connection stays aligned, then refuse.
+                self._drain_chunked_body()
+                raise BodyTooLarge(total)
+            remaining = size
+            while remaining > 0:
+                data = self.rfile.read(min(remaining, 65536))
+                if not data:
+                    raise BadJSON()
+                chunks.append(data)
+                remaining -= len(data)
+            self.rfile.read(2)  # CRLF after the chunk data
+        self._body_consumed = True
+        return b"".join(chunks)
     def _read_payload(self, max_bytes=MAX_PAYLOAD_BYTES, allow_list=False):
         """Parse the request body into a dict (or a list when allow_list).
         Raises BodyTooLarge / BadJSON so every caller handles both cases the
         same way instead of each remembering to check for None.
         """
+        transfer_encoding = (self.headers.get("Transfer-Encoding") or "").lower()
         try:
+            if "chunked" in transfer_encoding:
+                raw_bytes = self._read_chunked_body(max_bytes=max_bytes)
+                data = json.loads(raw_bytes.decode("utf-8", "replace") or "{}")
+                if isinstance(data, dict):
+                    return data
+                if allow_list and isinstance(data, list):
+                    return data
+                return {}
             length = int(self.headers.get("Content-Length") or 0)
+        except (BodyTooLarge, BadJSON):
+            raise
         except Exception:
-            length = 0
+            raise BadJSON()
         if length > max_bytes:
             raise BodyTooLarge(length)
         if length < 0:
             raise BadJSON()
         try:
             raw = self.rfile.read(length).decode("utf-8") if length else "{}"
+            # Mark the body as taken so a later error reply does not try to
+            # drain the same bytes again (that read would block forever).
+            self._body_consumed = True
             data = json.loads(raw or "{}")
         except Exception:
             raise BadJSON()
