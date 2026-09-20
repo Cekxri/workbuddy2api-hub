@@ -3882,7 +3882,13 @@ class Handler(BaseHTTPRequestHandler):
                 )
             saved = wb_settings.set_proxy_slots(ACCOUNTS_DIR, cleaned)
             if POOL:
+                # A slot may have been removed: unbind anyone still naming it
+                # before recomputing, so a stale id cannot survive.
+                dropped = wb_settings.drop_missing_bindings(POOL, saved)
                 POOL.apply_proxy_slots(saved)
+                if dropped:
+                    log("proxy slots: unbound %d account(s) from removed slots"
+                        % dropped)
             log("proxy slots saved: %d slot(s)" % len(saved))
             return self._json(200, {"slots": proxy_slots_view()})
         if path == "/proxy/slots/test":

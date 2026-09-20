@@ -372,7 +372,8 @@ class Account(object):
         if self.enterprise_id:
             headers["X-Enterprise-Id"] = self.enterprise_id
         try:
-            payload = http_json(url, data=b"{}", method="POST", headers=headers, timeout=30)
+            payload = http_json(url, data=b"{}", method="POST", headers=headers, timeout=30,
+                                proxy=self.proxy)
         except Exception as exc:
             self.last_error = "refresh failed: %s" % exc
             return False
@@ -406,7 +407,8 @@ class Account(object):
         url = cfg["billing_upstream"] + CHECKIN_PATH
         headers = self.headers(purpose="billing")
         try:
-            payload = http_json(url, data=b"{}", method="POST", headers=headers, timeout=15)
+            payload = http_json(url, data=b"{}", method="POST", headers=headers, timeout=15,
+                                proxy=self.proxy)
             code = payload.get("code", -1)
             msg = payload.get("msg") or "ok"
             self.last_checkin = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -436,7 +438,8 @@ class Account(object):
         url = cfg["billing_upstream"] + GET_RESOURCE_PATH
         headers = self.headers(purpose="billing")
         try:
-            res = http_json(url, data=json.dumps(body).encode(), method="POST", headers=headers, timeout=30)
+            res = http_json(url, data=json.dumps(body).encode(), method="POST", headers=headers,
+                            timeout=30, proxy=self.proxy)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
         data = res.get("data", {}).get("Response", {}).get("Data", {})
@@ -752,8 +755,14 @@ class AccountPool(object):
             for account in self.accounts:
                 if realm and account.realm != realm: continue
                 account.enabled = bool(enabled)
-                if enabled: account.clear_error()
+                if enabled:
+                    account.clear_error()
+                else:
+                    # Same rule as set_enabled: a disabled account must not
+                    # hold an exit slot.
+                    account.proxy_slot = ""
                 account.save(self.dir)
+        self.apply_proxy_slots()
 
     def count_ready(self, realm=None, model=None):
         with self._lock:

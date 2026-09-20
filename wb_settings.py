@@ -281,16 +281,21 @@ def _clean_slot_entry(entry, fallback_id=None):
 
 
 def _next_slot_id(existing):
-    """Next free `slot-<n>` id given already-assigned slots."""
-    used = set()
+    """Next unused `slot-<n>` id for a legacy list stored without ids."""
+    highest = 0
     for entry in existing:
         match = _SLOT_ID_RE.match(str(entry.get("id") or ""))
         if match:
-            used.add(int(match.group(1)))
-    n = 1
-    while n in used:
-        n += 1
-    return "slot-%d" % n
+            highest = max(highest, int(match.group(1)))
+    return "slot-%d" % (highest + 1)
+
+
+def _slot_seq(data):
+    """Highest slot number ever issued in this store."""
+    try:
+        return int(data.get("proxy_slot_seq") or 0)
+    except Exception:
+        return 0
 
 
 def proxy_slots(accounts_dir):
@@ -311,8 +316,30 @@ def proxy_slots(accounts_dir):
 
 
 def set_proxy_slots(accounts_dir, slots):
-    """Replace the whole slot list. Returns the stored list."""
+    """Replace the whole slot list. Returns the stored list.
+
+    Ids are drawn from a counter that only ever grows. Accounts persist the
+    id they are bound to, so recycling a freed id would silently re-point an
+    existing account at a newly added slot's exit IP.
+    """
     with _lock:
+        data = load(accounts_dir)
+        stored = data.get("proxy_slots")
+        stored = stored if isinstance(stored, list) else []
+
+        seq = _slot_seq(data)
+        # Seed from both the incoming and the outgoing list, so an id that is
+        # being removed in this very save can never be handed to a new entry.
+        for entry in list(stored) + list(slots or []):
+            if not isinstance(entry, dict):
+                continue
+            match = _SLOT_ID_RE.match(str(entry.get("id") or ""))
+            if match:
+                seq = max(seq, int(match.group(1)))
+        # A legacy list stored without ids is displayed as slot-1..slot-N, so
+        # keep the counter above those too.
+        seq = max(seq, len(stored))
+
         cleaned, seen = [], set()
         for raw in slots or []:
             entry = _clean_slot_entry(raw)
@@ -320,12 +347,34 @@ def set_proxy_slots(accounts_dir, slots):
                 continue
             seen.add(entry["url"])
             if not entry["id"] or any(e["id"] == entry["id"] for e in cleaned):
-                entry["id"] = _next_slot_id(cleaned)
+                seq += 1
+                entry["id"] = "slot-%d" % seq
             cleaned.append(entry)
-        data = load(accounts_dir)
         data["proxy_slots"] = cleaned
+        data["proxy_slot_seq"] = seq
         save(accounts_dir, data)
         return cleaned
+
+
+def drop_missing_bindings(pool, slots):
+    """Clear bindings that point at a slot which no longer exists.
+
+    Without this the stale id stays on the account, and a later slot that
+    happens to receive that id would capture the account.
+    """
+    valid = {entry["id"] for entry in slots}
+    changed = 0
+    for account in list(getattr(pool, "accounts", []) or []):
+        if account.proxy_slot and account.proxy_slot not in valid:
+            account.proxy_slot = ""
+            try:
+                account.save(pool.dir)
+            except Exception:
+                pass
+            changed += 1
+    if changed:
+        pool.apply_proxy_slots(slots)
+    return changed
 
 
 def find_proxy_slot(accounts_dir, slot_id):
