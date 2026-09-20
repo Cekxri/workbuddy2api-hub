@@ -7,9 +7,11 @@ login is needed. Exposes:
     POST /v1/chat/completions     (stream=true and stream=false)
     GET  /health
 Only the Python standard library is required.
-    python wb_proxy.py                    # bind 127.0.0.1:8788
-    python wb_proxy.py --port 9000
-    python wb_proxy.py --api-key sk-local # require a bearer token
+    python3 wb_proxy.py                    # bind 127.0.0.1:8788
+    python3 wb_proxy.py --port 9000
+    python3 wb_proxy.py --api-key sk-local # require a bearer token
+Launchers: start-wb-proxy.bat / start-wb-proxy-lan.bat on Windows,
+start-wb-proxy.command (or ./start-wb-proxy.sh) on macOS/Linux.
 """
 import argparse
 import hashlib
@@ -36,6 +38,17 @@ import uuid
 import wb_accounts
 import wb_catalog
 import wb_settings
+IS_WINDOWS = os.name == "nt"
+def launcher_hint(port):
+    """Platform-appropriate launcher command for starting on another port."""
+    if IS_WINDOWS:
+        return "start-wb-proxy.bat %d" % port
+    return "./start-wb-proxy.sh %d" % port
+def port_owner_hint(port):
+    """Command that lists the process holding a local TCP port."""
+    if IS_WINDOWS:
+        return "netstat -ano | findstr :%d" % port
+    return "lsof -nP -iTCP:%d -sTCP:LISTEN" % port
 CURRENT_REALM = os.environ.get("WB_PROXY_DEFAULT_REALM", "intl")
 def detect_model_realm(model_id):
     if not model_id:
@@ -4773,10 +4786,10 @@ def _probe_running_instance(args):
             print("          wb-proxy itself is NOT running - nothing was started.")
             print()
             print("  Fix: start wb-proxy on a different port, e.g.")
-            print(f"          start-wb-proxy.bat {args.port + 1}")
-            print(f"          python wb_proxy.py --port {args.port + 1}")
+            print("          %s" % launcher_hint(args.port + 1))
+            print(f"          python3 wb_proxy.py --port {args.port + 1}")
             print()
-            print("  Check who owns the port:  netstat -ano | findstr :%d" % args.port)
+            print("  Check who owns the port:  %s" % port_owner_hint(args.port))
             print()
             raise SystemExit(1)
         print()
@@ -4896,8 +4909,18 @@ def _log_startup_summary(args, api_key_generated):
         print()
         print("    Clients: Base URL = the API address above, then paste the key.")
         print()
-        print("    If nothing can connect, allow python through the")
-        print("    firewall: run allow-firewall.bat once as administrator.")
+        if IS_WINDOWS:
+            print("    If nothing can connect, allow python through the")
+            print("    firewall: run allow-firewall.bat once as administrator.")
+        elif sys.platform == "darwin":
+            print("    If other devices cannot connect, allow incoming")
+            print("    connections for Python (macOS asks automatically the")
+            print("    first time it listens; on macOS 15+ also allow Local")
+            print("    Network access for your terminal). Helper script:")
+            print("    ./allow-firewall.command")
+        else:
+            print("    If other devices cannot connect, open the port in")
+            print("    your firewall (ufw / firewalld) for the LAN subnet.")
         print("  " + "=" * 62)
         print()
         sys.stdout.flush()
@@ -4928,8 +4951,8 @@ def _serve_forever(args):
         print("          wb-proxy did NOT start.")
         print()
         print("  Fix: stop the program holding the port, or pick another port:")
-        print(f"          netstat -ano | findstr :{args.port}")
-        print(f"          start-wb-proxy.bat {args.port + 1}")
+        print("          %s" % port_owner_hint(args.port))
+        print("          %s" % launcher_hint(args.port + 1))
         print()
         raise SystemExit(1)
     # Only claim the address once the socket really exists, so a failed bind

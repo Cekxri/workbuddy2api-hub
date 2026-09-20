@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import ssl
+import sys
 import threading
 import time
 import urllib.error
@@ -933,20 +934,43 @@ class AccountPool(object):
             except Exception: pass
         return account
 
+def desktop_auth_dirs():
+    """Directories where the desktop client may keep its *.info credentials.
+
+    Windows uses %LOCALAPPDATA%\\CodeBuddyExtension\\Data\\Public\\auth.
+    macOS builds of the client keep the same layout under Application
+    Support, so probe the plausible app names there too. Missing
+    directories are harmless: callers only read the files that exist.
+    """
+    dirs = []
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA")
+        if not local:
+            local = os.path.join(os.path.expanduser("~"), "AppData", "Local")
+        dirs.append(os.path.join(local, "CodeBuddyExtension", "Data", "Public", "auth"))
+    else:
+        home = os.path.expanduser("~")
+        base = (os.path.join(home, "Library", "Application Support")
+                if sys.platform == "darwin"
+                else os.path.join(home, ".local", "share"))
+        for app in ("CodeBuddyExtension", "WorkBuddy", "CodeBuddy"):
+            dirs.append(os.path.join(base, app, "Data", "Public", "auth"))
+            dirs.append(os.path.join(base, app, "auth"))
+    return dirs
+
 def desktop_auth_dir():
-    local = os.environ.get("LOCALAPPDATA")
-    if not local:
-        local = os.path.join(os.path.expanduser("~"), "AppData", "Local")
-    return os.path.join(local, "CodeBuddyExtension", "Data", "Public", "auth")
+    """First candidate credential directory (kept for older callers)."""
+    return desktop_auth_dirs()[0]
 
 def desktop_credential_candidates():
-    base = desktop_auth_dir()
     out = []
-    if not os.path.isdir(base): return out
-    p_intl = os.path.join(base, "workbuddy-desktop-ai.info")
-    if os.path.isfile(p_intl): out.append((p_intl, "intl"))
-    p_cn = os.path.join(base, "workbuddy-desktop.info")
-    if os.path.isfile(p_cn): out.append((p_cn, "cn"))
+    for base in desktop_auth_dirs():
+        if not os.path.isdir(base): continue
+        for name, realm in (("workbuddy-desktop-ai.info", "intl"),
+                            ("workbuddy-desktop.info", "cn")):
+            path = os.path.join(base, name)
+            if os.path.isfile(path) and (path, realm) not in out:
+                out.append((path, realm))
     return out
 
 

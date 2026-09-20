@@ -29,11 +29,25 @@
 ## 一、快速启动
 
 ### 1. 本机单机使用
-双击运行 **`start-wb-proxy.bat`**，保持窗口运行：
+
+**Windows**：双击运行 **`start-wb-proxy.bat`**，保持窗口运行：
+
 - **API 接口地址**：`http://127.0.0.1:8788/v1`
 - **Web 监控看板**：`http://127.0.0.1:8788/`
 
-首次启动若无账号，直接打开看板点击 **「+ 添加账号 (OAuth)」**，在浏览器完成授权即可自动加入。
+**macOS**：双击运行 **`start-wb-proxy.command`**（首次打开若被 Gatekeeper 拦截，在 Finder 中右键该文件 →「打开」确认一次即可），或在终端执行：
+
+```bash
+./start-wb-proxy.sh          # 默认 8788 端口
+./start-wb-proxy.sh 9000     # 自定义端口
+```
+
+启动脚本会自动挑选可用的 Python 3.9+（优先 `/usr/bin/python3` 与 Homebrew 的 `python3`，也兼容绿色包内置的 `python/bin/python3`）；若系统没装，可用 `xcode-select --install` 或 `brew install python` 安装。
+
+> 从 zip 解压后如果提示权限不足，先执行一次：
+> `chmod +x start-wb-proxy.sh start-wb-proxy.command start-wb-proxy-lan.sh start-wb-proxy-lan.command allow-firewall.command`
+
+首次启动若无账号，直接打开看板点击 **「+ 添加账号 (OAuth)」**，在浏览器完成授权即可自动加入（macOS 上也可在看板「设置」里扫描本地桌面客户端凭据导入）。
 
 ### 2. 面板访问密码
 
@@ -46,10 +60,20 @@
 > 首次登录后请立即到「设置」修改默认密码。
 
 ### 3. 局域网共享模式
-双击运行 **`start-wb-proxy-lan.bat`**，允许局域网内其他设备（手机、平板、协同电脑）访问：
+允许局域网内其他设备（手机、平板、协同电脑）访问：
+
+- **Windows**：双击运行 **`start-wb-proxy-lan.bat`**；
+- **macOS**：双击运行 **`start-wb-proxy-lan.command`**，或在终端执行：
+
+```bash
+./start-wb-proxy-lan.sh              # 端口 8788，自动生成/复用 API Key
+./start-wb-proxy-lan.sh 8788 我的Key  # 自定义端口与 Key
+```
+
 - **Base URL**：`http://<本机局域网IP>:8788/v1`
 - **密钥随机生成并持久化**：LAN 模式不会使用任何写死的默认密钥。首次启动时自动生成一个高强度随机 API Key，保存到 `accounts/settings.json`，并在终端打印；之后重启会复用同一个 Key（不会每次变化）。
-- **自定义 Key**：启动脚本支持第二个参数传入自己的 Key，例如 `start-wb-proxy-lan.bat 8788 我的Key`，此时以你传入的为准。
+- **自定义 Key**：启动脚本支持第二个参数传入自己的 Key，例如 `start-wb-proxy-lan.bat 8788 我的Key`（Windows）/ `./start-wb-proxy-lan.sh 8788 我的Key`（macOS），此时以你传入的为准。
+- **macOS 防火墙**：首次监听网络端口时系统会弹窗询问是否允许 Python 接受传入连接，选择「允许」即可；macOS 15+ 还需在「系统设置 → 隐私与安全性 → 本地网络」中允许终端访问。也可运行 `./allow-firewall.command` 查看防火墙状态并把 Python 加入允许列表。
 - 支持带密钥直达面板：`http://<IP>:8788/?key=生成的Key`。
 
 ---
