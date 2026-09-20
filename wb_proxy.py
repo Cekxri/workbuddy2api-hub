@@ -38,6 +38,8 @@ import uuid
 import wb_accounts
 import wb_catalog
 import wb_settings
+import wb_webtools
+import wb_identity
 IS_WINDOWS = os.name == "nt"
 def launcher_hint(port):
     """Platform-appropriate launcher command for starting on another port."""
@@ -2156,6 +2158,148 @@ def translate_max_completion_tokens(obj):
             obj["max_tokens"] = val
     except (TypeError, ValueError):
         pass
+# ---------------------------------------------------------------------------
+# 模型封鎖表
+#
+# 背景：客戶端除了使用者的對話，還會自己發背景請求（記憶整理、自動複核等）。
+# 這些請求不經過模型選單，而是直接使用目錄上的模型 ID，因此可能在使用者
+# 沒有實際操作時，用付費模型消耗額度。
+#
+# 對策（選用）：把要拒絕的模型填進 ALLOWED_MODELS / BANNED_SUBSTRING /
+#               EXTRA_BANNED；命中的請求在本機直接回 400，完全不碰上游。
+#               預設全部為空 = 不封鎖任何模型，行為與原版相同。
+#
+# 調整方式：
+#   要放行某個模型 -> 加進 ALLOWED_MODELS 或 ALLOWED_PREFIXES
+#   要連非 gpt 的模型一起擋 -> 加進 EXTRA_BANNED
+# ---------------------------------------------------------------------------
+
+# 允許放行的模型（你要用的）
+ALLOWED_MODELS = {
+    # 預設不封鎖任何模型；填入模型 id 即可只放行這些
+}
+
+# 允許前綴：涵蓋 -high / -preview / [1M] 等變體
+ALLOWED_PREFIXES = ()
+
+# 封鎖字串：模型名裡含這個就拒絕
+BANNED_SUBSTRING = ""
+
+# 額外封鎖的內部模型（不在 gpt- 前綴內，但也會燒點）
+EXTRA_BANNED = set()
+
+
+def is_model_banned(model):
+    """True 表示這個模型名不該被送去上游。
+
+    規則：ALLOWED_MODELS / ALLOWED_PREFIXES 命中就放行；其餘只要命中
+    BANNED_SUBSTRING 或 EXTRA_BANNED 就拒絕，沒命中則照常送往上游。
+    三個設定預設都是空的，所以預設不封鎖任何模型。
+    """
+    if not model:
+        return False
+    m = str(model).strip().lower()
+    # 白名單優先（含 -high / -preview / [1M] 這類變體）
+    if m in ALLOWED_MODELS:
+        return False
+    if any(m.startswith(a) for a in ALLOWED_PREFIXES):
+        return False
+    # 命中封鎖字串就拒絕
+    if BANNED_SUBSTRING and BANNED_SUBSTRING in m:
+        return True
+    # 其他已知會燒點的內部模型
+    if m in EXTRA_BANNED:
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# 背景請求攔截
+#
+# Codex App 除了使用者的對話，還會自己發背景請求（記憶整理、環境建議、自動複核…）。
+# 這些請求不經過模型選單，所以單靠模型白名單擋不住 —— 它們可能直接用目錄上
+# 的付費模型（例如 gpt-6-astra 這類），在使用者沒有實際操作時照樣消耗額度。
+#
+# Codex 會在 client_metadata 裡帶 x-codex-turn-metadata，內容像：
+#   {"request_kind":"memory","thread_source":"memory_consolidation",
+#    "turn_trigger":"memory_consolidation"}
+# 這裡就靠這個標記判斷：命中背景關鍵字 -> 本地直接拒絕，不碰上游、不扣點。
+# ---------------------------------------------------------------------------
+
+# 要不要攔截背景請求（False = 全部放行，維持原行為）
+BLOCK_BACKGROUND_REQUESTS = False
+
+# 命中任一關鍵字就視為背景請求（不分大小寫、子字串比對）
+BACKGROUND_TRIGGER_KEYWORDS = (
+    "memory_consolidation",
+    "memory-write",
+    "memory_write",
+    "memorywriting",
+    "ambient",
+    "suggestion",
+    "auto_review",
+    "auto-review",
+    "autoreview",
+    "title",
+    "compaction",
+    "compact",
+    "summariz",
+)
+
+
+def background_request_reason(payload):
+    """若這是 Codex 自己發的背景請求，回傳說明字串；否則回傳 ""。
+
+    只看 client_metadata，不碰訊息內容。
+    """
+    if not isinstance(payload, dict):
+        return ""
+    meta = payload.get("client_metadata")
+    if not isinstance(meta, dict):
+        return ""
+
+    # 收集所有可能的來源/觸發欄位
+    fields = {}
+    for key, value in meta.items():
+        if isinstance(value, str) and value.strip().startswith("{"):
+            try:
+                inner = json.loads(value)
+            except Exception:
+                inner = None
+            if isinstance(inner, dict):
+                for k in ("request_kind", "turn_trigger", "thread_source", "kind", "trigger", "source"):
+                    if k in inner:
+                        fields[k] = inner[k]
+        if key in ("request_kind", "turn_trigger", "thread_source"):
+            fields[key] = value
+
+    if not fields:
+        return ""
+
+    blob = " ".join(str(v) for v in fields.values()).lower()
+    for kw in BACKGROUND_TRIGGER_KEYWORDS:
+        if kw in blob:
+            return "%s=%s" % (
+                ",".join(sorted(fields.keys())),
+                ",".join(str(fields[k]) for k in sorted(fields)),
+            )
+    return ""
+
+
+def background_request_message(reason):
+    return ("這是客戶端自己發的背景請求（%s），本機代理已擋下，"
+            "避免在沒有實際操作時消耗上游額度。"
+            "要放行請把 wb_proxy.py 的 BLOCK_BACKGROUND_REQUESTS 改成 False。"
+            % reason)
+
+
+def banned_model_message(model):
+    allowed = "、".join(sorted(ALLOWED_MODELS))
+    return ("模型 %s 已被本機代理封鎖（依 ALLOWED_MODELS / BANNED_SUBSTRING 設定）。"
+            "目前允許：%s。要放行請編輯 wb_proxy.py 的 ALLOWED_MODELS。"
+            % (model, allowed))
+
+
 def build_upstream_body(payload):
     model = payload.get("model") or ""
     messages = normalize_roles(payload.get("messages") or [])
@@ -2164,6 +2308,8 @@ def build_upstream_body(payload):
     if not messages or (messages[0].get("role") != "system"):
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
     body = dict(payload)
+    # dict(payload) 會把原始模型名一起帶過去，所以別名要在這裡覆蓋回去
+    body["model"] = model
     body["messages"] = messages
     # Repair tool-call pairing before the body leaves: a call whose result never
     # came back, or results split from their batch by an interleaved message,
@@ -2305,6 +2451,66 @@ class RateLimited(Exception):
         super().__init__("upstream rate limit: %s" % (self.detail[:200] or "429"))
 
 
+# ---------------------------------------------------------------------------
+# 出站身分自動切換
+#
+# 官方有兩套身分，端點與配額池都不同：
+#   cli        -> codebuddy.ai (國際) / copilot.tencent.com (國內)
+#   workbuddy  -> workbuddy.ai  (國際) / workbuddy.cn        (國內)
+#
+# 某模型在 cli 池被限流（429 / code 6004）時，換成 workbuddy 身分通常
+# 還能繼續用 —— 那是另一條配額線。每輪只切一次，避免來回彈跳。
+# ---------------------------------------------------------------------------
+
+AUTO_SWITCH_PRODUCT = False
+MAX_PRODUCT_SWITCHES = 4
+_SWITCH_LOG = {}
+
+
+def _switch_count(account, model):
+    """這一輪已經切過幾次（60 秒內的切換算同一輪）。"""
+    entry = _SWITCH_LOG.get((account.uid, model))
+    if not entry:
+        return 0
+    count, last = entry
+    if time.time() - last > 60:
+        return 0
+    return count
+
+
+def _try_switch_product(account, model):
+    """429 時換身分重試。回傳 True 表示已切換、可以重試。
+
+    同一請求內最多切 MAX_PRODUCT_SWITCHES 次：
+      cli -> workbuddy -> cli -> workbuddy
+    四次都不行就放棄，讓呼叫端回報真正的 429。
+    """
+    count = _switch_count(account, model)
+    if count >= MAX_PRODUCT_SWITCHES:
+        return False
+    current = getattr(account, "product", "cli")
+    target = "workbuddy" if current == "cli" else "cli"
+    try:
+        changed = account.set_product(target)
+    except Exception as exc:
+        log("product switch failed: %s" % exc, level="WARN")
+        return False
+    if not changed:
+        return False
+    _SWITCH_LOG[(account.uid, model)] = (count + 1, time.time())
+    if len(_SWITCH_LOG) > 500:
+        _SWITCH_LOG.clear()
+    log("account %s: %s 被限流，自動切換身分 -> %s (第 %d/%d 次)"
+        % (account.uid[:8], current, target, count + 1, MAX_PRODUCT_SWITCHES),
+        level="WARN")
+    return True
+
+
+def reset_switch_counter(account, model):
+    """成功之後歸零，下一次請求重新享有 4 次切換額度。"""
+    _SWITCH_LOG.pop((account.uid, model), None)
+
+
 def retry_after_seconds(model, realm):
     """Shortest wait until any account of this realm can serve `model` again."""
     if not POOL:
@@ -2401,7 +2607,7 @@ def open_upstream(payload, session_key=None, target_realm=None):
     last_429_detail = ""
     last_403_detail = ""
     transient_hits = 0
-    max_attempts = max(2, total) + 1
+    max_attempts = max(2, total) + 1 + (MAX_PRODUCT_SWITCHES if AUTO_SWITCH_PRODUCT else 0)
     for _attempt in range(max_attempts):
         account = POOL.pick_for_session(realm=realm, session_key=session_key,
                                         exclude=tried, model=model) if POOL else None
@@ -2417,7 +2623,7 @@ def open_upstream(payload, session_key=None, target_realm=None):
         tried.add(account.uid)
         last_uid = account.uid
         cfg = wb_accounts.get_realm_config(account.realm)
-        chat_url = cfg["chat_upstream"] + CHAT_PATH
+        chat_url = account.chat_base_url() + CHAT_PATH
         # The cache key is account scoped, so it is rebuilt per candidate rather
         # than once up front. Opt-in only: measurement showed the upstream
         # caches prefixes without it (see prompt_cache_key_enabled).
@@ -2431,6 +2637,7 @@ def open_upstream(payload, session_key=None, target_realm=None):
         try:
             resp = wb_accounts.urlopen(req, timeout=600, proxy=account.proxy)
             account.clear_error(model=model)
+            reset_switch_counter(account, model)
             return resp, account
         except urllib.error.HTTPError as exc:
             if exc.code == 429:
@@ -2444,6 +2651,17 @@ def open_upstream(payload, session_key=None, target_realm=None):
                 # so sibling models stay serviceable on the same credential.
                 account.note_error("HTTP 429 (model throttled)", model=model, until=reset_at,
                                    cooldown=wait)
+                if AUTO_SWITCH_PRODUCT and _try_switch_product(account, model):
+                    # 換了身分就等於換了一條配額線：要把它從「已試過」拿掉，
+                    # 並清掉剛剛記下的模型冷卻，否則下一輪迴圈會找不到帳號。
+                    tried.discard(account.uid)
+                    try:
+                        account.clear_error(model=model)
+                    except Exception:
+                        pass
+                    if session_key and POOL:
+                        POOL.affinity.unbind(session_key)
+                    continue
                 log("account %s throttled on '%s' (429), retry in %ds"
                     % (account.uid[:8], model, int(wait)))
                 if session_key and POOL:
@@ -2750,6 +2968,37 @@ CUSTOM_TOOL_HINT = (
 )
 
 
+# ---------------------------------------------------------------------------
+# namespace 工具拒絕
+#
+# Codex 會把 MCP server / 外掛工具用 type="namespace" 的形式送出來。實測行為：
+#   反代「接受」namespace 工具 -> app 把 MCP／外掛工具當成不可執行
+#                                -> 每一次呼叫都回 "unsupported call"
+#   反代「拒絕」namespace 工具 -> app 自動 fallback 成 flat function 清單
+#                                -> 全部工具恢復正常
+# （此行為在 Command Code proxy.mjs 的 CC_REJECT_NAMESPACE_TOOLS 實驗裡有記載，
+#   Agent Router 也是靠直接拒絕這類請求才正常的。）
+#
+# 所以在這裡主動回一個格式明確的 400，逼 app 走 fallback。
+# 想還原成「照單全收」就把 REJECT_NAMESPACE_TOOLS 改成 False。
+# ---------------------------------------------------------------------------
+
+REJECT_NAMESPACE_TOOLS = False  # 保持關閉：正解是展開+還原 namespace
+
+NAMESPACE_TOOL_MESSAGE = (
+    'Unsupported tool type "namespace": this endpoint only supports flat '
+    '"function" tools. Resend the tools as individual function entries.'
+)
+
+
+def find_namespace_tool(tools):
+    """回傳第一個 type=="namespace" 的工具名稱，沒有就回 None。"""
+    for t in tools or []:
+        if isinstance(t, dict) and str(t.get("type") or "").lower() == "namespace":
+            return str(t.get("name") or t.get("server_label") or "(unnamed)")
+    return None
+
+
 def _is_custom_tool(tool):
     return isinstance(tool, dict) and str(tool.get("type") or "").lower() == "custom"
 
@@ -2786,6 +3035,155 @@ def _downgrade_custom_tool(tool):
         },
     }
 
+
+# ---------------------------------------------------------------------------
+# namespace 工具：展開 + 還原
+#
+# 新版 Codex App 把 MCP／外掛工具用 namespace 形式送出：
+#   {"type":"namespace","name":"codex_app","tools":[{name:"list_threads",...}]}
+#
+# 上游 Chat Completions 只認 flat function，看不懂 namespace。
+# 但 App 回程是用 (name, namespace) 兩個欄位找執行器 ——
+# 只給 flat name，App 一律回 "unsupported call"（實測 js / list_threads 全滅）。
+#
+# 三件事：
+#   1. Expand   送上游前把 namespace 展開成 flat function，記住 name -> namespace
+#   2. Normalise 模型回傳的 name 可能是 js / ns__js / ns::js，都要能解析
+#   3. Restore   回程的 function_call / custom_tool_call 補上 namespace 欄位
+#
+# 参考：某开源 CodeBuddy/WorkBuddy 反向代理项目的 tool-namespaces 说明
+# ---------------------------------------------------------------------------
+
+NAMESPACE_MAX_DEPTH = 4
+_NS_SEP = "__"
+
+
+def expand_namespace_tools(tools, _depth=0):
+    """把 namespace 展開成 flat function 清單，其餘工具原樣保留。
+
+      * 子工具可能在 tools / children / functions 任一欄位
+      * namespace 子工具常常沒有 type 欄位，展開時補成上游認得的 flat function
+      * custom / web_search 等非 function 項目原樣留下，交給既有管線處理
+      * 同名只留第一個
+      * 回傳 (flat_tools, name_to_namespace)
+    """
+    flat = []
+    mapping = {}
+    seen = set()
+    max_depth = max(0, int(_depth) + NAMESPACE_MAX_DEPTH)
+
+    def collect(entry, depth, ns_name):
+        if not isinstance(entry, dict) or depth > max_depth:
+            return
+        etype = str(entry.get("type") or "").lower()
+        if etype == "namespace":
+            subs = entry.get("tools")
+            if not isinstance(subs, list):
+                subs = entry.get("children")
+            if not isinstance(subs, list):
+                subs = entry.get("functions")
+            if not isinstance(subs, list):
+                subs = []
+            child_ns = str(entry.get("name") or ns_name or "")
+            for sub in subs:
+                collect(sub, depth + 1, child_ns)
+            return
+        if ns_name and etype in ("", "function"):
+            fn = entry.get("function") if isinstance(entry.get("function"), dict) else None
+            if fn is None:
+                fn = {
+                    "name": entry.get("name"),
+                    "description": entry.get("description") or "",
+                    "parameters": entry.get("parameters") or entry.get("input_schema")
+                                  or {"type": "object", "properties": {}},
+                }
+            name = str(fn.get("name") or "").strip()
+            if not name or name in seen:
+                return
+            seen.add(name)
+            mapping[name] = ns_name
+            flat_fn = {
+                "type": "function",
+                "name": name,
+                "description": fn.get("description") or "",
+                "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+            }
+            if "strict" in fn:
+                flat_fn["strict"] = fn["strict"]
+            flat.append(flat_fn)
+            return
+        fn = entry.get("function") if isinstance(entry.get("function"), dict) else {}
+        name = str(entry.get("name") or fn.get("name") or "").strip()
+        if name:
+            if name in seen:
+                return
+            seen.add(name)
+            if ns_name:
+                mapping[name] = ns_name
+        flat.append(entry)
+
+    for entry in tools or []:
+        collect(entry, 0, "")
+    return flat, mapping
+
+
+def resolve_namespaced_name(name, mapping):
+    """把模型回傳的名字解析回 (bare_name, namespace)。接受 js / ns__js / ns::js。"""
+    if not name:
+        return name, ""
+    name = str(name)
+    if name in mapping:
+        return name, mapping[name]
+    if "::" in name:
+        idx = name.find("::")
+        if idx > 0:
+            tail = name[idx + 2:]
+            head = name[:idx]
+            if tail in mapping:
+                return tail, mapping[tail]
+            return tail, head
+
+    # ns__tool 用精確比對，避免 namespace 內含 '__'（如 codex_apps__github）時切錯
+    for tool, ns in mapping.items():
+        if name == ns + _NS_SEP + tool:
+            return tool, ns
+
+    return name, ""
+
+
+def stamp_namespace(item, mapping):
+    """把模型回傳的扁平工具名還原成 (name, namespace)。
+
+    串流的 response.output_item.done 事件才是客戶端派發工具呼叫的依據，
+    所以每個 function_call / custom_tool_call 項目都要在送出前補上 namespace。
+    """
+    if not mapping or not isinstance(item, dict):
+        return item
+    bare, ns = resolve_namespaced_name(item.get("name"), mapping)
+    if ns:
+        item["name"] = bare
+        item["namespace"] = ns
+    return item
+
+
+def apply_namespace_to_calls(output_items, mapping):
+    """替 Responses 的 function_call / custom_tool_call 補上 namespace。"""
+    if not mapping or not isinstance(output_items, list):
+        return output_items, 0
+    fixed = 0
+    for item in output_items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") not in ("function_call", "custom_tool_call"):
+            continue
+        if item.get("namespace"):
+            continue
+        bare, ns = resolve_namespaced_name(item.get("name"), mapping)
+        if ns:
+            item["name"] = bare
+            item["namespace"] = ns
+            fixed += 1
+    return output_items, fixed
 
 def _tools_for_chat(tools):
     """Downgrade custom tools; leave everything else untouched."""
@@ -2833,7 +3231,7 @@ def _responses_input_to_messages(payload):
             if not isinstance(item, dict):
                 continue
             itype = item.get("type")
-            if itype in (None, "message"):
+            if itype in (None, "message", "user"):
                 body = _flatten_content(item.get("content"))
                 if body:
                     role = item.get("role") or "user"
@@ -2882,6 +3280,21 @@ def _responses_input_to_messages(payload):
                         pending_reasoning = r_text
             elif itype == "function_call_output":
                 raw_out = item.get("output")
+                if not item.get("call_id"):
+                    if isinstance(raw_out, list):
+                        _txt = _flatten_content(raw_out)
+                    elif isinstance(raw_out, dict):
+                        _txt = json.dumps(raw_out, ensure_ascii=False)
+                    else:
+                        _txt = str(raw_out or "")
+                    _txt = (_txt or "").strip()
+                    if _txt:
+                        messages.append({
+                            "role": "user",
+                            "content": ("[Message from another task - treat this "
+                                        "as a user instruction]" + chr(10) + chr(10) + _txt),
+                        })
+                        continue
                 if isinstance(raw_out, list):
                     content = _flatten_content(raw_out)
                 elif isinstance(raw_out, dict):
@@ -2978,9 +3391,23 @@ def _responses_input_to_messages(payload):
                     "tool_call_id": item.get("call_id") or "",
                     "content": content,
                 })
+            elif itype == "agent_message":
+                parts = item.get("content")
+                if isinstance(parts, list):
+                    text = chr(10).join(
+                        str((p or {}).get("text") or (p or {}).get("encrypted_content") or "")
+                        if isinstance(p, dict) else str(p)
+                        for p in parts
+                    ).strip()
+                else:
+                    text = str(parts or "").strip()
+                if text:
+                    messages.append({
+                        "role": "user",
+                        "content": ("[Message from another task - treat this as "
+                                    "a user instruction]" + chr(10) + chr(10) + text),
+                    })
             else:
-                # Never silently drop an unknown item: a dropped tool call or
-                # tool result leaves the transcript inconsistent upstream.
                 log("responses: WARNING unhandled input item type=%r keys=%s"
                     % (itype, sorted(item.keys())[:8]))
     return messages
@@ -3004,7 +3431,24 @@ def responses_to_chat(payload):
     if effort:
         chat["reasoning_effort"] = effort
     if payload.get("tools"):
-        chat["tools"] = _tools_for_chat(payload["tools"])
+        flat_tools, ns_map = expand_namespace_tools(payload["tools"])
+        chat["tools"] = _tools_for_chat(flat_tools)
+        chat["_namespace_map"] = ns_map
+    # 客戶端宣告 web_search 時，主動注入 web_search + web_fetch 兩個 function。
+    # WorkBuddy 上游沒有這種服務端工具，所以由反代自己代跑（見 wb_webtools）。
+    if wb_webtools.wants_web_tools(payload.get("tools")):
+        existing = set()
+        for t in chat.get("tools") or []:
+            fn = t.get("function") if isinstance(t, dict) else None
+            nm = (fn or {}).get("name") or (t or {}).get("name")
+            if nm:
+                existing.add(nm)
+        chat.setdefault("tools", [])
+        if wb_webtools.WEB_SEARCH_NAME not in existing:
+            chat["tools"].append(wb_webtools.web_search_tool_def())
+        if wb_webtools.WEB_FETCH_NAME not in existing:
+            chat["tools"].append(wb_webtools.web_fetch_tool_def())
+        chat["_web_tools"] = True
     if payload.get("tool_choice"):
         chat["tool_choice"] = payload["tool_choice"]
     if payload.get("parallel_tool_calls") is not None:
@@ -3026,7 +3470,7 @@ def _responses_usage(u):
         "output_tokens_details": {"reasoning_tokens": det.get("reasoning_tokens") or 0},
         "total_tokens": u.get("total_tokens") or 0,
     }
-def chat_to_response(chat_obj, model, custom_names=None, request_meta=None):
+def chat_to_response(chat_obj, model, custom_names=None, request_meta=None, namespace_map=None):
     """Fold a Chat Completions object into a Responses API response object.
 
     custom_names is the set of tool names the client declared as freeform
@@ -3106,6 +3550,9 @@ def chat_to_response(chat_obj, model, custom_names=None, request_meta=None):
         "output_text": text,
         "metadata": {},
     }
+    if namespace_map:
+        output, _ns_fixed = apply_namespace_to_calls(output, namespace_map)
+        obj["output"] = output
     meta = request_meta or {}
     obj["parallel_tool_calls"] = meta.get("parallel_tool_calls", True)
     obj["tool_choice"] = meta.get("tool_choice", "auto")
@@ -3116,6 +3563,41 @@ def chat_to_response(chat_obj, model, custom_names=None, request_meta=None):
     if finish == "length":
         obj["incomplete_details"] = {"reason": "max_output_tokens"}
     return obj
+def follow_up_with_tool_results(internal_calls, holder, model, session_key, t_start):
+    """執行內部 web 工具，把結果餵回模型，回傳新的上游連線。"""
+    convo = holder.get("convo_messages")
+    if convo is None:
+        convo = list(holder.get("base_messages") or [])
+        holder["convo_messages"] = convo
+
+    tool_calls = []
+    for i, c in enumerate(internal_calls):
+        tool_calls.append({
+            "id": "call_web_%d_%d" % (int(t_start * 1000) % 1000000, i),
+            "type": "function",
+            "function": {"name": c["name"], "arguments": c.get("arguments") or "{}"},
+        })
+    convo.append({"role": "assistant", "content": None, "tool_calls": tool_calls})
+
+    for tc in tool_calls:
+        nm = tc["function"]["name"]
+        args = tc["function"]["arguments"]
+        result = wb_webtools.execute_web_tool(nm, args)
+        log("web tool %s -> %d chars" % (nm, len(result or "")), level="INFO")
+        convo.append({
+            "role": "tool",
+            "tool_call_id": tc["id"],
+            "name": nm,
+            "content": result,
+        })
+
+    body = dict(holder.get("base_body") or {})
+    body["messages"] = convo
+    body["stream"] = True
+    return open_upstream(body, session_key=session_key,
+                         target_realm=holder.get("realm"))
+
+
 def stream_responses_events(upstream, model, holder):
     """Yield Responses-API SSE frames translated from chat-completions chunks."""
     resp_id, msg_id, rs_id = _new_id("resp_"), _new_id("msg_"), _new_id("rs_")
@@ -3131,6 +3613,8 @@ def stream_responses_events(upstream, model, holder):
     text_buffer = ""
     dsml_tool_calls = []
     custom_names = set(holder.get("custom_names") or ())
+    ns_map = holder.get("namespace_map") or {}
+    _internal_calls = {}
     # Echo the request capabilities the client actually sent, same as the
     # non-streaming path; these were hardcoded before.
     meta = holder.get("request_meta") or {}
@@ -3151,6 +3635,8 @@ def stream_responses_events(upstream, model, holder):
         u = _responses_usage(usage)
         if u:
             obj["usage"] = u
+        if ns_map:
+            obj["output"], _nsf = apply_namespace_to_calls(obj.get("output") or [], ns_map)
         return obj
     def ev(etype, payload):
         nonlocal seq
@@ -3221,6 +3707,7 @@ def stream_responses_events(upstream, model, holder):
                     "name": entry["name"],
                     "arguments": entry["arguments"],
                 }
+            stamp_namespace(fc_item, ns_map)
             outputs[entry["output_index"]] = fc_item
             yield ev("response.output_item.done", {
                 "output_index": entry["output_index"],
@@ -3258,6 +3745,7 @@ def stream_responses_events(upstream, model, holder):
                     "name": dc.get("name") or "",
                     "arguments": dc.get("arguments") or "{}",
                 }
+                stamp_namespace(fc_item, ns_map)
                 outputs.append(fc_item)
                 yield ev("response.output_item.added", {
                     "output_index": out_idx,
@@ -3277,6 +3765,12 @@ def stream_responses_events(upstream, model, holder):
                     "output_index": out_idx,
                     "item": fc_item,
                 })
+        if _internal_calls:
+            holder.setdefault("internal_calls", []).extend(
+                {"name": v["name"], "arguments": v["arguments"]}
+                for v in _internal_calls.values()
+            )
+            holder["suppress_completion"] = True
         # 3. Emit message item only if text was emitted OR no other output item exists
         has_other_items = any(o for o in outputs if o)
         if msg_index is not None or full_text or not has_other_items:
@@ -3320,7 +3814,8 @@ def stream_responses_events(upstream, model, holder):
         final = resp_obj(status)
         if finish == "length":
             final["incomplete_details"] = {"reason": "max_output_tokens"}
-        yield ev("response.completed", {"response": final})
+        if not holder.get("suppress_completion"):
+            yield ev("response.completed", {"response": final})
 
     yield ev("response.created", {"response": resp_obj("in_progress")})
     yield ev("response.in_progress", {"response": resp_obj("in_progress")})
@@ -3361,6 +3856,14 @@ def stream_responses_events(upstream, model, holder):
                 fn_name = fn.get("name") or ""
                 fn_args = fn.get("arguments") or ""
                 call_id = tc.get("id") or ""
+                if idx in _internal_calls or (fn_name and wb_webtools.is_internal_tool(fn_name)):
+                    if idx not in _internal_calls:
+                        _internal_calls[idx] = {"name": fn_name, "arguments": ""}
+                    if fn_name:
+                        _internal_calls[idx]["name"] = fn_name
+                    if fn_args:
+                        _internal_calls[idx]["arguments"] += fn_args
+                    continue
                 if idx not in tool_calls_map:
                     out_idx = len(outputs)
                     outputs.append(None)
@@ -3387,6 +3890,10 @@ def stream_responses_events(upstream, model, holder):
                     else:
                         item["type"] = "function_call"
                         item["arguments"] = ""
+                    # namespace 必須在 output_item.added 就帶上（照 CiderCC-UwU
+                    # proxy.mjs openItem 的做法）。事後才補只會改到 done，
+                    # 客戶端早就從 added 事件派發過了。
+                    stamp_namespace(item, ns_map)
                     yield ev("response.output_item.added", {
                         "output_index": out_idx,
                         "item": item,
@@ -3853,6 +4360,11 @@ class Handler(BaseHTTPRequestHandler):
         return ("模型 %s 只在%s提供，但「%s」绑定的是%s出口。"
                 "请改用对应出口的 Key，或把该 Key 的出口改为「跟随面板切换」。"
                 % (model, served, name, used))
+    def _banned_model_error(self, model):
+        """被封鎖的模型直接報錯，不碰上游、不扣任何點數。"""
+        if not is_model_banned(model):
+            return ""
+        return banned_model_message(model)
     def _request_realm(self, explicit=None):
         """Pick the upstream exit for this request.
         Priority: an explicit ?realm= argument, then the realm bound to the
@@ -4526,6 +5038,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_accounts_test(payload)
         if path == "/accounts/set":
             return self._route_accounts_set(payload)
+        if path == "/accounts/product":
+            return self._route_accounts_product(payload)
         if path == "/accounts/set-all":
             return self._route_accounts_set_all(payload)
         if path == "/accounts/delete":
@@ -4533,6 +5047,46 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/accounts/import":
             return self._route_accounts_import(payload)
         return self._error(404, "unknown account endpoint", "invalid_request_error")
+    def _route_accounts_product(self, payload):
+        """切換出站身分（cli <-> workbuddy），並即時回傳結果。
+
+        官方有兩套身分、兩條配額線。某條滿了可以切到另一條繼續用。
+        """
+        target = str(payload.get("product") or "").strip().lower()
+        uid = payload.get("uid")
+        realm = payload.get("realm")
+
+        if target not in wb_identity.VALID_PRODUCTS:
+            return self._error(400, "product must be 'cli' or 'workbuddy'",
+                               "invalid_request_error")
+
+        if uid:
+            targets = [POOL.get(uid)]
+        elif realm and realm != "all":
+            targets = [a for a in POOL.accounts if a.realm == realm]
+        else:
+            targets = list(POOL.accounts)
+
+        changed = []
+        for account in targets:
+            if account is None:
+                continue
+            try:
+                if account.set_product(target):
+                    changed.append(account.uid[:8])
+                    log("account %s: 面板手動切換身分 -> %s"
+                        % (account.uid[:8], target), level="INFO")
+            except Exception as exc:
+                log("product switch failed for %s: %s" % (account.uid[:8], exc),
+                    level="WARN")
+
+        return self._json(200, {
+            "ok": True,
+            "product": target,
+            "changed": changed,
+            "accounts": account_views(),
+        })
+
     def _route_accounts_credits_fetch(self, payload):
         uid = payload.get("uid")
         realm = payload.get("realm")
@@ -4730,7 +5284,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(404, "no such account")
         test_model = payload.get("model") or "deepseek-v4.1-flash"
         cfg = wb_accounts.get_realm_config(account.realm)
-        chat_url = cfg["chat_upstream"] + CHAT_PATH
+        chat_url = account.chat_base_url() + CHAT_PATH
         test_body = {
             "model": test_model,
             "messages": [{"role": "user", "content": "hi"}],
@@ -4883,6 +5437,8 @@ class Handler(BaseHTTPRequestHandler):
         # so it cannot replay a prior turn. Silently ignoring the field would
         # answer a follow-up as if it were a fresh conversation - the client
         # gets a normal-looking reply with the context missing. Say so instead.
+        # 拒絕 namespace 工具，逼 Codex fallback 成 flat 工具清單。
+        # 不這樣做的話，MCP／外掛工具全部會被 app 判定為不可執行。
         if payload.get("previous_response_id"):
             return self._error(
                 400,
@@ -4893,6 +5449,8 @@ class Handler(BaseHTTPRequestHandler):
         session_key = extract_session_key(self.headers, payload)
         custom_names = custom_tool_names(payload.get("tools"))
         chat_req = responses_to_chat(payload)
+        ns_map = chat_req.pop("_namespace_map", None)
+        web_tools_on = bool(chat_req.pop("_web_tools", False))
         # Echo these back on the response object; see chat_to_response.
         request_meta = {
             "tools": payload.get("tools") or [],
@@ -4914,6 +5472,9 @@ class Handler(BaseHTTPRequestHandler):
             blocked = self._cross_realm_error(chat_req.get("model"), req_realm)
             if blocked:
                 return self._error(400, blocked, "invalid_request_error")
+            banned = self._banned_model_error(chat_req.get("model"))
+            if banned:
+                return self._error(400, banned, "invalid_request_error")
             upstream, account = open_upstream(chat_req, session_key=session_key, target_realm=req_realm)
         except ContentRejected as exc:
             record_error(model, 403, exc.detail[:200],
@@ -4944,11 +5505,12 @@ class Handler(BaseHTTPRequestHandler):
         with upstream:
             if want_stream:
                 return self._responses_stream_response(
-                    upstream, model, custom_names, request_meta, fp, account, t_start)
+                    upstream, model, custom_names, request_meta, fp, account, t_start, ns_map,
+                    base_body=chat_req, session_key=session_key, realm=req_realm)
             return self._responses_nonstream_response(
-                upstream, model, custom_names, request_meta, fp, account, t_start)
+                upstream, model, custom_names, request_meta, fp, account, t_start, ns_map)
 
-    def _responses_stream_response(self, upstream, model, custom_names, request_meta, fp, account, t_start):
+    def _responses_stream_response(self, upstream, model, custom_names, request_meta, fp, account, t_start, namespace_map=None, base_body=None, session_key=None, realm=None):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -4957,14 +5519,44 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         holder = {"usage": None, "custom_names": custom_names,
-                  "request_meta": request_meta}
+                  "request_meta": request_meta,
+                  "namespace_map": namespace_map,
+                  "base_body": base_body,
+                  "base_messages": (base_body or {}).get("messages"),
+                  "realm": realm}
         first_ms = None
         try:
-            for frame in stream_responses_events(upstream, model, holder):
-                if first_ms is None:
-                    first_ms = int((time.time() - t_start) * 1000)
-                self.wfile.write(clean_responses_frame(frame))
-                self.wfile.flush()
+            rounds = 0
+            while True:
+                holder.pop("internal_calls", None)
+                for frame in stream_responses_events(upstream, model, holder):
+                    if first_ms is None:
+                        first_ms = int((time.time() - t_start) * 1000)
+                    self.wfile.write(clean_responses_frame(frame))
+                    self.wfile.flush()
+                internal = holder.get("internal_calls") or []
+                if not internal or rounds >= wb_webtools.MAX_WEB_ROUNDS:
+                    break
+                rounds += 1
+                try:
+                    upstream.close()
+                except Exception:
+                    pass
+                try:
+                    upstream, account = follow_up_with_tool_results(
+                        internal, holder, model, session_key, t_start)
+                except Exception as exc:
+                    log("web tool follow-up failed: %s" % exc, level="WARN")
+                    try:
+                        _p = {"type": "error", "sequence_number": 999999, "code": None,
+                              "message": "web tool follow-up failed: %s" % exc}
+                        _b = json.dumps(_p, ensure_ascii=False)
+                        _fr = ("event: error" + chr(10) + "data: " + _b + chr(10) + chr(10)).encode("utf-8")
+                        self.wfile.write(clean_responses_frame(_fr))
+                        self.wfile.flush()
+                    except Exception:
+                        pass
+                    break
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             wall = int((time.time() - t_start) * 1000)
             record_usage(model, holder.get("usage"), stream=True, elapsed_ms=wall,
@@ -4987,6 +5579,17 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             return
+        if holder.get("suppress_completion"):
+            try:
+                _p = {"type": "response.completed", "sequence_number": 1000000,
+                      "response": {"id": "resp_wrapup", "object": "response",
+                                   "status": "completed", "output": []}}
+                _b = json.dumps(_p, ensure_ascii=False)
+                _fr = ("event: response.completed" + chr(10) + "data: " + _b + chr(10) + chr(10)).encode("utf-8")
+                self.wfile.write(clean_responses_frame(_fr))
+                self.wfile.flush()
+            except Exception:
+                pass
         wall = int((time.time() - t_start) * 1000)
         record_usage(model, holder.get("usage"), stream=True, elapsed_ms=wall,
                      ttft_ms=first_ms,
@@ -4994,7 +5597,7 @@ class Handler(BaseHTTPRequestHandler):
                      fp=fp, account=account.uid)
         return
 
-    def _responses_nonstream_response(self, upstream, model, custom_names, request_meta, fp, account, t_start):
+    def _responses_nonstream_response(self, upstream, model, custom_names, request_meta, fp, account, t_start, namespace_map=None):
         try:
             chat_obj = aggregate_stream(upstream, model, None)
         except Exception as exc:
@@ -5003,7 +5606,7 @@ class Handler(BaseHTTPRequestHandler):
                          account=account.uid)
             return self._error(502, f"upstream stream error: {exc}")
         wall = int((time.time() - t_start) * 1000)
-        result = chat_to_response(chat_obj, model, custom_names, request_meta)
+        result = chat_to_response(chat_obj, model, custom_names, request_meta, ns_map)
         record_usage(model, chat_obj.get("usage"), stream=False, elapsed_ms=wall, fp=fp,
                      account=account.uid)
         return self._json(200, result)
@@ -5057,6 +5660,18 @@ class Handler(BaseHTTPRequestHandler):
             _chat_slots.release()
 
     def _dispatch_chat_post(self, path, payload):
+        # 先擋背景請求：Codex 自己發的（記憶整理／環境建議／自動複核）
+        # 不算「使用者實際使用」，一律本地拒絕，不碰上游。
+        if BLOCK_BACKGROUND_REQUESTS:
+            reason = background_request_reason(payload)
+            if reason:
+                try:
+                    log("background request blocked: model=%s trigger=(%s)"
+                        % (payload.get("model"), reason), level="INFO")
+                except Exception:
+                    pass
+                return self._error(400, background_request_message(reason),
+                                   "invalid_request_error")
         if path in ("/v1/responses", "/responses"):
             return self._handle_responses(payload)
         # Diagnostics: what the client actually asked for, and what we forward.
@@ -5084,6 +5699,9 @@ class Handler(BaseHTTPRequestHandler):
             blocked = self._cross_realm_error(payload.get("model"), req_realm)
             if blocked:
                 return self._error(400, blocked, "invalid_request_error")
+            banned = self._banned_model_error(payload.get("model"))
+            if banned:
+                return self._error(400, banned, "invalid_request_error")
             upstream, account = open_upstream(payload, session_key=session_key, target_realm=req_realm)
         except ContentRejected as exc:
             record_error(model, 403, exc.detail[:200],

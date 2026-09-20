@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from wb_fingerprint import derive_id, generate_request_id
+import wb_identity
 
 
 def _retryable(exc):
@@ -177,6 +178,10 @@ class Account(object):
         if not self.domain:
             self.domain = get_realm_config(self.realm)["domain"]
         self.platform = str(data.get("platform") or "CLI")
+        # 出站身分一律以 cli 開局：這是「預設 cli」的實際落點。
+        # 面板手動切換或 429 自動切換只影響這次執行；重啟就回到 cli。
+        self.product = wb_identity.PRODUCT_CLI
+        self.saved_product = wb_identity.normalize_product(data.get("product"))
         self.enterprise_id = str(data.get("enterpriseId") or "")
         self.access_token = token
         self.refresh_token = str(data.get("refreshToken") or "")
@@ -213,6 +218,7 @@ class Account(object):
             "domain": self.domain,
             "realm": self.realm,
             "platform": self.platform,
+            "product": self.product,
             "enterpriseId": self.enterprise_id,
             "accessToken": self.access_token,
             "refreshToken": self.refresh_token,
@@ -236,6 +242,7 @@ class Account(object):
             "domain": self.domain,
             "realm": self.realm,
             "platform": self.platform,
+            "product": self.product,
             "enterpriseId": self.enterprise_id,
             "enabled": bool(self.enabled),
             "source": self.source,
@@ -308,40 +315,80 @@ class Account(object):
         return self.refresh()
 
     def headers(self, purpose="chat"):
+        """組出這一輪的出站標頭。
+
+        chat 用途走 wb_identity（CLI 頭 / WorkBuddy 頭，可切換）；
+        billing 用途維持原本的輕量標頭，計費端點不吃那套身分。
+        """
         cfg = get_realm_config(self.realm)
-        ua = cfg["chat_ua"] if purpose == "chat" else cfg["billing_ua"]
+
+        if purpose != "chat":
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/plain, */*",
+                "X-Requested-With": "XMLHttpRequest",
+                "User-Agent": cfg["billing_ua"],
+                "Origin": cfg["origin"],
+                "Referer": cfg["origin"] + "/",
+                "Authorization": "Bearer " + self.access_token,
+                "X-User-Id": self.uid,
+                "X-Domain": self.domain or cfg["domain"],
+                "X-CodeBuddy-Request": "1",
+                "Accept-Language": "en-US" if self.realm == "intl" else "zh-CN",
+                "X-Request-ID": generate_request_id(self.uid),
+                "X-Machine-ID": derive_id(self.uid, "machine"),
+                "X-Session-ID": derive_id(self.uid, "session"),
+            }
+            if self.enterprise_id:
+                headers["X-Enterprise-Id"] = self.enterprise_id
+                headers["X-Tenant-Id"] = self.enterprise_id
+            else:
+                headers["X-No-Enterprise-Id"] = "1"
+            if self.realm == "cn":
+                headers["X-Product"] = "SaaS"
+            return headers
+
+        identity = wb_identity.build_identity_headers(
+            product=self.product,
+            realm=self.realm,
+            uid=self.uid,
+            token=self.access_token,
+            conversation_id=getattr(self, "conversation_id", None),
+            enterprise_id=self.enterprise_id,
+            tenant_id=self.enterprise_id,
+        )
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/plain, */*",
             "X-Requested-With": "XMLHttpRequest",
-            "User-Agent": ua,
             "Origin": cfg["origin"],
             "Referer": cfg["origin"] + "/",
-            "Authorization": "Bearer " + self.access_token,
-            "X-User-Id": self.uid,
-            "X-Domain": self.domain or cfg["domain"],
             "X-CodeBuddy-Request": "1",
             "Accept-Language": "en-US" if self.realm == "intl" else "zh-CN",
+            "X-Machine-ID": derive_id(self.uid, "machine"),
+            "X-Session-ID": derive_id(self.uid, "session"),
         }
-        headers["X-Request-ID"] = generate_request_id(self.uid)
-        headers["X-Machine-ID"] = derive_id(self.uid, "machine")
-        headers["X-Session-ID"] = derive_id(self.uid, "session")
-        if self.enterprise_id:
-            headers["X-Enterprise-Id"] = self.enterprise_id
-            headers["X-Tenant-Id"] = self.enterprise_id
-        else:
-            headers["X-No-Enterprise-Id"] = "1"
-        if purpose == "chat":
-            client_ver = "5.5.2" if self.realm == "intl" else "5.5.6"
-            headers["X-Agent-Purpose"] = "conversation"
-            headers["X-IDE-Name"] = "WorkBuddy"
-            headers["X-IDE-Type"] = "WorkBuddy"
-            headers["X-IDE-Version"] = client_ver
-            headers["X-Product"] = "WorkBuddy"
-        else:
-            if self.realm == "cn":
-                headers["X-Product"] = "SaaS"
+        headers.update(identity)
         return headers
+
+    def set_product(self, value):
+        """切換出站身分（cli <-> workbuddy）。回傳 True 表示真的換了。
+
+        身分會寫回憑證檔，重啟後仍然有效。save() 需要目錄參數。
+        """
+        new = wb_identity.normalize_product(value)
+        if new == self.product:
+            return False
+        self.product = new
+        try:
+            self.clear_error()
+        except Exception:
+            pass
+        return True
+
+    def chat_base_url(self):
+        """這個帳號目前身分該打的端點。"""
+        return wb_identity.endpoint_for(self.realm, self.product)[0]
 
     def refresh(self):
         # Serialise refreshes per account, then re-check inside the lock: the

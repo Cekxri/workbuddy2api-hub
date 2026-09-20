@@ -1444,6 +1444,7 @@ function accountRow(a){
     +     '<button class="sec mini" onclick="refreshOne(&quot;' + uidAttr + '&quot;, this)">刷新</button>'
     +   '</div>'
     +   '<div style="display:flex;gap:4px;justify-content:center">'
+    +     '<button class="sec mini" title="切换出站身分：CLI ↔ WorkBuddy" onclick="switchProduct(&quot;' + uidAttr + '&quot;, this)">' + ((a.product === 'workbuddy') ? 'WB' : 'CLI') + '</button>'
     +     '<button class="sec mini" onclick="exportOne(&quot;' + uidAttr + '&quot;)">导出</button>'
     +     '<button class="danger mini" onclick="deleteAccount(&quot;' + uidAttr + '&quot;,&quot;' + nameAttr + '&quot;, this)">删除</button>'
     +   '</div>'
@@ -1541,6 +1542,23 @@ async function toggleAccount(uid, enable, btn){
     if(btn) btn.disabled = false;
   }
 }
+async function switchProduct(uid, btn){
+  const cur = ((btn && btn.textContent) || 'CLI').trim();
+  const next = (cur === 'CLI') ? 'workbuddy' : 'cli';
+  const label = (next === 'workbuddy') ? 'WorkBuddy (VSCode)' : 'CLI (CodeBuddy)';
+  if(!confirm('Switch this account to ' + label + ' ?\n\nThe two identities use different endpoints and different quota pools.')) return;
+  if(btn){ btn.disabled = true; }
+  try {
+    const r = await postJSON('/accounts/product', {uid: uid, product: next});
+    toast('Switched to ' + label + ' (' + (r.changed || []).length + ' account)', 'ok');
+    await loadAccounts();
+  } catch(e) {
+    toast('Switch failed: ' + e.message, 'bad');
+  } finally {
+    if(btn){ btn.disabled = false; }
+  }
+}
+
 async function refreshOne(uid, btn){
   if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
   try{
