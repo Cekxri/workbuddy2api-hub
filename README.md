@@ -28,6 +28,17 @@
 
 ## 一、快速启动
 
+> **启动方式对照**：Windows 用 `.bat`，macOS 用 `.command`（双击）/ `.sh`（终端）。两套脚本功能完全一致，参数一一对应，Windows 的 `.bat` 脚本原样保留。
+
+| 场景 | Windows | macOS |
+| --- | --- | --- |
+| 本机单机 | 双击 `start-wb-proxy.bat` | 双击 `start-wb-proxy.command`，或终端 `./start-wb-proxy.sh` |
+| 自定义端口 | `start-wb-proxy.bat 9000` | `./start-wb-proxy.sh 9000` |
+| 局域网共享 | 双击 `start-wb-proxy-lan.bat` | 双击 `start-wb-proxy-lan.command`，或终端 `./start-wb-proxy-lan.sh` |
+| 局域网自定义 Key | `start-wb-proxy-lan.bat 8788 我的Key` | `./start-wb-proxy-lan.sh 8788 我的Key` |
+| 放行防火墙 | 以管理员身份运行 `allow-firewall.bat` | 首次弹窗选「允许」，或运行 `./allow-firewall.command` |
+| 查找 Python | 绿色包内置 `python\python.exe` → PATH `python` → `py` | 绿色包内置 `python/bin/python3` → `/usr/bin/python3` / Homebrew `python3` |
+
 ### 1. 本机单机使用
 
 **Windows**：双击运行 **`start-wb-proxy.bat`**，保持窗口运行：
