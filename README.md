@@ -1,7 +1,7 @@
 # WorkBuddy2API-Hub — 国际版、国内版多账号网关中枢
 
 <p align="center">
-  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.4.8-2496ED?style=flat-square" alt="Version 1.4.8"></a>
+  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.4.9-2496ED?style=flat-square" alt="Version 1.4.9"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
@@ -203,6 +203,13 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 ---
 
 ## 六、版本更新记录 (Changelog)
+
+### v1.4.9
+
+- **DeepSeek 思维链默认开启**：此前网关只注入 `thinking:{type:"enabled"}` 而不带推理档位，上游据此仍按「不思考」应答——客户端不发 `reasoning_effort` 时思维链被静默丢弃（实测 `reasoning_content` 长度 0、`reasoning_tokens` 0）。现在缺档时按模型目录声明的默认档补齐（无声明回退 `high`），实测同一请求变为 `reasoning_content` 112 / `reasoning_tokens` 36。客户端显式指定的档位（snake/camel 双字段）一律不覆盖；`thinking:{type:"disabled"}` 与 `reasoning_effort:"none"` 仍然照常退出，不会被迫思考。
+- **工具调用配对自愈**：工具执行失败时客户端会把 assistant 的 `tool_calls` 写进会话历史却写不回结果消息，这条坏历史随后被每一轮原样重放，上游对之后每条消息都返回 `400 code 11148`（"tool calls and tool results do not match, please start a new conversation and retry"）——一次失败调用即可让整条会话报废。并行工具调用时中间插入的消息（如 Codex 的 `image_resize_notice`）同样会打断配对。现在请求出站前先修复：把结果块移回所属批次，再按同一份 id 集合对称裁剪「有调用无结果」与「有结果无调用」，任何输入都不会再产生半截配对。实测同一条坏历史由 400 变为 200，正常配对的历史行为不变。
+- **`prompt_cache_key` 注入（默认关闭）**：新增按账号隔离的缓存键注入（`wb2a-<uid8>-<摘要>`，账号段不可省——上游前缀缓存按账号隔离，跨账号共用键会命中他人缓存），可用 `WB_PROMPT_CACHE_KEY=1` 开启。**默认关闭的原因**：实测该上游本来就会自动复用重复前缀，带不带此字段结果一致——相同 ~8k token 前缀第二次调用在两个出口、免费与收费模型上均报 `prompt_cache_hit_tokens=9600` 且扣费相同，因此不再为每个请求附加该字段。
+- **新增 `_test_upstream_repairs.py`**（49 项断言，无网络依赖）：覆盖缓存键的账号隔离与优先级、思维链补档与退出路径、配对重排与孤儿裁剪、以及 `build_upstream_body` 的整合行为。
 
 ### v1.4.8
 
