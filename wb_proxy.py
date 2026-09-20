@@ -1289,7 +1289,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "1.4.7",
+        "version": "1.4.8",
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -3290,6 +3290,13 @@ class Handler(BaseHTTPRequestHandler):
             self.requestline = ''
             self.request_version = ''
             self.command = ''
+            # The cap is enforced by reading at most max_request_line + 1
+            # bytes, so the rest of the oversized line is still in the socket.
+            # Replying and then closing with unread data pending makes the OS
+            # send an RST, which discards the buffered reply - the client sees
+            # a reset and no error at all. Drain a bounded amount first so the
+            # 414 actually arrives.
+            self._drain_oversized_request_line()
             try:
                 self._error(414, "request line too long (limit %d bytes); "
                                  "put long content in the POST body, not the URL"
@@ -3319,7 +3326,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/1.4.7"
+    server_version = "wb-proxy/1.4.8"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
@@ -3372,12 +3379,19 @@ class Handler(BaseHTTPRequestHandler):
             # _read_payload). Reading Content-Length bytes again would block
             # until the client gives up, turning an instant reply into a hang.
             return
-        transfer_encoding = (self.headers.get("Transfer-Encoding") or "").lower()
+        # No parsed request means no headers object and nothing buffered to
+        # drain: the over-long request line is rejected before parse_request()
+        # ever runs. Reading self.headers here would raise out of _error() and
+        # leave the client with no reply at all.
+        headers = getattr(self, "headers", None)
+        if headers is None:
+            return
+        transfer_encoding = (headers.get("Transfer-Encoding") or "").lower()
         try:
             if "chunked" in transfer_encoding:
                 self._drain_chunked_body()
                 return
-            length = int(self.headers.get("Content-Length") or 0)
+            length = int(headers.get("Content-Length") or 0)
         except Exception:
             length = 0
         if length <= 0:
@@ -3424,6 +3438,30 @@ class Handler(BaseHTTPRequestHandler):
                 self.rfile.read(2)  # trailing CRLF after each chunk
         except Exception:
             self.close_connection = True
+    # How much of an over-long request line to read before giving up. The peer
+    # is already misbehaving; this only needs to be enough that a normal client
+    # (which sent one line and is waiting for an answer) sees the reply.
+    OVERSIZED_DRAIN_LIMIT = 8 * 1024 * 1024
+
+    def _drain_oversized_request_line(self):
+        """Consume the rest of a too-long request line, within a budget.
+
+        Without this the reply is lost to an RST (see the caller). The newline
+        ends the line; past the budget the peer is clearly not going to stop,
+        so give up and let the connection close.
+        """
+        budget = self.OVERSIZED_DRAIN_LIMIT
+        try:
+            while budget > 0:
+                chunk = self.rfile.readline(min(budget, 65536))
+                if not chunk:
+                    return
+                budget -= len(chunk)
+                if chunk.endswith(b"\n"):
+                    return
+        except Exception:
+            pass
+
     def _handle_expect_continue(self):
         """Answer 'Expect: 100-continue' before deciding to reject a body.
 
@@ -3431,7 +3469,13 @@ class Handler(BaseHTTPRequestHandler):
         transmitting a large payload. Rejecting outright (or draining first)
         made both sides wait on each other until the socket timed out.
         """
-        expect = (self.headers.get("Expect") or "").lower()
+        # No parsed request means no headers object; there is no interim
+        # response to send, and touching self.headers here would raise out of
+        # the error reply the caller is trying to produce.
+        headers = getattr(self, "headers", None)
+        if headers is None:
+            return
+        expect = (headers.get("Expect") or "").lower()
         if "100-continue" not in expect:
             return
         try:

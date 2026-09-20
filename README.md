@@ -1,7 +1,7 @@
 # WorkBuddy2API-Hub — 国际版、国内版多账号网关中枢
 
 <p align="center">
-  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.4.7-2496ED?style=flat-square" alt="Version 1.4.7"></a>
+  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.4.8-2496ED?style=flat-square" alt="Version 1.4.8"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
@@ -203,6 +203,12 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 ---
 
 ## 六、版本更新记录 (Changelog)
+
+### v1.4.8
+
+- **HTTP 连接同步修复**（PR #30）：修复请求被提前拒绝时未读取请求体、导致后续请求在同一 keep-alive 连接上解析失败的问题（日志表现为空请求行的伪 414）；同时支持 chunked 请求体、`Expect: 100-continue`、超大请求体立即返回 413，并扩展了鉴权头写法。
+- **超长请求行的回复丢失修复**：请求行超限时回复 414 后直接关闭会因未读数据触发 RST，导致客户端收不到任何响应；现先有限度排空再回复。
+- **macOS 启动脚本**（PR #31）：新增 `start-wb-proxy.sh` / `.command`、局域网版本与防火墙助手，并按平台调整端口占用提示与凭据目录探测；原有 `.bat` 脚本未修改，Windows 行为不变。
 
 ### v1.4.7
 
