@@ -3481,7 +3481,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
     def _supplied_key(self):
-        """The key the caller presented, from the header or the ?key= query."""
+        """The key the caller presented.
+
+        Accepts the spellings clients actually send: the Authorization header
+        with or without the "Bearer" scheme, the x-api-key / api-key headers
+        used by several OpenAI-compatible clients, and the ?key= query the
+        dashboard falls back to when it cannot set headers.
+        """
         # The auth scheme is case-insensitive per RFC 7235, so "bearer sk-x"
         # and "BEARER sk-x" must strip just like "Bearer sk-x". The old
         # removeprefix("Bearer ") left the scheme attached for other casings
@@ -3494,14 +3500,25 @@ class Handler(BaseHTTPRequestHandler):
                 supplied = value.strip()
             else:
                 supplied = header
+            # Tolerate a quoted credential, which some SDKs add.
+            if len(supplied) >= 2 and supplied[0] == supplied[-1] and supplied[0] in "\"'":
+                supplied = supplied[1:-1].strip()
         if supplied:
             return supplied
+        for name in ("x-api-key", "api-key", "x-auth-token"):
+            value = (self.headers.get(name) or "").strip()
+            if value:
+                return value
         # Browsers cannot set headers on a top-level navigation, so accept the
         # key as a query parameter too - the dashboard uses this when opened
         # from another device.
         try:
             query = parse_qs(urlparse(self.path).query)
-            return (query.get("key") or [""])[0].strip()
+            for name in ("key", "api_key", "api-key"):
+                value = (query.get(name) or [""])[0].strip()
+                if value:
+                    return value
+            return ""
         except Exception:
             return ""
     def _key_ok(self):
@@ -3558,7 +3575,18 @@ class Handler(BaseHTTPRequestHandler):
     def _authorized(self):
         if self._key_ok():
             return True
-        self._error(401, "invalid api key", "invalid_request_error")
+        # Say how a key must be presented, so a key that merely looks identical
+        # (masked copy, trailing whitespace) is diagnosable straight from the
+        # client error. Deliberately does not echo key names or values.
+        hint = ("send it as 'Authorization: Bearer <key>' or '?key=<key>'; "
+                "copy the value from the panel's 设置 page")
+        try:
+            if not any(k.get("enabled") for k in configured_keys()) and not API_KEY:
+                hint = ("no key is configured - open the dashboard and add one, "
+                        "or restart with --api-key")
+        except Exception:
+            pass
+        self._error(401, "invalid api key - " + hint, "invalid_request_error")
         return False
     # ---- web panel access ----
     def _panel_token(self):
@@ -5132,7 +5160,15 @@ def _serve_forever(args):
         raise SystemExit(1)
     # Only claim the address once the socket really exists, so a failed bind
     # never prints a "listening" line that contradicts the error below.
-    log(f"listening  : http://{args.host}:{args.port}/v1  (api key: {'on' if API_KEY else 'off'})")
+    # Report the state the request path actually enforces: the panel can turn
+    # key checking on after startup, so reading API_KEY alone printed "off"
+    # while every /v1 call was still being rejected with 401.
+    if auth_required():
+        _panel_keys = [k for k in configured_keys() if k.get("enabled")]
+        _key_state = ("on (%d key(s) from the panel)" % len(_panel_keys)) if _panel_keys else "on (--api-key)"
+    else:
+        _key_state = "off"
+    log(f"listening  : http://{args.host}:{args.port}/v1  (api key: {_key_state})")
     log(f"dashboard  : http://{args.host}:{args.port}/")
     # Keep the handler referenced for the process lifetime: SetConsoleCtrlHandler
     # stores a raw pointer, so a collected callback would crash on close.
