@@ -1902,6 +1902,141 @@ def sanitize_messages(messages):
         else:
             out.append(m)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Tool-call pairing repair
+# ---------------------------------------------------------------------------
+def repack_tool_result_blocks(messages):
+    """Keep a tool_calls batch and its results adjacent.
+
+    The upstream requires the role:"tool" results to follow the assistant
+    message that requested them with nothing in between. Codex's
+    image_resize_notice, for one, arrives as a developer message right after a
+    tool output; with parallel calls it lands between two results, the pairing
+    reads as broken and the upstream rejects the whole request (code 11148),
+    retiring the conversation. This only reorders: same results, same relative
+    order, the intruders moved behind the batch.
+    """
+    if not isinstance(messages, list) or len(messages) < 3:
+        return messages, False
+    out = []
+    changed = False
+    i = 0
+    while i < len(messages):
+        m = messages[i]
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            out.append(m)
+            i += 1
+            continue
+        calls = m.get("tool_calls")
+        if not isinstance(calls, list) or not calls:
+            out.append(m)
+            i += 1
+            continue
+        want = set()
+        for tc in calls:
+            if isinstance(tc, dict):
+                tid = tc.get("id")
+                if isinstance(tid, str) and tid:
+                    want.add(tid)
+        out.append(m)
+        i += 1
+        results = []
+        between = []
+        saw_non_tool = False
+        while i < len(messages):
+            mm = messages[i]
+            if not isinstance(mm, dict):
+                break
+            role = mm.get("role")
+            if role == "tool":
+                tid = mm.get("tool_call_id")
+                if not (isinstance(tid, str) and tid in want):
+                    break
+                results.append(mm)
+                if saw_non_tool:
+                    changed = True
+                i += 1
+                continue
+            if not results:
+                break
+            # A following assistant.tool_calls opens the next batch: it must go
+            # back to the outer loop, or its own results never get repacked.
+            if role == "assistant" and isinstance(mm.get("tool_calls"), list) \
+                    and mm["tool_calls"]:
+                break
+            between.append(mm)
+            saw_non_tool = True
+            i += 1
+        out.extend(results)
+        out.extend(between)
+    if not changed:
+        return messages, False
+    return out, True
+
+
+def cleanup_orphan_tool_calls(messages):
+    """Drop tool calls that have no result, and results that have no call.
+
+    A failed tool call (bad arguments, timeout, unknown tool) leaves the client
+    with an assistant tool_calls entry it can never answer: the result message
+    is never written, yet the entry rides along with the history on every later
+    turn and the upstream rejects each one (code 11148), so a single failed
+    call can retire a whole conversation. Both sides are trimmed against the
+    same set of ids, so no half-pairing can survive the repair.
+    """
+    if not isinstance(messages, list) or not messages:
+        return messages, False
+    call_ids = set()
+    result_ids = set()
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role == "tool":
+            tid = m.get("tool_call_id")
+            if isinstance(tid, str) and tid:
+                result_ids.add(tid)
+        elif role == "assistant":
+            calls = m.get("tool_calls")
+            if isinstance(calls, list):
+                for tc in calls:
+                    if isinstance(tc, dict):
+                        tid = tc.get("id")
+                        if isinstance(tid, str) and tid:
+                            call_ids.add(tid)
+    if not call_ids and not result_ids:
+        return messages, False
+    keep = call_ids & result_ids
+    changed = False
+    for m in messages:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        calls = m.get("tool_calls")
+        if not isinstance(calls, list) or not calls:
+            continue
+        kept = [tc for tc in calls
+                if isinstance(tc, dict) and isinstance(tc.get("id"), str)
+                and tc["id"] in keep]
+        if len(kept) == len(calls):
+            continue
+        changed = True
+        if kept:
+            m["tool_calls"] = kept
+        else:
+            m.pop("tool_calls", None)
+    out = []
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "tool":
+            tid = m.get("tool_call_id")
+            if not (isinstance(tid, str) and tid in keep):
+                changed = True
+                continue
+        out.append(m)
+    if not changed:
+        return messages, False
+    return out, True
 # ---------------------------------------------------------------------------
 # DeepSeek Multi-turn Consistency: reasoning_content backfill
 # ---------------------------------------------------------------------------
@@ -2030,17 +2165,118 @@ def build_upstream_body(payload):
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
     body = dict(payload)
     body["messages"] = messages
+    # Repair tool-call pairing before the body leaves: a call whose result never
+    # came back, or results split from their batch by an interleaved message,
+    # makes the upstream reject every later turn of that conversation.
+    repaired, _repacked = repack_tool_result_blocks(body["messages"])
+    repaired, _cleaned = cleanup_orphan_tool_calls(repaired)
+    body["messages"] = repaired
     translate_max_completion_tokens(body)
     normalize_tool_choice(body)
     normalize_tools(body)
-    # Thinking injection for DeepSeek models
+    # Thinking injection for DeepSeek models.
+    #
+    # thinking.type=enabled on its own does not switch the reasoning trace on:
+    # the upstream still answers without one unless an effort level rides along.
+    # Measured against the live upstream on deepseek-v4.1-flash, same prompt:
+    #   enabled + no effort   -> reasoning_tokens 0,  reasoning_content len 0
+    #   reasoning_effort=high -> reasoning_tokens 37, reasoning_content len 117
+    # The client's own choice always wins; an effort level is only filled in
+    # when it left the field out, and never for a request that opted out.
     if str(model).lower().startswith("deepseek"):
-        if "thinking" not in body and body.get("reasoning_effort") != "none":
-            body["thinking"] = {"type": "enabled"}
+        thinking = body.get("thinking")
+        opted_out = isinstance(thinking, dict) and \
+            str(thinking.get("type") or "").strip().lower() == "disabled"
+        effort = body.get("reasoning_effort") or body.get("reasoningEffort")
+        if not opted_out and str(effort or "").strip().lower() != "none":
+            if "thinking" not in body:
+                body["thinking"] = {"type": "enabled"}
+            if not effort:
+                body["reasoning_effort"] = model_default_effort(model) or "high"
     body["stream"] = True
     if "stream_options" not in body:
         body["stream_options"] = {"include_usage": True}
     return body
+
+
+def model_default_effort(model):
+    """The reasoning effort the catalog declares for a model, or None.
+
+    Read from the same merged catalog that /v1/models advertises, so the effort
+    filled into an outbound request cannot disagree with what the model list
+    promised the client. Failures fall back to None (caller uses its default).
+
+    Deliberately side-effect free: it reads the already-populated model cache
+    and the shipped static tables only. Calling fetch_models() here would let a
+    cold cache trigger an upstream discovery round-trip from inside request
+    handling, turning one chat call into a network fetch.
+    """
+    if not model:
+        return None
+    try:
+        realm = detect_model_realm(model) or CURRENT_REALM
+        entries = (_models_cache.get(realm) or {}).get("data")
+        if not entries:
+            name = "STATIC_CN_MODELS" if realm == "cn" else "STATIC_INTL_MODELS"
+            table = getattr(wb_catalog, name, None) or wb_catalog.STATIC_MODELS
+            entries = [(m.get("id"), m) for m in table if isinstance(m, dict)]
+        for mid, meta in entries:
+            if mid != model:
+                continue
+            effort = ((meta or {}).get("reasoning") or {}).get("defaultEffort")
+            if isinstance(effort, str) and effort.strip():
+                return effort.strip()
+            return None
+    except Exception as exc:
+        log("default effort lookup failed for '%s': %s" % (model, exc))
+    return None
+
+
+def prompt_cache_key_enabled():
+    """Whether to inject prompt_cache_key into outbound requests.
+
+    Off by default. The upstream turns out to cache repeated prefixes on its
+    own: with an identical ~8k-token prefix sent twice, the second call already
+    reports prompt_cache_hit_tokens=9600 and the same credit with or without
+    this field, on both exits (www.workbuddy.ai and copilot.tencent.com) and on
+    both a free and a billed model. Injecting it changed neither the hit rate
+    nor the charge, so it is left as an opt-in for experimenting rather than
+    added to every request.
+    """
+    return os.environ.get("WB_PROMPT_CACHE_KEY", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def inject_prompt_cache_key(body, uid, conversation):
+    """Add the upstream prompt_cache_key so its prefix cache can be reused.
+
+    Kept for experimentation only: measurement on this upstream showed the
+    prefix cache working without it (see prompt_cache_key_enabled). The key
+    still carries the account uid, because the upstream cache is scoped per
+    account -- a key shared between accounts would let one account's request
+    read another's cached prefix, so this must never be made a fixed string.
+
+    Priority matches the client's intent: an explicit prompt_cache_key is never
+    overwritten; then the body's own conversation id; then the session key the
+    gateway resolved (header or conversation-prefix derived).
+    """
+    if not isinstance(body, dict):
+        return body
+    existing = body.get("prompt_cache_key")
+    if isinstance(existing, str) and existing.strip():
+        return body
+    conv = conversation if isinstance(conversation, str) else ""
+    for field in ("conversation_id", "conversationId"):
+        value = body.get(field)
+        if isinstance(value, str) and value.strip():
+            conv = value.strip()
+            break
+    uid8 = (uid or "")[:8] or "-"
+    seed = "%s|%s" % (uid or "", conv)
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+    out = dict(body)
+    out["prompt_cache_key"] = "wb2a-%s-%s" % (uid8, digest)
+    return out
 class ContentRejected(Exception):
     """Upstream content review rejected this request (403 / code 11140).
 
@@ -2149,7 +2385,6 @@ def open_upstream(payload, session_key=None, target_realm=None):
     realm = target_realm or detect_model_realm(payload.get("model")) or CURRENT_REALM
     model = str(payload.get("model") or "")
     upstream_body = build_upstream_body(payload)
-    body = json.dumps(upstream_body, ensure_ascii=False).encode("utf-8")
     # PATCHED-BY-OPS: 客户端未提供会话标识时，用对话稳定前缀兜底。
     # 位置放在 build_upstream_body 之后，保证键与真正发往上游的消息一致
     # （该函数可能在最前面插入 SYSTEM_PROMPT）。
@@ -2183,7 +2418,15 @@ def open_upstream(payload, session_key=None, target_realm=None):
         last_uid = account.uid
         cfg = wb_accounts.get_realm_config(account.realm)
         chat_url = cfg["chat_upstream"] + CHAT_PATH
-        req = urllib.request.Request(chat_url, data=body, method="POST",
+        # The cache key is account scoped, so it is rebuilt per candidate rather
+        # than once up front. Opt-in only: measurement showed the upstream
+        # caches prefixes without it (see prompt_cache_key_enabled).
+        if prompt_cache_key_enabled():
+            attempt_body = inject_prompt_cache_key(upstream_body, account.uid, session_key)
+        else:
+            attempt_body = upstream_body
+        attempt_data = json.dumps(attempt_body, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(chat_url, data=attempt_data, method="POST",
                                      headers=account.headers(purpose="chat"))
         try:
             resp = wb_accounts.urlopen(req, timeout=600, proxy=account.proxy)
