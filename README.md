@@ -1,7 +1,7 @@
 # WorkBuddy2API-Hub — 国际版、国内版多账号网关中枢
 
 <p align="center">
-  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.4.6-2496ED?style=flat-square" alt="Version 1.4.6"></a>
+  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.4.7-2496ED?style=flat-square" alt="Version 1.4.7"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
@@ -179,6 +179,13 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 ---
 
 ## 六、版本更新记录 (Changelog)
+
+### v1.4.7
+
+- **每账号独立出口代理**（PR #26）：新增可命名、可启停的代理槽位，账号绑定槽位后其全部出站请求固定走该出口，避免多账号共用同一出口 IP 触发上游风控；看板支持槽位增删、出口 IP 测试与逐账号绑定。
+- **账号身份请求全量走代理**：修复 `refresh` / `checkin` / `fetch_credits` 未传代理的遗留问题。这三处请求携带账号凭据（refresh token 与 uid，或 Bearer token）却从宿主机真实 IP 发出，会把账号身份与宿主机 IP 关联在一起。
+- **槽位 ID 不再回收**：槽位 ID 改由持久化计数器分配，只增不减；删除槽位时同步解绑指向它的账号，避免新增槽位拿到释放出来的 ID 而静默接管原账号出口。
+- **顶部 GitHub 仓库入口**：看板顶部导航右侧新增项目仓库图标。
 
 ### v1.4.6
 
