@@ -22,7 +22,7 @@
 - **后台定时调度器**：09:00/21:00 国内签到旅行与国际版活跃打卡 · 22:00 保活 · 01:00 夜猫；
 - **限额（保留积分 · 每日 Token · 每日积分 · 按模型 Token）**：四条账号级护栏集中在看板同一张表里，默认按**全局默认**生效、同时管住国际版与国内版；需要时可单独给某一版本设值，留空即继承全局。积分花超只服务免费模型、单模型 token 用满只禁该模型，次日 0 点解封（默认全部关闭）；
 - **OpenRouter 价估算**：把请求 token 按 OpenRouter 公布的模型价折算成等价花费（按条件定价的模型按每条请求的输入长度与时间取档），定价按版本留档、刷新间隔可配，每条请求都标出用的是哪一版，人民币/美元可切，看板多处并列展示；**上游新增模型无需改代码即可自动进入取价**（取价输入 = 内置目录 ∪ 网关实时目录；两次取价之间就被调用就按需补价；带渠道后缀的名字向基准模型继承，命不中就不定价），仍未定价的模型在面板列出原因，可手填 OpenRouter id 收口；
-- **双协议支持**：Chat Completions 与 Responses API（Codex / Claude Code）；
+- **三协议支持**：Chat Completions、Responses API（Codex）与原生 Anthropic Messages API（Claude Code / Anthropic SDK）；
 - **Web 看板**：指标卡片、模型性能与用量大表、按 API Key 的用量归属、实时请求流水一屏可查。
 - **积分与权益包明细查看**：完整解析账号各套餐包/加量包额度、已用、剩余、生效状态及有效期周期，看板一键弹窗并支持实时刷新；
 - **Web 看板**：指标卡片、模型性能与用量大表、实时请求流水一屏可查。
@@ -298,6 +298,26 @@ export OPENAI_BASE_URL="http://127.0.0.1:8788/v1"
 export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 ```
 
+### Claude Code (原生 Anthropic Messages API)
+
+网关同样原生实现 Anthropic Messages 协议（`/v1/messages`，流式与非流式），Claude Code / Anthropic SDK 可以直连，不再经过 Responses 转换层：
+
+```bash
+export ANTHROPIC_BASE_URL="http://127.0.0.1:8788"
+export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
+```
+
+模型名沿用网关的官方对齐 ID（如 `deepseek-v4.1-flash`、`gpt-6-astra`、`glm-5.3`）。
+
+协议映射与边界（都按 Anthropic 官方 Messages 规格实现）：
+
+- `system`（字符串或文本块数组）→ 上游 system 消息；`text` / `image` / `document` / `tool_use` / `tool_result` 内容块双向转换；`tools` + `tool_choice` + `disable_parallel_tool_use`、`stop_sequences`、`metadata.user_id`、`thinking` / `output_config.effort` 全部映射到上游对应字段；
+- 流式输出是原生事件序列：`message_start` → `content_block_start` / `content_block_delta`（`text_delta` / `input_json_delta`）→ `content_block_stop` → `message_delta`（含 `stop_reason` 与用量）→ `message_stop`；
+- 鉴权接受 `x-api-key` 或 `Authorization: Bearer`，错误一律用 Anthropic 的 `{"type":"error","error":{"type":...}}` 信封；
+- 服务端工具（`web_search` 等，Anthropic 侧执行的）上游不支持，会被丢弃并在 system 里注明，不会伪造调用；
+- `thinking` / `redacted_thinking` 块不会回放（上游不提供可验证签名）；`top_k`、`cache_control`、`context_management` 与 `betas` 会被忽略；
+- `/v1/messages/count_tokens` 返回的是网关的 CJK 感知估算值（与用量统计同一套估算器），**不是**官方分词器的精确值。
+
 ---
 
 ## 五、看板与接口一览
@@ -313,6 +333,8 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 | GET | / | Web 用量与任务监控看板 |
 | POST | /v1/chat/completions | 标准 Chat Completions 接口 |
 | POST | /v1/responses | Responses API 协议接口 |
+| POST | /v1/messages | 原生 Anthropic Messages 协议接口（流式 / 非流式，`x-api-key` 或 `Authorization` 鉴权） |
+| POST | /v1/messages/count_tokens | Anthropic 计数接口（CJK 感知估算值，非官方分词器） |
 | GET | /v1/models | 官方对齐模型列表（含能力与规格宣告） |
 | GET | /pricing | 定价状态：当前生效策略、上次/下次取价时间、未定价清单（分类 + 候选） |
 | POST | /pricing/refresh | 立即取一次价（需面板会话） |
@@ -337,6 +359,7 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 - **账号错误悬停查看完整响应与当前禁用总览**（[PR #132](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/132)，感谢 [@LeoK77S](https://github.com/LeoK77S)）：账号卡片支持悬停查看上游完整报错（429 恢复时刻一眼可见）；新增「当前禁用账号与模型」总览表，集中感知限流与停用状态；
 - **增加 OpenRouter 价估算总开关**（[PR #133](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/133)，感谢 [@LeoK77S](https://github.com/LeoK77S)）：为估价模块补齐总开关（默认开启），关闭后彻底停用后台抓取与逐行折算开销，提升大日志量下的处理性能；
 - **清理设置页合并冲突残留标记**（[PR #131](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/131)，issue #137）。
+- **原生 Anthropic Messages 协议（2026-10-07）**：`/v1/messages` 与 `/v1/messages/count_tokens` 全原生实现（流式事件序列、`x-api-key` 鉴权、Anthropic 错误信封、内容块与工具双向映射），Claude Code / Anthropic SDK 可直连；服务端工具、thinking 回放与 `top_k` / `cache_control` 的取舍见「四、客户端配置与接入」。
 
 
 ### v1.6.13
