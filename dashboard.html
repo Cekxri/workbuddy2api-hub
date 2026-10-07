@@ -299,13 +299,18 @@ a:hover{text-decoration:underline}
 .theme-option.active .theme-opt-check{opacity:1}
 .theme-option.active{font-weight:600;color:var(--accent)}
 .theme-option.active .theme-opt-icon{color:var(--accent)}
-.lang-switch{display:inline-flex;gap:2px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:2px}
-.lang-switch button{background:transparent;border:1px solid transparent;color:var(--dim);font:inherit;font-size:11px;font-weight:600;line-height:1.5;padding:4px 9px;border-radius:6px;cursor:pointer;box-shadow:none;white-space:nowrap}
-.lang-switch button:hover{color:var(--fg);background:var(--panel);border-color:var(--line)}
-.lang-switch button.active{background:var(--accent);border-color:var(--accent);color:#fff}
-.lang-switch button.active:hover{background:var(--accent-hover);border-color:var(--accent-hover);color:#fff}
+.lang-btn{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:34px;height:32px;padding:0 8px;border-radius:8px;border:1px solid var(--line);
+  background:var(--panel);color:var(--dim);box-shadow:var(--shadow-sm);
+  cursor:pointer;font:inherit;font-size:12px;font-weight:700;transition:all .15s ease;
+}
+.lang-btn:hover{
+  color:var(--fg);border-color:var(--line-hover);
+  background:var(--panel2);box-shadow:var(--shadow-md);
+}
 @media (max-width: 640px){
-  .lang-switch button{min-height:32px;padding:6px 11px;font-size:12px}
+  .lang-btn{min-width:36px;height:36px;padding:0 6px;font-size:12px}
 }
 
 [data-theme="dark"] .badge.ok{color:#4ade80;background:rgba(34,197,94,.16);border-color:rgba(34,197,94,.32)}
@@ -1579,10 +1584,14 @@ a:hover{text-decoration:underline}
   }
   function observeOff(){ if(mo){ mo.disconnect(); mo = null; } }
   function syncButtons(){
+    var lbl = document.getElementById('langToggleLabel');
+    var btn = document.getElementById('langToggleBtn');
+    if(lbl) lbl.textContent = (lang === 'en') ? '中' : 'EN';
+    if(btn) btn.title = (lang === 'en') ? 'Switch to Chinese / 切换至中文' : 'Switch to English / 切换至英文';
     var zh = document.getElementById('langOptZh');
     var en = document.getElementById('langOptEn');
-    if(zh) zh.classList.toggle('active', lang !== 'en');
-    if(en) en.classList.toggle('active', lang === 'en');
+    if(zh && zh.classList && zh.classList.toggle) zh.classList.toggle('active', lang !== 'en');
+    if(en && en.classList && en.classList.toggle) en.classList.toggle('active', lang === 'en');
   }
   function setLang(next){
     lang = (next === 'en') ? 'en' : 'zh';
@@ -1597,6 +1606,10 @@ a:hover{text-decoration:underline}
   window.selectLang = function(next, evt){
     if(evt){ evt.preventDefault(); evt.stopPropagation(); }
     setLang(next);
+  };
+  window.toggleLang = function(evt){
+    if(evt){ evt.preventDefault(); evt.stopPropagation(); }
+    setLang(lang === 'en' ? 'zh' : 'en');
   };
   window.WB_I18N = {
     translate: translate,
@@ -1645,10 +1658,9 @@ a:hover{text-decoration:underline}
     </a>
   </div>
   <div class="header-right">
-    <div class="lang-switch" id="langSwitch" data-no-i18n role="group" aria-label="Interface language" title="界面语言 / Interface language">
-      <button type="button" id="langOptZh" onclick="selectLang('zh', event)">中文</button>
-      <button type="button" id="langOptEn" onclick="selectLang('en', event)">EN</button>
-    </div>
+    <button type="button" class="lang-btn" id="langToggleBtn" onclick="toggleLang(event)" data-no-i18n title="切换语言 (中文 / English)" aria-label="切换语言">
+      <span id="langToggleLabel">EN</span>
+    </button>
     <div class="meta" id="meta"></div>
     <div class="theme-dropdown-wrap" id="themeDropdownWrap">
       <button type="button" class="theme-btn" id="themeToggleBtn" onclick="toggleThemeMenu(event)" title="颜色主题" aria-label="切换颜色主题" aria-haspopup="true" aria-expanded="false">
