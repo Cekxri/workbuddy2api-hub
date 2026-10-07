@@ -43,6 +43,7 @@ import wb_pricing
 import wb_settings
 import wb_webtools
 import wb_identity
+import wb_probes
 IS_WINDOWS = os.name == "nt"
 def launcher_hint(port):
     """Platform-appropriate launcher command for starting on another port."""
@@ -2472,6 +2473,12 @@ def model_entry(mid, meta):
     if meta.get("maxOutputTokens"):
         item["max_output_tokens"] = meta["maxOutputTokens"]
         item["max_completion_tokens"] = meta["maxOutputTokens"]
+    # Annotate the measured upstream clamp (from output_probes.json) without
+    # overriding the model's spec value; the panel shows "钳制 N×" beside it.
+    clamp = wb_probes.clamp_for(ACCOUNTS_DIR, mid)
+    if clamp:
+        item["output_clamp"] = clamp
+        item["max_output_tokens_clamped"] = clamp
     ctx = (meta.get("contextWindow") or {}).get("supportedLengths")
     if ctx:
         item["context_windows"] = ctx
