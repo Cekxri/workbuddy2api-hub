@@ -18,6 +18,20 @@ import subprocess
 import sys
 import tempfile
 
+# Suite summaries are printed verbatim, and some of them are written in
+# Chinese. A Windows console defaults to a legacy ANSI code page (cp1252 on
+# the GitHub runner), where those characters cannot be encoded and the whole
+# run dies with UnicodeEncodeError before the summary line. Pin both streams
+# to UTF-8 and never fail on a glyph the console cannot render: the log keeps
+# the real text on every platform.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        # A wrapped or replaced stream without reconfigure(): keep it as is.
+        pass
+
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 TAIL_LINES = 25
