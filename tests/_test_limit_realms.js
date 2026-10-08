@@ -1,6 +1,6 @@
 /* 限额表的前端契约：全局默认 + 可选分版本。
  *
- * 后端把四条护栏存成「全局默认 + 可选分版本覆盖」，面板这张表必须一一对上：
+ * 后端把五条护栏存成「全局默认 + 可选分版本覆盖」，面板这张表必须一一对上：
  * 每条护栏三列输入（全局 / 国际版 / 国内版），id 由 LIMIT_FIELDS 与
  * LIMIT_SCOPES 的名字拼出来；某一版本留空表示继承全局，保存时发 null 让服务端
  * 清掉旧覆盖值；收起「分别设置」再保存，等于把两个覆盖一起清回继承。
@@ -68,6 +68,7 @@ const api = new Function(script + `
     applyLimits: applyLimits,
     toggleLimitRealms: toggleLimitRealms,
     saveLimits: saveLimits,
+    toggleExpiringWindow: toggleExpiringWindow,
   };`)();
 
 (async () => {
@@ -78,7 +79,7 @@ const api = new Function(script + `
       assert.ok(html.includes('id="' + id + '"'), '缺少输入框 ' + id);
     }
   }
-  assert.equal(api.LIMIT_FIELDS.length, 4, '四条护栏');
+  assert.equal(api.LIMIT_FIELDS.length, 5, '五条护栏');
   assert.deepStrictEqual(api.LIMIT_SCOPES.map(s => s.scope),
                          ['global', 'intl', 'cn']);
 
@@ -89,7 +90,7 @@ const api = new Function(script + `
             '限额表必须带 data-cards limits-cards');
   for(const label of ['全局默认', '国际版', '国内版']){
     const hits = html.split('data-label="' + label + '"').length - 1;
-    assert.equal(hits, 4, '「' + label + '」格应有 4 个（每条护栏一个），实际 ' + hits);
+    assert.equal(hits, 5, '「' + label + '」格应有 5 个（每条护栏一个），实际 ' + hits);
   }
   assert.ok(/table\.limits-cards td\.limit-name\{display:block/.test(html),
             '护栏名与说明在手机卡片里要占整块');
@@ -131,7 +132,7 @@ const api = new Function(script + `
                          '收起分版本 = 两个覆盖一起清回继承');
   assert.deepStrictEqual(Object.keys(sent.limits).sort(), [
     'daily_credit_limit', 'daily_token_limit',
-    'model_daily_token_limit', 'reserve_credits',
+    'expiring_window_days', 'model_daily_token_limit', 'reserve_credits',
   ]);
 
   // 5. 勾上分版本时保存：填了值的版本发数字，留空的仍发 null。
@@ -158,7 +159,25 @@ const api = new Function(script + `
   await api.saveLimits(null);
   assert.equal(sent, null, '非法的分版本值不应发请求');
 
-  // 7. 收起分版本只隐藏两列，不动全局列。
+  // 7. 临期优先开关：勾选状态跟着全局窗口值走；点一下在 7 与 0 之间切换并保存。
+  api.applyLimits({limits: {expiring_window_days: {global: 7, intl: null, cn: null}}});
+  assert.equal(element('setExpiringWindowToggle').checked, true, '窗口 > 0 时开关应为开');
+  api.applyLimits({limits: {expiring_window_days: {global: 0, intl: null, cn: null}}});
+  assert.equal(element('setExpiringWindowToggle').checked, false, '窗口 0 时开关应为关');
+
+  sent = null;
+  api.limitEl('Global', 'ExpiringWindow').value = '0';
+  await api.toggleExpiringWindow({checked: true, disabled: false});
+  assert.deepStrictEqual(sent.limits, {expiring_window_days: {global: 7}},
+                         '从关闭打开应写回默认窗口 7');
+
+  sent = null;
+  api.limitEl('Global', 'ExpiringWindow').value = '14';
+  await api.toggleExpiringWindow({checked: false, disabled: false});
+  assert.deepStrictEqual(sent.limits, {expiring_window_days: {global: 0}},
+                         '关闭应写 0，不动窗口天数本身');
+
+  // 8. 收起分版本只隐藏两列，不动全局列。
   api.toggleLimitRealms(false);
   api.toggleLimitRealms(true);
 

@@ -1150,6 +1150,14 @@ a:hover{text-decoration:underline}
     '每日活跃:': 'Daily activity:',
     '每日活跃打卡 (国际版)': 'Daily activity check-in (Global)',
     '每日积分限额': 'Daily credit limit',
+    '临期积分优先': 'Expiring credits first',
+    '账号最早到期的积分包进入该天数窗口时，分派优先使用这些账号，避免快到期的积分被浪费；窗口内按到期先后使用，同一天到期的账号之间仍轮询。填 0 表示关闭。': 'When an account\'s soonest-expiring credit package falls inside this many days, dispatch prefers those accounts so credits about to lapse are not wasted. Inside the window the earliest expiry is used first; accounts expiring on the same day still take turns. 0 turns it off.',
+    '启用临期优先': 'Enable expiring-credits first',
+    '已开启临期积分优先': 'Expiring-credits priority on',
+    '已关闭临期积分优先': 'Expiring-credits priority off',
+    '积分数据刷新间隔（小时）': 'Credit refresh interval (hours)',
+    '已保存积分数据刷新间隔': 'Credit refresh interval saved',
+    '积分数据刷新间隔请填 0 或正整数（0 = 关闭后台刷新）': 'Credit refresh interval must be 0 or a positive integer (0 turns the background refresh off)',
     '每日签到 (国内版)': 'Daily check-in (China)',
     '每日签到:': 'Daily check-in:',
     '每账号每日上限（token）': 'Daily cap per account (tokens)',
@@ -2156,7 +2164,7 @@ a:hover{text-decoration:underline}
         <div>
           <h2 style="margin:0">限额 <em id="setLimitsState"></em></h2>
           <div style="font-size:12px;color:var(--dim);margin-top:4px">
-            四条护栏默认按<b>全局默认</b>生效，同时作用于<b>国际版</b>与<b>国内版</b>；需要时可单独给某一版本设值，留空即<b>继承全局</b>。每条护栏填 0 表示关闭该项。
+            五条护栏默认按<b>全局默认</b>生效，同时作用于<b>国际版</b>与<b>国内版</b>；需要时可单独给某一版本设值，留空即<b>继承全局</b>。每条护栏填 0 表示关闭该项。
           </div>
         </div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -2223,6 +2231,28 @@ a:hover{text-decoration:underline}
               <td data-label="全局默认"><input id="limitGlobalModelDailyToken" class="limit-input" type="number" min="0" step="1000000" value="0"></td>
               <td class="limit-realm-col" style="display:none" data-label="国际版"><input id="limitIntlModelDailyToken" class="limit-input" type="number" min="0" step="1000000" placeholder="继承全局"></td>
               <td class="limit-realm-col" style="display:none" data-label="国内版"><input id="limitCnModelDailyToken" class="limit-input" type="number" min="0" step="1000000" placeholder="继承全局"></td>
+            </tr>
+            <tr>
+              <td class="limit-name">
+                <div style="font-weight:600;color:var(--fg)">临期积分优先 <em id="setExpiringWindowState"></em></div>
+                <div style="font-size:12px;color:var(--dim);margin-top:2px">
+                  账号最早到期的积分包进入该天数窗口时，分派优先使用这些账号，避免快到期的积分被浪费；窗口内按到期先后使用，同一天到期的账号之间仍轮询。填 0 表示关闭。
+                </div>
+                <label class="switch" style="margin-top:8px">
+                  <input id="setExpiringWindowToggle" type="checkbox" onchange="toggleExpiringWindow(this)">
+                  <span class="switch-track"></span>
+                  <span style="font-size:12px">启用临期优先</span>
+                </label>
+                <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+                  <span style="font-size:12px;color:var(--dim)">积分数据刷新间隔（小时）</span>
+                  <input id="setCreditsRefreshHours" type="number" min="0" step="1" value="12"
+                         style="width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;color:var(--fg);font:inherit">
+                  <button class="sec" onclick="saveCreditsRefreshHours(this)">保存</button>
+                </div>
+              </td>
+              <td data-label="全局默认"><input id="limitGlobalExpiringWindow" class="limit-input" type="number" min="0" step="1" value="7"></td>
+              <td class="limit-realm-col" style="display:none" data-label="国际版"><input id="limitIntlExpiringWindow" class="limit-input" type="number" min="0" step="1" placeholder="继承全局"></td>
+              <td class="limit-realm-col" style="display:none" data-label="国内版"><input id="limitCnExpiringWindow" class="limit-input" type="number" min="0" step="1" placeholder="继承全局"></td>
             </tr>
           </tbody>
         </table>
@@ -5414,6 +5444,11 @@ async function loadSettings(showToast){
 
     applyLimits(data);
 
+      const creditsHoursInput = document.getElementById('setCreditsRefreshHours');
+      if(creditsHoursInput && data.credits_refresh_hours !== undefined){
+        creditsHoursInput.value = String(Number(data.credits_refresh_hours || 0));
+      }
+
       const pricingOn = data.pricing_enabled !== false;
       const pricingEnabledInput = document.getElementById('setPricingEnabled');
       if(pricingEnabledInput) pricingEnabledInput.checked = pricingOn;
@@ -5525,13 +5560,14 @@ async function savePanelPassword(btn){
 }
 
 // ---- 限额（全局默认 + 可选分版本） -------------------------------------
-// 四个护栏共用一张表：一列一个作用域。国际版/国内版留空即继承全局默认，
+// 五个护栏共用一张表：一列一个作用域。国际版/国内版留空即继承全局默认，
 // 所以“不分版本”只是“两列都留空”的一个特例，不必再另存一套开关。
 const LIMIT_FIELDS = [
   {key:'reserve_credits',         id:'Reserve',         label:'保留积分'},
   {key:'daily_token_limit',       id:'DailyToken',      label:'每日 Token 限额'},
   {key:'daily_credit_limit',      id:'DailyCredit',     label:'每日积分限额'},
   {key:'model_daily_token_limit', id:'ModelDailyToken', label:'按模型每日 Token 限额'},
+  {key:'expiring_window_days',    id:'ExpiringWindow',  label:'临期积分优先'},
 ];
 const LIMIT_SCOPES = [
   {scope:'global', prefix:'Global', label:'全局默认'},
@@ -5591,6 +5627,11 @@ function applyLimits(data){
       state.style.color = (globalValue > 0 || anyOverride) ? 'var(--accent2)' : 'var(--dim)';
     }
   }
+  const expiringToggle = document.getElementById('setExpiringWindowToggle');
+  if(expiringToggle){
+    expiringToggle.checked =
+      Number((limits.expiring_window_days || {}).global || 0) > 0;
+  }
   const toggle = document.getElementById('setLimitsPerRealm');
   if(toggle) toggle.checked = anyOverride;
   toggleLimitRealms(anyOverride);
@@ -5632,6 +5673,48 @@ async function saveLimits(btn){
   try {
     await postJSON('/settings/save', {limits: payload});
     toast('限额已保存', 'ok');
+    loadSettings();
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'bad');
+  } finally {
+    if(btn) btn.disabled = false;
+  }
+}
+
+/* 临期积分优先的开关：开着等价于「窗口天数 > 0」，关掉就写 0。窗口天数本身
+   仍可在表格里单独填（例如 3 天、14 天），开关只负责一键开/关。 */
+async function toggleExpiringWindow(el){
+  const enabled = !!(el && el.checked);
+  const input = document.getElementById('limitGlobalExpiringWindow');
+  const current = Math.floor(Number(input && input.value) || 0);
+  const value = enabled ? (current > 0 ? current : 7) : 0;
+  if(input) input.value = String(value);
+  el.disabled = true;
+  try {
+    await postJSON('/settings/save', {limits:{expiring_window_days:{global:value}}});
+    toast(enabled ? '已开启临期积分优先' : '已关闭临期积分优先', 'ok');
+    loadSettings();
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'bad');
+    el.checked = !enabled;
+  } finally {
+    el.disabled = false;
+  }
+}
+
+/* 积分数据的后台刷新间隔。分派读的是账号上缓存的积分余额，只有签到/每日活跃
+   会刷新它；这里给一个 TTL，超时的账号由后台每十分钟挑最旧的一个刷一次，填 0
+   关闭后台刷新。 */
+async function saveCreditsRefreshHours(btn){
+  const input = document.getElementById('setCreditsRefreshHours');
+  const value = Number(input && input.value);
+  if(!Number.isFinite(value) || value < 0){
+    toast('积分数据刷新间隔请填 0 或正整数（0 = 关闭后台刷新）', 'warn'); return;
+  }
+  if(btn) btn.disabled = true;
+  try {
+    await postJSON('/settings/save', {credits_refresh_hours: value});
+    toast('已保存积分数据刷新间隔', 'ok');
     loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');

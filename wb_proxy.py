@@ -1627,6 +1627,7 @@ def recent_usage(limit=100, realm=None, page=1):
 POOL = None
 SCHEDULER = None
 PRICING = None
+CREDITS_REFRESHER = None
 ACCOUNTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'accounts')
 def realm_state_file():
     """Path of the persisted realm switch.
@@ -2342,6 +2343,7 @@ def runtime_settings_view():
         "daily_credit_limit": wb_settings.daily_credit_limit(ACCOUNTS_DIR),
         "model_daily_token_limit": wb_settings.model_daily_token_limit(ACCOUNTS_DIR),
         "pricing_refresh_minutes": wb_settings.pricing_refresh_minutes(ACCOUNTS_DIR),
+        "credits_refresh_hours": wb_settings.credits_refresh_hours(ACCOUNTS_DIR),
         "pricing_variant_inherit": wb_settings.pricing_variant_inherit(ACCOUNTS_DIR),
         "pricing_enabled": wb_settings.pricing_enabled(ACCOUNTS_DIR),
         "auto_switch_product": wb_settings.auto_switch_product(ACCOUNTS_DIR),
@@ -8127,6 +8129,8 @@ class Handler(BaseHTTPRequestHandler):
                 apply_daily_credit_limit(refresh=True)
             if "model_daily_token_limit" in touched:
                 apply_model_daily_token_limit(refresh=True)
+            if "expiring_window_days" in touched and POOL:
+                POOL.apply_expiring_window()
 
         if "pricing_enabled" in payload:
             raw = payload.get("pricing_enabled")
@@ -8162,6 +8166,25 @@ class Handler(BaseHTTPRequestHandler):
                 # A running wait picks the new interval up on the spot.
                 PRICING.set_interval(stored)
             reply["pricing_refresh_minutes"] = stored
+        if "credits_refresh_hours" in payload:
+            # How stale a credit balance may get before the background refresher
+            # updates it. Zero turns the refresher off.
+            raw = payload.get("credits_refresh_hours")
+            if isinstance(raw, bool) or raw is None:
+                return self._error(400, "credits_refresh_hours must be a number",
+                                   "invalid_request_error")
+            try:
+                hours = float(raw)
+            except (TypeError, ValueError):
+                return self._error(400, "credits_refresh_hours must be a number",
+                                   "invalid_request_error")
+            if hours < 0:
+                return self._error(400, "credits_refresh_hours cannot be negative",
+                                   "invalid_request_error")
+            reply["credits_refresh_hours"] = \
+                wb_settings.set_credits_refresh_hours(ACCOUNTS_DIR, hours)
+            if CREDITS_REFRESHER:
+                CREDITS_REFRESHER.wake()
         if "pricing_variant_inherit" in payload:
             # Strictly a JSON boolean, like the other switches: "false" as a
             # string would be truthy and silently keep the feature on.
@@ -9802,6 +9825,12 @@ def _bootstrap_runtime(args):
     PRICING = wb_pricing.PriceRefresher(
         wb_settings.pricing_refresh_minutes(ACCOUNTS_DIR))
     PRICING.start()
+    # Credit balances back the expiring-credits dispatch preference, and only
+    # the sign-in / daily-activity tasks used to refresh them. The refresher
+    # keeps them current in the background so no request pays for a lookup.
+    global CREDITS_REFRESHER
+    CREDITS_REFRESHER = wb_accounts.CreditsRefresher(POOL)
+    CREDITS_REFRESHER.start()
     return api_key_generated
 
 def _report_first_run(args):

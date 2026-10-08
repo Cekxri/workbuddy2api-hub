@@ -30,6 +30,16 @@ LEGACY_PRICING_REFRESH_HOURS_KEY = "pricing_refresh_hours"
 PRICING_REFRESH_MINUTES_KEY = "pricing_refresh_minutes"
 # A month, the old cap converted: 720 hours = 43200 minutes.
 MAX_PRICING_REFRESH_MINUTES = 24 * 30 * 60
+# How stale an account's credit balance may get before the background
+# refresher updates it, in hours. Only the sign-in / daily-activity tasks used
+# to refresh balances, so a dispatch decision could rest on a balance days old.
+# 12 hours is deliberately slack: the preference is measured in days, so half a
+# day of drift moves an account by at most half a day inside a 7-day window,
+# and the wider TTL keeps the refresher from spending upstream billing calls it
+# does not need.
+DEFAULT_CREDITS_REFRESH_HOURS = 12.0
+MAX_CREDITS_REFRESH_HOURS = 24 * 30
+CREDITS_REFRESH_HOURS_KEY = "credits_refresh_hours"
 # Whether a model name may inherit its price from a suffix-stripped base
 # (deepseek-r1-0528-lkeap → deepseek-r1-0528). Missing key reads as on.
 PRICING_VARIANT_INHERIT_KEY = "pricing_variant_inherit"
@@ -476,15 +486,29 @@ def set_auth_disabled(accounts_dir, disabled):
 # global value, so an install that never touches it behaves exactly as before,
 # and one that does only ever has to reason about a single number per guard.
 LIMIT_KEYS = ("reserve_credits", "daily_token_limit",
-              "daily_credit_limit", "model_daily_token_limit")
+              "daily_credit_limit", "model_daily_token_limit",
+              "expiring_window_days")
 LIMIT_REALMS = ("intl", "cn")
 LIMIT_SCOPES = ("global",) + LIMIT_REALMS
 LIMITS_KEY = "limits"
 
+# Guards whose global default is not "off". Every key still reads 0 as off;
+# only the expiring-credits window ships enabled, because 0 would make the
+# preference a silent no-op until someone turned it on by hand.
+LIMIT_DEFAULTS = {"expiring_window_days": 7}
 
-def _empty_limit_entry():
+
+def _default_global(key):
+    """The global value an install reads before it ever saves one."""
+    try:
+        return max(0, int(LIMIT_DEFAULTS.get(key, 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _empty_limit_entry(key=None):
     """One guard: a global default plus a slot per realm (None = inherit)."""
-    return {"global": 0, "intl": None, "cn": None}
+    return {"global": _default_global(key), "intl": None, "cn": None}
 
 
 def _coerce_global(value):
@@ -519,7 +543,7 @@ def _fold_legacy_limits(data):
     limits = {}
     changed = False
     for key in LIMIT_KEYS:
-        entry = _empty_limit_entry()
+        entry = _empty_limit_entry(key)
         if key in data:
             entry["global"] = _coerce_global(data.pop(key))
             changed = True
@@ -535,8 +559,14 @@ def _normalize_limits(raw):
         entry = raw.get(key)
         if not isinstance(entry, dict):
             entry = {}
+        global_raw = entry.get("global")
+        # A missing global falls back to that guard's own default (0 for every
+        # guard but the expiring window); an explicit 0 is a real "off" and is
+        # kept as one, so a saved "off" never silently comes back on.
+        global_value = (_default_global(key) if global_raw is None
+                        else _coerce_global(global_raw))
         limits[key] = {
-            "global": _coerce_global(entry.get("global")),
+            "global": global_value,
             "intl": _coerce_override(entry.get("intl")),
             "cn": _coerce_override(entry.get("cn")),
         }
@@ -690,6 +720,58 @@ def model_daily_token_limit(accounts_dir, realm=None):
 def set_model_daily_token_limit(accounts_dir, value):
     """Persist the per-model daily token threshold. Returns the stored value."""
     return set_limit(accounts_dir, "model_daily_token_limit", "global", value)["global"]
+
+
+def expiring_window_days(accounts_dir, realm=None):
+    """Window, in days, inside which an account's soonest-expiring credit
+    package makes the pool hand that account out first, so credits about to
+    lapse are spent before they are lost.
+
+    Zero disables the preference and dispatch falls back to a plain
+    round-robin; the shipped default is 7 days.
+    """
+    return limit_value(accounts_dir, "expiring_window_days", realm)
+
+
+def set_expiring_window_days(accounts_dir, value):
+    """Persist the window. Returns the stored value."""
+    return set_limit(accounts_dir, "expiring_window_days", "global", value)["global"]
+
+
+def credits_refresh_hours(accounts_dir):
+    """How stale a credit balance may get before the background refresher
+    updates it, in hours.
+
+    The dispatch preference reads the balance, and only the sign-in and
+    daily-activity tasks used to refresh it, so an account could be judged on a
+    balance days old - or on whatever was on disk when the process started.
+    Zero disables the refresher. Anything not a number falls back to the
+    default, so a hand-edited settings.json cannot wedge the loop.
+    """
+    with _lock:
+        data = load(accounts_dir)
+        raw = data.get(CREDITS_REFRESH_HOURS_KEY)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_CREDITS_REFRESH_HOURS
+    if value < 0:
+        return DEFAULT_CREDITS_REFRESH_HOURS
+    return min(value, MAX_CREDITS_REFRESH_HOURS)
+
+
+def set_credits_refresh_hours(accounts_dir, value):
+    """Persist the refresh TTL. Returns the stored value."""
+    try:
+        hours = float(value)
+    except (TypeError, ValueError):
+        hours = 0.0
+    hours = max(0.0, min(MAX_CREDITS_REFRESH_HOURS, hours))
+    with _lock:
+        data = load(accounts_dir)
+        data[CREDITS_REFRESH_HOURS_KEY] = hours
+        save(accounts_dir, data)
+    return hours
 
 
 def _clamp_refresh_minutes(value):
