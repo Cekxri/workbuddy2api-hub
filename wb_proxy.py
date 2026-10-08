@@ -3785,77 +3785,77 @@ def translate_max_completion_tokens(obj):
     except (TypeError, ValueError):
         pass
 # ---------------------------------------------------------------------------
-# 模型封鎖表
+# 模型封锁表
 #
-# 背景：客戶端除了使用者的對話，還會自己發背景請求（記憶整理、自動複核等）。
-# 這些請求不經過模型選單，而是直接使用目錄上的模型 ID，因此可能在使用者
-# 沒有實際操作時，用付費模型消耗額度。
+# 背景：客户端除了使用者的对话，还会自己发背景请求（记忆整理、自动复核等）。
+# 这些请求不经过模型选单，而是直接使用目录上的模型 ID，因此可能在使用者
+# 没有实际操作时，用付费模型消耗额度。
 #
-# 對策（選用）：把要拒絕的模型填進 ALLOWED_MODELS / BANNED_SUBSTRING /
-#               EXTRA_BANNED；命中的請求在本機直接回 400，完全不碰上游。
-#               預設全部為空 = 不封鎖任何模型，行為與原版相同。
+# 对策（选用）：把要拒绝的模型填进 ALLOWED_MODELS / BANNED_SUBSTRING /
+#               EXTRA_BANNED；命中的请求在本机直接回 400，完全不碰上游。
+#               预设全部为空 = 不封锁任何模型，行为与原版相同。
 #
-# 調整方式：
-#   要放行某個模型 -> 加進 ALLOWED_MODELS 或 ALLOWED_PREFIXES
-#   要連非 gpt 的模型一起擋 -> 加進 EXTRA_BANNED
+# 调整方式：
+#   要放行某个模型 -> 加进 ALLOWED_MODELS 或 ALLOWED_PREFIXES
+#   要连非 gpt 的模型一起挡 -> 加进 EXTRA_BANNED
 # ---------------------------------------------------------------------------
 
-# 允許放行的模型（你要用的）
+# 允许放行的模型（你要用的）
 ALLOWED_MODELS = {
-    # 預設不封鎖任何模型；填入模型 id 即可只放行這些
+    # 预设不封锁任何模型；填入模型 id 即可只放行这些
 }
 
-# 允許前綴：涵蓋 -high / -preview / [1M] 等變體
+# 允许前缀：涵盖 -high / -preview / [1M] 等变体
 ALLOWED_PREFIXES = ()
 
-# 封鎖字串：模型名裡含這個就拒絕
+# 封锁字串：模型名里含这个就拒绝
 BANNED_SUBSTRING = ""
 
-# 額外封鎖的內部模型（不在 gpt- 前綴內，但也會燒點）
+# 额外封锁的内部模型（不在 gpt- 前缀内，但也会烧点）
 EXTRA_BANNED = set()
 
 
 def is_model_banned(model):
-    """True 表示這個模型名不該被送去上游。
+    """True 表示这个模型名不该被送去上游。
 
-    規則：ALLOWED_MODELS / ALLOWED_PREFIXES 命中就放行；其餘只要命中
-    BANNED_SUBSTRING 或 EXTRA_BANNED 就拒絕，沒命中則照常送往上游。
-    三個設定預設都是空的，所以預設不封鎖任何模型。
+    规则：ALLOWED_MODELS / ALLOWED_PREFIXES 命中就放行；其余只要命中
+    BANNED_SUBSTRING 或 EXTRA_BANNED 就拒绝，没命中则照常送往上游。
+    三个设定预设都是空的，所以预设不封锁任何模型。
     """
     if not model:
         return False
     m = str(model).strip().lower()
-    # 白名單優先（含 -high / -preview / [1M] 這類變體）
+    # 白名单优先（含 -high / -preview / [1M] 这类变体）
     if m in ALLOWED_MODELS:
         return False
     if any(m.startswith(a) for a in ALLOWED_PREFIXES):
         return False
-    # 命中封鎖字串就拒絕
+    # 命中封锁字串就拒绝
     if BANNED_SUBSTRING and BANNED_SUBSTRING in m:
         return True
-    # 其他已知會燒點的內部模型
+    # 其他已知会烧点的内部模型
     if m in EXTRA_BANNED:
         return True
     return False
 
 
 # ---------------------------------------------------------------------------
-# 背景請求攔截
+# 背景请求拦截
 #
-# Codex App 除了使用者的對話，還會自己發背景請求（記憶整理、環境建議、自動複核…）。
-# 這些請求不經過模型選單，所以單靠模型白名單擋不住 —— 它們可能直接用目錄上
-# 的付費模型（例如 gpt-6-astra 這類），在使用者沒有實際操作時照樣消耗額度。
+# Codex App 除了使用者的对话，还会自己发背景请求（记忆整理、环境建议、自动复核…）。
+# 这些请求不经过模型选单，所以单靠模型白名单挡不住 —— 它们可能直接用目录上
+# 的付费模型（例如 gpt-6-astra 这类），在使用者没有实际操作时照样消耗额度。
 #
-# Codex 會在 client_metadata 裡帶 x-codex-turn-metadata，內容像：
+# Codex 会在 client_metadata 里带 x-codex-turn-metadata，内容像：
 #   {"request_kind":"memory","thread_source":"memory_consolidation",
 #    "turn_trigger":"memory_consolidation"}
-# 這裡就靠這個標記判斷：命中背景關鍵字 -> 本地直接拒絕，不碰上游、不扣點。
+# 这里就靠这个标记判断：命中背景关键字 -> 本地直接拒绝，不碰上游、不扣点。
 # ---------------------------------------------------------------------------
 
-# 要不要攔截背景請求（False = 全部放行，維持原行為）
+# 要不要拦截背景请求（False = 全部放行，维持原行为）
 BLOCK_BACKGROUND_REQUESTS = False
 
-# 命中任一關鍵字就視為背景請求（不分大小寫、子字串比對）
+# 命中任一关键字就视为背景请求（不分大小写、子字串比对）
 BACKGROUND_TRIGGER_KEYWORDS = (
     "memory_consolidation",
     "memory-write",
@@ -3902,7 +3902,7 @@ def turn_metadata_fields(payload):
     if not isinstance(meta, dict):
         return {}
 
-    # 收集所有可能的來源/觸發欄位
+    # 收集所有可能的来源/触发栏位
     fields = {}
     for key, value in meta.items():
         if isinstance(value, str) and value.strip().startswith("{"):
@@ -3936,9 +3936,9 @@ def is_compaction_request(payload):
 
 
 def background_request_reason(payload):
-    """若這是 Codex 自己發的背景請求，回傳說明字串；否則回傳 ""。
+    """若这是 Codex 自己发的背景请求，回传说明字串；否则回传 ""。
 
-    只看 client_metadata，不碰訊息內容。
+    只看 client_metadata，不碰讯息内容。
     """
     fields = turn_metadata_fields(payload)
     if not fields:
@@ -4102,7 +4102,7 @@ def build_upstream_body(payload):
     # upstream to ignore unknown keys.
     for _marker in [k for k in body if str(k).startswith("_")]:
         body.pop(_marker, None)
-    # dict(payload) 會把原始模型名一起帶過去，所以別名要在這裡覆蓋回去
+    # dict(payload) 会把原始模型名一起带过去，所以别名要在这里覆盖回去
     body["model"] = model
     body["messages"] = messages
     # Repair tool-call pairing before the body leaves: a call whose result never
@@ -4345,19 +4345,19 @@ def gateway_hint(status, message):
 
 
 # ---------------------------------------------------------------------------
-# 出站身分自動切換
+# 出站身分自动切换
 #
-# 官方有三套身分（workbuddy / vscode / cli），端點與配額通道各不相同，
-# 對照表見 wb_identity._ENDPOINTS。
+# 官方有三套身分（workbuddy / vscode / cli），端点与配额通道各不相同，
+# 对照表见 wb_identity._ENDPOINTS。
 #
-# 某模型在某條通道被限流（429 / code 6004）時，換成另一套身分通常還能繼續
-# 用 —— 那是另一條配額線。每輪最多切 MAX_PRODUCT_SWITCHES 次，避免來回彈跳。
+# 某模型在某条通道被限流（429 / code 6004）时，换成另一套身分通常还能继续
+# 用 —— 那是另一条配额线。每轮最多切 MAX_PRODUCT_SWITCHES 次，避免来回弹跳。
 #
-# 身分會寫進憑證檔並在重啟後讀回（issue #76）：面板手動切換當下就落盤，
-# 這裡的自動切換則在下一次任何 save() 時一併寫入。
+# 身分会写进凭证档并在重启后读回（issue #76）：面板手动切换当下就落盘，
+# 这里的自动切换则在下一次任何 save() 时一并写入。
 #
-# 這個開關交給面板設定決定（issue #67），預設關閉：自動切換會吃掉重試預算，
-# 也會把帳號留在操作者沒主動選過的身分上，要用的話自己開。
+# 这个开关交给面板设定决定（issue #67），预设关闭：自动切换会吃掉重试预算，
+# 也会把帐号留在操作者没主动选过的身分上，要用的话自己开。
 # ---------------------------------------------------------------------------
 
 MAX_PRODUCT_SWITCHES = 4
@@ -4370,7 +4370,7 @@ def auto_switch_product_enabled():
 
 
 def _switch_count(account, model):
-    """這一輪已經切過幾次（60 秒內的切換算同一輪）。"""
+    """这一轮已经切过几次（60 秒内的切换算同一轮）。"""
     entry = _SWITCH_LOG.get((account.uid, model))
     if not entry:
         return 0
@@ -4381,11 +4381,11 @@ def _switch_count(account, model):
 
 
 def _try_switch_product(account, model):
-    """429 時換身分重試。回傳 True 表示已切換、可以重試。
+    """429 时换身分重试。回传 True 表示已切换、可以重试。
 
-    同一請求內最多切 MAX_PRODUCT_SWITCHES 次：
+    同一请求内最多切 MAX_PRODUCT_SWITCHES 次：
       cli -> workbuddy -> cli -> workbuddy
-    四次都不行就放棄，讓呼叫端回報真正的 429。
+    四次都不行就放弃，让呼叫端回报真正的 429。
     """
     count = _switch_count(account, model)
     if count >= MAX_PRODUCT_SWITCHES:
@@ -4414,7 +4414,7 @@ def _try_switch_product(account, model):
 
 
 def reset_switch_counter(account, model):
-    """成功之後歸零，下一次請求重新享有 4 次切換額度。"""
+    """成功之后归零，下一次请求重新享有 4 次切换额度。"""
     _SWITCH_LOG.pop((account.uid, model), None)
 
 
@@ -4653,8 +4653,8 @@ def open_upstream(payload, session_key=None, target_realm=None):
                 account.note_error("HTTP 429 (model throttled)", model=model, until=reset_at,
                                    cooldown=wait, detail=detail)
                 if auto_switch and _try_switch_product(account, model):
-                    # 換了身分就等於換了一條配額線：要把它從「已試過」拿掉，
-                    # 並清掉剛剛記下的模型冷卻，否則下一輪迴圈會找不到帳號。
+                    # 换了身分就等于换了一条配额线：要把它从「已试过」拿掉，
+                    # 并清掉刚刚记下的模型冷却，否则下一轮回圈会找不到帐号。
                     tried.discard(account.uid)
                     try:
                         account.clear_error(model=model)
@@ -5033,21 +5033,21 @@ CUSTOM_TOOL_HINT = (
 
 
 # ---------------------------------------------------------------------------
-# namespace 工具拒絕
+# namespace 工具拒绝
 #
-# Codex 會把 MCP server / 外掛工具用 type="namespace" 的形式送出來。實測行為：
-#   反代「接受」namespace 工具 -> app 把 MCP／外掛工具當成不可執行
+# Codex 会把 MCP server / 外挂工具用 type="namespace" 的形式送出来。实测行为：
+#   反代「接受」namespace 工具 -> app 把 MCP／外挂工具当成不可执行
 #                                -> 每一次呼叫都回 "unsupported call"
-#   反代「拒絕」namespace 工具 -> app 自動 fallback 成 flat function 清單
-#                                -> 全部工具恢復正常
-# （此行為在 Command Code proxy.mjs 的 CC_REJECT_NAMESPACE_TOOLS 實驗裡有記載，
-#   Agent Router 也是靠直接拒絕這類請求才正常的。）
+#   反代「拒绝」namespace 工具 -> app 自动 fallback 成 flat function 清单
+#                                -> 全部工具恢复正常
+# （此行为在 Command Code proxy.mjs 的 CC_REJECT_NAMESPACE_TOOLS 实验里有记载，
+#   Agent Router 也是靠直接拒绝这类请求才正常的。）
 #
-# 所以在這裡主動回一個格式明確的 400，逼 app 走 fallback。
-# 想還原成「照單全收」就把 REJECT_NAMESPACE_TOOLS 改成 False。
+# 所以在这里主动回一个格式明确的 400，逼 app 走 fallback。
+# 想还原成「照单全收」就把 REJECT_NAMESPACE_TOOLS 改成 False。
 # ---------------------------------------------------------------------------
 
-REJECT_NAMESPACE_TOOLS = False  # 保持關閉：正解是展開+還原 namespace
+REJECT_NAMESPACE_TOOLS = False  # 保持关闭：正解是展开+还原 namespace
 
 NAMESPACE_TOOL_MESSAGE = (
     'Unsupported tool type "namespace": this endpoint only supports flat '
@@ -5056,7 +5056,7 @@ NAMESPACE_TOOL_MESSAGE = (
 
 
 def find_namespace_tool(tools):
-    """回傳第一個 type=="namespace" 的工具名稱，沒有就回 None。"""
+    """回传第一个 type=="namespace" 的工具名称，没有就回 None。"""
     for t in tools or []:
         if isinstance(t, dict) and str(t.get("type") or "").lower() == "namespace":
             return str(t.get("name") or t.get("server_label") or "(unnamed)")
@@ -5101,19 +5101,19 @@ def _downgrade_custom_tool(tool):
 
 
 # ---------------------------------------------------------------------------
-# namespace 工具：展開 + 還原
+# namespace 工具：展开 + 还原
 #
-# 新版 Codex App 把 MCP／外掛工具用 namespace 形式送出：
+# 新版 Codex App 把 MCP／外挂工具用 namespace 形式送出：
 #   {"type":"namespace","name":"codex_app","tools":[{name:"list_threads",...}]}
 #
-# 上游 Chat Completions 只認 flat function，看不懂 namespace。
-# 但 App 回程是用 (name, namespace) 兩個欄位找執行器 ——
-# 只給 flat name，App 一律回 "unsupported call"（實測 js / list_threads 全滅）。
+# 上游 Chat Completions 只认 flat function，看不懂 namespace。
+# 但 App 回程是用 (name, namespace) 两个栏位找执行器 ——
+# 只给 flat name，App 一律回 "unsupported call"（实测 js / list_threads 全灭）。
 #
 # 三件事：
-#   1. Expand   送上游前把 namespace 展開成 flat function，記住 name -> namespace
-#   2. Normalise 模型回傳的 name 可能是 js / ns__js / ns::js，都要能解析
-#   3. Restore   回程的 function_call / custom_tool_call 補上 namespace 欄位
+#   1. Expand   送上游前把 namespace 展开成 flat function，记住 name -> namespace
+#   2. Normalise 模型回传的 name 可能是 js / ns__js / ns::js，都要能解析
+#   3. Restore   回程的 function_call / custom_tool_call 补上 namespace 栏位
 #
 # 参考：某开源 CodeBuddy/WorkBuddy 反向代理项目的 tool-namespaces 说明
 # ---------------------------------------------------------------------------
@@ -5123,13 +5123,13 @@ _NS_SEP = "__"
 
 
 def expand_namespace_tools(tools, _depth=0):
-    """把 namespace 展開成 flat function 清單，其餘工具原樣保留。
+    """把 namespace 展开成 flat function 清单，其余工具原样保留。
 
-      * 子工具可能在 tools / children / functions 任一欄位
-      * namespace 子工具常常沒有 type 欄位，展開時補成上游認得的 flat function
-      * custom / web_search 等非 function 項目原樣留下，交給既有管線處理
-      * 同名只留第一個
-      * 回傳 (flat_tools, name_to_namespace)
+      * 子工具可能在 tools / children / functions 任一栏位
+      * namespace 子工具常常没有 type 栏位，展开时补成上游认得的 flat function
+      * custom / web_search 等非 function 项目原样留下，交给既有管线处理
+      * 同名只留第一个
+      * 回传 (flat_tools, name_to_namespace)
     """
     flat = []
     mapping = {}
@@ -5192,7 +5192,7 @@ def expand_namespace_tools(tools, _depth=0):
 
 
 def resolve_namespaced_name(name, mapping):
-    """把模型回傳的名字解析回 (bare_name, namespace)。接受 js / ns__js / ns::js。"""
+    """把模型回传的名字解析回 (bare_name, namespace)。接受 js / ns__js / ns::js。"""
     if not name:
         return name, ""
     name = str(name)
@@ -5207,7 +5207,7 @@ def resolve_namespaced_name(name, mapping):
                 return tail, mapping[tail]
             return tail, head
 
-    # ns__tool 用精確比對，避免 namespace 內含 '__'（如 codex_apps__github）時切錯
+    # ns__tool 用精确比对，避免 namespace 内含 '__'（如 codex_apps__github）时切错
     for tool, ns in mapping.items():
         if name == ns + _NS_SEP + tool:
             return tool, ns
@@ -5216,10 +5216,10 @@ def resolve_namespaced_name(name, mapping):
 
 
 def stamp_namespace(item, mapping):
-    """把模型回傳的扁平工具名還原成 (name, namespace)。
+    """把模型回传的扁平工具名还原成 (name, namespace)。
 
-    串流的 response.output_item.done 事件才是客戶端派發工具呼叫的依據，
-    所以每個 function_call / custom_tool_call 項目都要在送出前補上 namespace。
+    串流的 response.output_item.done 事件才是客户端派发工具呼叫的依据，
+    所以每个 function_call / custom_tool_call 项目都要在送出前补上 namespace。
     """
     if not mapping or not isinstance(item, dict):
         return item
@@ -5231,7 +5231,7 @@ def stamp_namespace(item, mapping):
 
 
 def apply_namespace_to_calls(output_items, mapping):
-    """替 Responses 的 function_call / custom_tool_call 補上 namespace。"""
+    """替 Responses 的 function_call / custom_tool_call 补上 namespace。"""
     if not mapping or not isinstance(output_items, list):
         return output_items, 0
     fixed = 0
@@ -5313,10 +5313,10 @@ def web_tools_active(body):
 
 
 def sum_usage(total, part):
-    """把一輪的 token 用量累加起來。
+    """把一轮的 token 用量累加起来。
 
-    代跑網路工具會多跑好幾次上游，那些 token 是真的花掉的，所以記帳要加總，
-    不能讓最後一輪蓋掉前面幾輪。
+    代跑网路工具会多跑好几次上游，那些 token 是真的花掉的，所以记帐要加总，
+    不能让最后一轮盖掉前面几轮。
     """
     if not isinstance(part, dict):
         return total
@@ -5336,9 +5336,9 @@ _CITATION_MD_RE = re.compile(r"\[([^\]\n]{1,200})\]\((https?://[^)\s]+)\)")
 
 
 def build_citations(text, sources):
-    """把模型實際引用到的來源轉成 url_citation annotations。
+    """把模型实际引用到的来源转成 url_citation annotations。
 
-    只標註真的有出現在工具輸出裡的網址 —— 模型自己編的連結不會被當成引用。
+    只标注真的有出现在工具输出里的网址 —— 模型自己编的连结不会被当成引用。
     """
     text = str(text or "")
     if not text or not sources:
@@ -5393,12 +5393,12 @@ def build_citations(text, sources):
 
 def follow_up_with_tool_results(internal_calls, holder, model, session_key, t_start,
                                 drop_tools=False):
-    """執行反代自己代跑的網路工具，把結果餵回模型，回傳新的上游連線。
+    """执行反代自己代跑的网路工具，把结果喂回模型，回传新的上游连线。
 
-    drop_tools=True 表示這是最後一輪：把網路工具從工具清單收回，模型沒有東西
-    可以再呼叫，只能用手上的結果把話講完。舊版在回合用盡時合成一個
-    resp_wrapup（status=completed、output=[]）收尾，那等於把失敗偽裝成正常
-    結束，客戶端看到的就是「講到一半斷掉」——issue #43。
+    drop_tools=True 表示这是最后一轮：把网路工具从工具清单收回，模型没有东西
+    可以再呼叫，只能用手上的结果把话讲完。旧版在回合用尽时合成一个
+    resp_wrapup（status=completed、output=[]）收尾，那等于把失败伪装成正常
+    结束，客户端看到的就是「讲到一半断掉」——issue #43。
     """
     convo = holder.get("convo_messages")
     if convo is None:
@@ -5713,8 +5713,8 @@ def responses_to_chat(payload):
         flat_tools, ns_map = expand_namespace_tools(payload["tools"])
         chat["tools"] = _tools_for_chat(flat_tools)
         chat["_namespace_map"] = ns_map
-    # 客戶端宣告 web_search / web_fetch 時，把那份宣告換成我們的
-    # function（見 wb_webtools.install_tool_defs）。
+    # 客户端宣告 web_search / web_fetch 时，把那份宣告换成我们的
+    # function（见 wb_webtools.install_tool_defs）。
     # 看板开关关闭时原样透传，客户端自己的同名工具不受影响。
     if local_web_tools_enabled():
         wants = wb_webtools.client_wants_web(payload.get("tools"))
@@ -6514,7 +6514,7 @@ def stream_responses_events(upstream, model, holder):
     saw_done = False
     custom_names = set(holder.get("custom_names") or ())
     ns_map = holder.get("namespace_map") or {}
-    # 由反代代跑的網路工具呼叫，收集起來不轉發給客戶端
+    # 由反代代跑的网路工具呼叫，收集起来不转发给客户端
     _internal_calls = {}
     # Only reach for same-named calls when this request's definitions were the
     # gateway's own (see web_tools_active); otherwise they belong to the client.
@@ -6557,7 +6557,7 @@ def stream_responses_events(upstream, model, holder):
             "summary": [{"type": "summary_text", "text": "".join(reason_parts)}],
         }
     def _annotations():
-        """引用來源：只認工具真的回傳過的網址。"""
+        """引用来源：只认工具真的回传过的网址。"""
         try:
             return build_citations("".join(text_parts), holder.get("web_sources") or [])
         except Exception:
@@ -6648,7 +6648,7 @@ def stream_responses_events(upstream, model, holder):
                 full_text = clean_text
         if dsml_calls and not tool_calls_map:
             for dc in dsml_calls:
-                # DSML 形狀的網路工具呼叫一樣由反代執行
+                # DSML 形状的网路工具呼叫一样由反代执行
                 if _own_web_tools and wb_webtools.is_internal_tool(dc.get("name")):
                     entry = _internal_calls.setdefault(dc.get("id") or _new_id("call_"),
                                                        {"name": dc.get("name"), "arguments": "{}"})
@@ -6686,8 +6686,8 @@ def stream_responses_events(upstream, model, holder):
                     "output_index": out_idx,
                     "item": fc_item,
                 })
-        # 這一輪如果有代跑的網路工具呼叫，就把完成事件留給下一輪，
-        # 否則客戶端會以為整個回合已經結束（舊版是在回合用盡時補一個合成的
+        # 这一轮如果有代跑的网路工具呼叫，就把完成事件留给下一轮，
+        # 否则客户端会以为整个回合已经结束（旧版是在回合用尽时补一个合成的
         # resp_wrapup，那才是 issue #43 真正的病灶）。
         if _internal_calls:
             holder.setdefault("internal_calls", []).extend(
@@ -6695,8 +6695,8 @@ def stream_responses_events(upstream, model, holder):
                 for v in _internal_calls.values()
             )
             holder["suppress_completion"] = True
-            # 讓 App 畫出原生的「已搜尋網路」卡片：對每個代跑的呼叫送出
-            # web_search_call 項目與生命週期事件。
+            # 让 App 画出原生的「已搜寻网路」卡片：对每个代跑的呼叫送出
+            # web_search_call 项目与生命周期事件。
             for _v in _internal_calls.values():
                 _nm = str(_v.get("name") or "")
                 try:
@@ -6781,8 +6781,8 @@ def stream_responses_events(upstream, model, holder):
         if not holder.get("suppress_completion"):
             yield ev("response.completed", {"response": final})
 
-    # 只有第一輪開場。第二輪以後再送一次 response.created，客戶端會
-    # 看到同一則回應被開了兩次。
+    # 只有第一轮开场。第二轮以后再送一次 response.created，客户端会
+    # 看到同一则回应被开了两次。
     if not holder.get("suppress_lifecycle"):
         yield ev("response.created", {"response": resp_obj("in_progress")})
         yield ev("response.in_progress", {"response": resp_obj("in_progress")})
@@ -6825,7 +6825,7 @@ def stream_responses_events(upstream, model, holder):
                 fn_name = fn.get("name") or ""
                 fn_args = fn.get("arguments") or ""
                 call_id = tc.get("id") or ""
-                # web_search / web_fetch 由反代執行，不轉發給客戶端
+                # web_search / web_fetch 由反代执行，不转发给客户端
                 if idx in _internal_calls or (
                         _own_web_tools and fn_name
                         and wb_webtools.is_internal_tool(fn_name)):
@@ -6861,9 +6861,9 @@ def stream_responses_events(upstream, model, holder):
                     else:
                         item["type"] = "function_call"
                         item["arguments"] = ""
-                    # namespace 必須在 output_item.added 就帶上（照 CiderCC-UwU
-                    # proxy.mjs openItem 的做法）。事後才補只會改到 done，
-                    # 客戶端早就從 added 事件派發過了。
+                    # namespace 必须在 output_item.added 就带上（照 CiderCC-UwU
+                    # proxy.mjs openItem 的做法）。事后才补只会改到 done，
+                    # 客户端早就从 added 事件派发过了。
                     stamp_namespace(item, ns_map)
                     yield ev("response.output_item.added", {
                         "output_index": out_idx,
@@ -7392,7 +7392,7 @@ class Handler(BaseHTTPRequestHandler):
                 "请改用对应出口的 Key，或把该 Key 的出口改为「跟随面板切换」。"
                 % (model, served, name, used))
     def _banned_model_error(self, model):
-        """被封鎖的模型直接報錯，不碰上游、不扣任何點數。"""
+        """被封锁的模型直接报错，不碰上游、不扣任何点数。"""
         if not is_model_banned(model):
             return ""
         return banned_model_message(model)
@@ -8452,9 +8452,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_accounts_import(payload)
         return self._error(404, "unknown account endpoint", "invalid_request_error")
     def _route_accounts_product(self, payload):
-        """切換出站身分（cli <-> workbuddy），並即時回傳結果。
+        """切换出站身分（cli <-> workbuddy），并即时回传结果。
 
-        官方有兩套身分、兩條配額線。某條滿了可以切到另一條繼續用。
+        官方有两套身分、两条配额线。某条满了可以切到另一条继续用。
         """
         target = str(payload.get("product") or "").strip().lower()
         uid = payload.get("uid")
@@ -8477,9 +8477,9 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             try:
                 if account.set_product(target):
-                    # 立刻落盤：set_product() 只改記憶體，而面板上這一下是操作者
-                    # 的明確選擇，不能等到別的路徑（refresh / 簽到 / 查積分）剛好
-                    # 存檔才生效——切完就重啟容器的人會白白丟掉這次切換。
+                    # 立刻落盘：set_product() 只改记忆体，而面板上这一下是操作者
+                    # 的明确选择，不能等到别的路径（refresh / 签到 / 查积分）刚好
+                    # 存档才生效——切完就重启容器的人会白白丢掉这次切换。
                     try:
                         account.save(ACCOUNTS_DIR)
                     except Exception as exc:
@@ -9027,8 +9027,8 @@ class Handler(BaseHTTPRequestHandler):
         # so it cannot replay a prior turn. Silently ignoring the field would
         # answer a follow-up as if it were a fresh conversation - the client
         # gets a normal-looking reply with the context missing. Say so instead.
-        # 拒絕 namespace 工具，逼 Codex fallback 成 flat 工具清單。
-        # 不這樣做的話，MCP／外掛工具全部會被 app 判定為不可執行。
+        # 拒绝 namespace 工具，逼 Codex fallback 成 flat 工具清单。
+        # 不这样做的话，MCP／外挂工具全部会被 app 判定为不可执行。
         if payload.get("previous_response_id"):
             return self._error(
                 400,
@@ -9127,8 +9127,8 @@ class Handler(BaseHTTPRequestHandler):
                   "realm": realm}
         first_ms = None
         try:
-            # 一輪跑完如果模型要的是 web_search / web_fetch，就由反代
-            # 執行、把結果餵回去再跑一輪。客戶端從頭到尾只看到一則連續的回應。
+            # 一轮跑完如果模型要的是 web_search / web_fetch，就由反代
+            # 执行、把结果喂回去再跑一轮。客户端从头到尾只看到一则连续的回应。
             rounds = 0
             total_usage = None
             while True:
@@ -9140,13 +9140,13 @@ class Handler(BaseHTTPRequestHandler):
                         first_ms = int((time.time() - t_start) * 1000)
                     self.wfile.write(clean_responses_frame(frame))
                     self.wfile.flush()
-                # 每一輪的 token 都是真的花掉的，記帳要加總
+                # 每一轮的 token 都是真的花掉的，记帐要加总
                 total_usage = sum_usage(total_usage, holder.get("usage"))
                 internal = holder.get("internal_calls") or []
                 if not internal:
                     break
                 rounds += 1
-                # 用完就收回工具，讓模型自己收尾；這裡不合成任何事件。
+                # 用完就收回工具，让模型自己收尾；这里不合成任何事件。
                 give_up = rounds > wb_webtools.MAX_WEB_ROUNDS
                 try:
                     upstream.close()
@@ -9179,8 +9179,8 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return
         finally:
-            # 代跑多輪時 upstream 會被換掉，外層的 with 只認得最開始那一條，
-            # 最後一條要在這裡收掉。
+            # 代跑多轮时 upstream 会被换掉，外层的 with 只认得最开始那一条，
+            # 最后一条要在这里收掉。
             try:
                 upstream.close()
             except Exception:
@@ -9193,13 +9193,13 @@ class Handler(BaseHTTPRequestHandler):
         return
 
     def _responses_nonstream_response(self, upstream, model, custom_names, request_meta, fp, account, t_start, namespace_map=None, base_body=None, session_key=None, realm=None, effort=None):
-        # 跟串流那條一樣：客戶端宣告 web_search / web_fetch 時由反代代跑。
-        # 中間那幾輪對客戶端不可見，最後才組成一個 Responses 物件回傳；不這樣
-        # 做的話 web_search 的 function_call 會直接漏給客戶端，客戶端只會回
+        # 跟串流那条一样：客户端宣告 web_search / web_fetch 时由反代代跑。
+        # 中间那几轮对客户端不可见，最后才组成一个 Responses 物件回传；不这样
+        # 做的话 web_search 的 function_call 会直接漏给客户端，客户端只会回
         # 一句 unsupported call。
         sources = []
         rounds = 0
-        # 開關關閉時不攔同名呼叫：那是客戶端自己的工具。
+        # 开关关闭时不拦同名呼叫：那是客户端自己的工具。
         web_tools = web_tools_active(base_body)
         while True:
             try:
@@ -9487,8 +9487,8 @@ class Handler(BaseHTTPRequestHandler):
             _chat_slots.release()
 
     def _dispatch_chat_post(self, path, payload):
-        # 先擋背景請求：Codex 自己發的（記憶整理／環境建議／自動複核）
-        # 不算「使用者實際使用」，一律本地拒絕，不碰上游。
+        # 先挡背景请求：Codex 自己发的（记忆整理／环境建议／自动复核）
+        # 不算「使用者实际使用」，一律本地拒绝，不碰上游。
         if BLOCK_BACKGROUND_REQUESTS:
             reason = background_request_reason(payload)
             if reason:
