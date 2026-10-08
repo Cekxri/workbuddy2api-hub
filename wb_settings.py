@@ -334,22 +334,57 @@ def api_keys(accounts_dir, include_deleted=False):
     return []
 
 
-def set_api_keys(accounts_dir, keys):
-    """Replace the whole key list. Returns the saved (live) list.
+def _retired_key_entry(old):
+    """The soft-deleted form of a stored key: name and dates kept, secret gone."""
+    return {
+        "id": old["id"],
+        "name": old["name"],
+        "key": "",
+        "realm": old.get("realm") or "",
+        "models": old.get("models") or [],
+        "enabled": False,
+        "created_at": old.get("created_at") or "",
+        "deleted_at": old.get("deleted_at") or time.strftime("%Y/%m/%d %H:%M"),
+    }
 
-    Removal is a soft delete. The caller is the panel, which can only submit
-    the rows it can see and cannot see deleted ones, so an id that vanishes
-    from the submission is marked deleted instead of dropped: the usage log
-    attributes spend by id, and losing the id would dump a key's whole history
-    into "(未知 key)". The secret is wiped at that same moment, so a deleted
-    key can never authenticate again.
+
+def set_api_keys(accounts_dir, keys, delete_ids=None):
+    """Save the key list. Returns the saved (live) list.
+
+    Removal is a soft delete: the usage log attributes spend by id, so losing
+    an id would dump a key's whole history into "(未知 key)", and the secret is
+    wiped at the same moment so a deleted key can never authenticate again.
+
+    Two modes decide which stored keys get soft-deleted:
+
+    - `delete_ids is None`: replace semantics. Any stored key absent from
+      `keys` is retired. This is what an older panel relies on - it deletes a
+      row by leaving it out of the submission - so it stays the default.
+    - `delete_ids` is a list: upsert semantics. Only those ids are retired; a
+      stored key the submission does not mention is left untouched. The panel
+      uses this because its submission is whatever its in-memory rows happen
+      to be, and a list that is stale or incomplete (a second browser tab, a
+      save that raced the post-save reload, a reload that failed) must not
+      retire a key the user never removed.
     """
     with _lock:
         previous = api_keys(accounts_dir, include_deleted=True)
+        upsert = delete_ids is not None
+        drop = {str(entry_id) for entry_id in (delete_ids or [])}
+        # Upsert mode: a stored live secret, so a submitted row that lost its id
+        # (a stale panel resubmitting a key it already saved) can adopt the
+        # stored id and update that key in place instead of minting a new one
+        # and splitting its usage history in two.
+        live_secret_id = {}
+        if upsert:
+            for old in previous:
+                if old["key"] and not old.get("deleted_at"):
+                    live_secret_id.setdefault(old["key"], old["id"])
         cleaned = []
         seen = set()
         seen_ids = set()
         for raw in keys or []:
+            raw_id = str((raw or {}).get("id") or "").strip() if isinstance(raw, dict) else ""
             entry = _clean_key_entry(raw)
             if entry is None:
                 continue
@@ -357,6 +392,8 @@ def set_api_keys(accounts_dir, keys):
                 if entry["key"] in seen:
                     continue
                 seen.add(entry["key"])
+            if upsert and entry["key"] and raw_id not in live_secret_id.values():
+                entry["id"] = live_secret_id.get(entry["key"], entry["id"])
             entry["id"] = _unique_key_id(entry["id"], seen_ids)
             seen_ids.add(entry["id"])
             cleaned.append(entry)
@@ -364,16 +401,21 @@ def set_api_keys(accounts_dir, keys):
             if old["id"] in seen_ids:
                 continue
             seen_ids.add(old["id"])
-            cleaned.append({
-                "id": old["id"],
-                "name": old["name"],
-                "key": "",
-                "realm": old.get("realm") or "",
-                "models": old.get("models") or [],
-                "enabled": False,
-                "created_at": old.get("created_at") or "",
-                "deleted_at": old.get("deleted_at") or time.strftime("%Y/%m/%d %H:%M"),
-            })
+            # Upsert mode keeps a stored key the submission never mentioned.
+            # An already-deleted row is kept too: it is read-only history.
+            if upsert and old["id"] not in drop:
+                # A submitted row may already carry this exact secret (the
+                # stale submission re-sent it under a fresh id). Two live rows
+                # with one secret is the duplicate this mode exists to avoid,
+                # so the stale stored copy is retired instead.
+                if old["key"] and old["key"] in seen:
+                    cleaned.append(_retired_key_entry(old))
+                    continue
+                if old["key"]:
+                    seen.add(old["key"])
+                cleaned.append(old)
+                continue
+            cleaned.append(_retired_key_entry(old))
         data = load(accounts_dir)
         data["api_keys"] = cleaned
         # The single-key fields are now derived; drop them so there is one

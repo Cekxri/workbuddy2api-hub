@@ -7853,12 +7853,20 @@ class Handler(BaseHTTPRequestHandler):
             # The panel only ever shows a masked key, so a blank value means
             # "keep what is stored" for that row rather than "clear it".
             existing = {entry.get("id"): entry for entry in configured_keys()}
+            # A submission that carries an explicit delete list is an upsert:
+            # only the ids it names are retired. That is what stops a stale or
+            # incomplete list (a second tab, a save racing the post-save
+            # reload) from wiping a key the user never removed. An older panel
+            # sends no such field and keeps the replace-by-omission contract.
+            delete_ids = payload.get("deleted_api_key_ids")
+            upsert = isinstance(delete_ids, list)
             cleaned = []
             for item in raw:
                 if not isinstance(item, dict):
                     return self._error(400, "each api key must be an object",
                                        "invalid_request_error")
                 entry_id = str(item.get("id") or "").strip()
+                stored = existing.get(entry_id) or {}
                 value = str(item.get("key") or "").strip()
                 if not value and entry_id and entry_id in existing:
                     value = existing[entry_id].get("key") or ""
@@ -7872,7 +7880,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not value:
                     return self._error(400, "a key entry is empty - fill it in or remove the row",
                                        "invalid_request_error")
-                realm = str(item.get("realm") or "").strip().lower()
+                # A field the submission omits keeps whatever is stored, the
+                # same rule `models` already follows: an older or partial
+                # client must not silently clear a key's exit binding, its
+                # name, or its disabled state.
+                if "realm" in item:
+                    realm = str(item.get("realm") or "").strip().lower()
+                else:
+                    realm = str(stored.get("realm") or "").strip().lower()
                 if realm not in ("", "intl", "cn"):
                     return self._error(400, "realm must be intl, cn or empty",
                                        "invalid_request_error")
@@ -7882,18 +7897,29 @@ class Handler(BaseHTTPRequestHandler):
                 if "models" in item:
                     models = item.get("models")
                 else:
-                    models = existing.get(entry_id, {}).get("models")
-                created_at = item.get("created_at") or (existing.get(entry_id, {}).get("created_at") if entry_id in existing else None) or time.strftime("%Y/%m/%d %H:%M")
+                    models = stored.get("models")
+                if "name" in item:
+                    name = str(item.get("name") or "").strip()
+                else:
+                    name = str(stored.get("name") or "").strip()
+                if "enabled" in item:
+                    enabled = item.get("enabled", True) is not False
+                else:
+                    enabled = stored.get("enabled", True) is not False
+                created_at = item.get("created_at") or (stored.get("created_at") if entry_id in existing else None) or time.strftime("%Y/%m/%d %H:%M")
                 cleaned.append({
                     "id": entry_id,
-                    "name": str(item.get("name") or "").strip(),
+                    "name": name,
                     "key": value,
                     "realm": realm,
                     "models": models,
-                    "enabled": item.get("enabled", True) is not False,
+                    "enabled": enabled,
                     "created_at": created_at,
                 })
-            wb_settings.set_api_keys(ACCOUNTS_DIR, cleaned)
+            wb_settings.set_api_keys(
+                ACCOUNTS_DIR, cleaned,
+                delete_ids=(delete_ids if upsert else None),
+            )
             reply["api_keys_saved"] = len(cleaned)
         if "auth_disabled" in payload:
             wb_settings.set_auth_disabled(ACCOUNTS_DIR, payload.get("auth_disabled"))

@@ -5880,6 +5880,12 @@ async function saveLocalWebTools(btn){
 /* ---- API key list: several keys, each bound to an upstream exit ---- */
 let API_KEY_ROWS = [];
 let DELETED_KEY_ROWS = [];
+/* Ids the user removed but that are still stored server-side, pending the
+   next save. Deletion is sent explicitly (rather than by leaving the row out
+   of the list) so a submission that is stale or incomplete - a second tab, a
+   save that raced the post-save reload - can never retire a key nobody
+   removed. */
+let DELETED_KEY_IDS = [];
 
 function randomKeyValue(){
   const bytes = new Uint8Array(18);
@@ -6077,7 +6083,7 @@ async function saveSingleKey(index, btn){
 
   if(btn) btn.disabled = true;
   try {
-    await saveApiKeys();
+    if(!await saveApiKeys()) return;
     toast('API Key [' + row.name + '] 已保存', 'ok');
   } catch(e){
     toast('保存失败: ' + e.message, 'bad');
@@ -6089,9 +6095,16 @@ async function toggleKeyRow(index){
   if(!row) return;
   row.enabled = !row.enabled;
   try {
-    await saveApiKeys();
+    if(!await saveApiKeys()){
+      // The save was rejected; put the switch back so the row does not lie.
+      row.enabled = !row.enabled;
+      renderKeyRows();
+      return;
+    }
     toast(row.enabled ? 'Key [' + row.name + '] 已启用' : 'Key [' + row.name + '] 已禁用', 'ok');
   } catch(e){
+    row.enabled = !row.enabled;
+    renderKeyRows();
     toast('操作失败: ' + e.message, 'bad');
   }
 }
@@ -6100,9 +6113,16 @@ async function removeKeyRow(index){
   const row = API_KEY_ROWS[index];
   if(!row) return;
   if(!confirm('确定删除 API Key [' + (row.name || '未命名') + '] 吗？密钥会被抹掉且无法恢复；看板里它已经产生的历史用量仍会保留这个名字。')) return;
+  if(row.id && DELETED_KEY_IDS.indexOf(row.id) === -1) DELETED_KEY_IDS.push(row.id);
   API_KEY_ROWS.splice(index, 1);
   try {
-    await saveApiKeys();
+    if(!await saveApiKeys()){
+      // The server kept the key; drop the pending delete and resync the list
+      // so the row comes back instead of lingering as a phantom.
+      DELETED_KEY_IDS = DELETED_KEY_IDS.filter(id => id !== row.id);
+      await loadSettings();
+      return;
+    }
     toast('已删除 API Key', 'ok');
   } catch(e){
     toast('删除失败: ' + e.message, 'bad');
@@ -6173,30 +6193,47 @@ async function writeClipboard(text){
   if(!ok) throw new Error('浏览器拒绝了复制操作');
 }
 
+/* Save the whole visible list, plus the ids the user explicitly removed.
+   Returns true when the server accepted the save.
+
+   The submit is an upsert: the server retires only the ids named in
+   `deleted_api_key_ids` and leaves every other stored key alone. That is what
+   keeps a stale or incomplete list from wiping keys the user never removed,
+   which is how "adding a new key" used to lose the old ones. */
 async function saveApiKeys(btn){
-  const payload = API_KEY_ROWS.map(row => ({
-    id: row.id || '',
-    name: row.name || '',
-    realm: row.realm || '',
-    models: row.models || [],
-    enabled: row.enabled !== false,
-    // Blank means "keep the stored key", which the server honours per row.
-    key: (row.key || '').trim(),
-  }));
-  const newRow = API_KEY_ROWS.find(row => !row.masked && !(row.key || '').trim());
-  if(newRow){
+  const payload = API_KEY_ROWS
+    .filter(row => !row.id || DELETED_KEY_IDS.indexOf(row.id) === -1)
+    .map(row => ({
+      id: row.id || '',
+      name: row.name || '',
+      realm: row.realm || '',
+      models: row.models || [],
+      enabled: row.enabled !== false,
+      // Blank means "keep the stored key", which the server honours per row.
+      key: (row.key || '').trim(),
+    }));
+  if(API_KEY_ROWS.some(row => !row.masked && !row.id && !(row.key || '').trim())){
     toast('新增的行还没有填写 Key', 'warn');
-    return;
+    return false;
   }
   // Several callers save without going through a button (saveSingleKey,
   // toggleKeyRow, removeKeyRow), so a missing button must not abort the save.
   if(btn) btn.disabled = true;
   try {
-    await postJSON('/settings/save', {api_keys: payload});
+    await postJSON('/settings/save', {
+      api_keys: payload,
+      deleted_api_key_ids: DELETED_KEY_IDS.slice(),
+    });
+    DELETED_KEY_IDS = [];
     toast('已保存 ' + payload.length + ' 个 Key', 'ok');
-    loadSettings();
+    // Reload before returning: the next edit must start from the ids the
+    // server just minted, or a quick second save would resubmit the rows with
+    // empty ids and duplicate them.
+    await loadSettings();
+    return true;
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');
+    return false;
   } finally {
     if(btn) btn.disabled = false;
   }
