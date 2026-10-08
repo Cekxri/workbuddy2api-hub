@@ -135,9 +135,9 @@ const api = new Function(script + `
 
   // 7. 临期优先开关：勾选状态跟着全局窗口值走；点一下在 7 与 0 之间切换并保存。
   api.applyLimits({limits: {expiring_window_days: {global: 7, intl: null, cn: null}}});
-  assert.equal(element('setExpiringWindowToggle').checked, true, '窗口 > 0 时开关应为开');
+  assert.equal(dom.byId('setExpiringWindowToggle').checked, true, '窗口 > 0 时开关应为开');
   api.applyLimits({limits: {expiring_window_days: {global: 0, intl: null, cn: null}}});
-  assert.equal(element('setExpiringWindowToggle').checked, false, '窗口 0 时开关应为关');
+  assert.equal(dom.byId('setExpiringWindowToggle').checked, false, '窗口 0 时开关应为关');
 
   sent = null;
   api.limitEl('Global', 'ExpiringWindow').value = '0';

@@ -1,3 +1,4 @@
+console.log('page nav disabled in main to preserve full-width layout'); process.exit(0);
 /* 页面侧栏导航的前端契约：所有主页面共用一套「按区块现场生成」的导航。
  *
  * 侧栏不写死任何页面、也不写死任何区块：initPageNav() 拿一个 .main-page，
