@@ -33,7 +33,11 @@ MAX_PRICING_REFRESH_MINUTES = 24 * 30 * 60
 # How stale an account's credit balance may get before the background
 # refresher updates it, in hours. Only the sign-in / daily-activity tasks used
 # to refresh balances, so a dispatch decision could rest on a balance days old.
-DEFAULT_CREDITS_REFRESH_HOURS = 6.0
+# 12 hours is deliberately slack: the preference is measured in days, so half a
+# day of drift moves an account by at most half a day inside a 7-day window,
+# and the wider TTL keeps the refresher from spending upstream billing calls it
+# does not need.
+DEFAULT_CREDITS_REFRESH_HOURS = 12.0
 MAX_CREDITS_REFRESH_HOURS = 24 * 30
 CREDITS_REFRESH_HOURS_KEY = "credits_refresh_hours"
 # Whether a model name may inherit its price from a suffix-stripped base

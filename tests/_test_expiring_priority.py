@@ -16,8 +16,10 @@ import datetime
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -105,14 +107,14 @@ class ExpiringWindowSettingTests(unittest.TestCase):
 
 
 class CreditsRefreshSettingTests(unittest.TestCase):
-    def test_default_is_six_hours(self):
+    def test_default_is_twelve_hours(self):
         with tempfile.TemporaryDirectory(prefix="refresh-setting-") as directory:
-            self.assertEqual(wb_settings.credits_refresh_hours(directory), 6.0)
+            self.assertEqual(wb_settings.credits_refresh_hours(directory), 12.0)
 
     def test_round_trip(self):
         with tempfile.TemporaryDirectory(prefix="refresh-setting-") as directory:
-            self.assertEqual(wb_settings.set_credits_refresh_hours(directory, 12), 12.0)
-            self.assertEqual(wb_settings.credits_refresh_hours(directory), 12.0)
+            self.assertEqual(wb_settings.set_credits_refresh_hours(directory, 24), 24.0)
+            self.assertEqual(wb_settings.credits_refresh_hours(directory), 24.0)
             self.assertEqual(wb_settings.set_credits_refresh_hours(directory, 0), 0.0)
             self.assertEqual(wb_settings.credits_refresh_hours(directory), 0.0)
 
@@ -121,12 +123,12 @@ class CreditsRefreshSettingTests(unittest.TestCase):
             data = wb_settings.load(directory)
             data[wb_settings.CREDITS_REFRESH_HOURS_KEY] = "not a number"
             wb_settings.save(directory, data)
-            self.assertEqual(wb_settings.credits_refresh_hours(directory), 6.0)
+            self.assertEqual(wb_settings.credits_refresh_hours(directory), 12.0)
 
             data = wb_settings.load(directory)
             data[wb_settings.CREDITS_REFRESH_HOURS_KEY] = -5
             wb_settings.save(directory, data)
-            self.assertEqual(wb_settings.credits_refresh_hours(directory), 6.0)
+            self.assertEqual(wb_settings.credits_refresh_hours(directory), 12.0)
 
 
 class ExpirySemanticsTests(unittest.TestCase):
@@ -428,6 +430,174 @@ class CreditsRefresherTests(unittest.TestCase):
         _, pool = self._pool_with([account])
         refresher = wb_accounts.CreditsRefresher(pool)
         self.assertIsNone(refresher.stalest_account(refresher.ttl_seconds()))
+
+
+class RefreshCadenceTests(unittest.TestCase):
+    """刷新节奏要保守：上游计费调用有明确上界，且不会比 TTL 更勤。"""
+
+    def _pool(self, count=28, hours=12, age_hours=12):
+        directory = tempfile.mkdtemp(prefix="expiry-cadence-")
+        wb_settings.set_credits_refresh_hours(directory, hours)
+        pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+        base = time.time() - age_hours * 3600
+        accounts = []
+        for index in range(count):
+            blob = {"remain": 1, "used": 0, "size": 1, "packages": [],
+                    "updated_at": base - index * 60}
+            accounts.append(make_account("acct-%02d" % index, credits=blob))
+        pool.accounts = accounts
+        return pool, accounts
+
+    def _wire(self, accounts, clock, calls):
+        def make_fetch(account):
+            def fetch():
+                calls.append(account.uid)
+                blob = dict(account.credits or {})
+                blob["updated_at"] = clock[0]
+                account.credits = blob
+                return {"ok": True}
+            return fetch
+        for account in accounts:
+            account.fetch_credits = make_fetch(account)
+
+    def test_the_tick_is_half_an_hour(self):
+        pool, _ = self._pool(count=1)
+        refresher = wb_accounts.CreditsRefresher(pool)
+        self.assertEqual(refresher.interval_seconds, 1800)
+
+    def test_a_broken_account_is_parked_for_hours_not_minutes(self):
+        pool, _ = self._pool(count=1)
+        refresher = wb_accounts.CreditsRefresher(pool)
+        self.assertEqual(refresher._failed_cooldown, 6 * 3600)
+
+    def test_a_day_of_ticks_stays_within_the_request_budget(self):
+        pool, accounts = self._pool(count=28)
+        refresher = wb_accounts.CreditsRefresher(pool)
+        clock = [time.time()]
+        calls = []
+        self._wire(accounts, clock, calls)
+
+        start = clock[0]
+        while clock[0] - start < 24 * 3600:
+            clock[0] += refresher.interval_seconds
+            refresher.refresh_once(now=clock[0])
+
+        # 30 分钟一 tick → 一天 48 tick，每次最多一个账号 → 48 次上界，
+        # 与池子大小无关。
+        self.assertGreater(len(calls), 0)
+        self.assertLessEqual(len(calls), 48)
+        # 12 小时 TTL → 一天内任何账号都不会被刷超过两次。
+        self.assertLessEqual(max(Counter(calls).values()), 2)
+
+    def test_a_small_pool_is_not_refreshed_more_often_than_the_ttl(self):
+        pool, accounts = self._pool(count=3, hours=12, age_hours=12)
+        refresher = wb_accounts.CreditsRefresher(pool)
+        clock = [time.time()]
+        calls = []
+        self._wire(accounts, clock, calls)
+
+        start = clock[0]
+        while clock[0] - start < 24 * 3600:
+            clock[0] += refresher.interval_seconds
+            refresher.refresh_once(now=clock[0])
+
+        # 三个账号、一天：每个最多两次（12 小时 TTL），远小于 48 个 tick。
+        self.assertLessEqual(max(Counter(calls).values()), 2)
+        self.assertLessEqual(len(calls), 6)
+
+    def test_nothing_is_fetched_before_the_ttl_elapses(self):
+        pool, accounts = self._pool(count=4, hours=12, age_hours=0)
+        refresher = wb_accounts.CreditsRefresher(pool)
+        clock = [time.time()]
+        calls = []
+        self._wire(accounts, clock, calls)
+
+        start = clock[0]
+        while clock[0] - start < 11 * 3600:
+            clock[0] += refresher.interval_seconds
+            refresher.refresh_once(now=clock[0])
+        self.assertEqual(calls, [], "TTL 未到不该发请求")
+
+
+class ConcurrencyTests(unittest.TestCase):
+    """并发下池子必须线程安全：无异常、无交错、分布仍然按紧迫度。"""
+
+    def _pool(self, accounts, window=7):
+        directory = tempfile.mkdtemp(prefix="expiry-concurrent-")
+        pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+        pool.accounts = accounts
+        pool.apply_expiring_window({"global": window, "intl": window, "cn": window})
+        return pool
+
+    def test_many_threads_pick_without_errors_and_keep_the_share(self):
+        accounts = [make_account("c%02d" % i, credits=credits(1 + i * 0.7))
+                    for i in range(8)]
+        pool = self._pool(accounts)
+        results = []
+        errors = []
+        guard = threading.Lock()
+        barrier = threading.Barrier(8)
+
+        def worker():
+            local = []
+            try:
+                barrier.wait(timeout=10)
+                for _ in range(200):
+                    account = pool.pick(realm="cn")
+                    local.append(account.uid)
+            except Exception as exc:
+                with guard:
+                    errors.append(exc)
+            with guard:
+                results.extend(local)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 8 * 200)
+        counts = Counter(results)
+        # 越接近到期分到越多，并发下这个次序也要保持。
+        self.assertGreater(counts["c00"], counts["c07"])
+
+    def test_the_rotation_state_does_not_leak_accounts(self):
+        accounts = [make_account("keep%02d" % i, credits=credits(2)) for i in range(3)]
+        pool = self._pool(accounts)
+        for _ in range(20):
+            pool.pick(realm="cn")
+        self.assertTrue(set(pool._expiry_weights) <= set(a.uid for a in accounts))
+
+        pool.accounts = [accounts[0]]
+        pool.pick(realm="cn")
+        self.assertEqual(set(pool._expiry_weights), {accounts[0].uid})
+
+    def test_concurrent_fetches_on_one_account_do_not_interleave(self):
+        account = make_account("one")
+        active = []
+        overlaps = []
+        guard = threading.Lock()
+
+        def slow_fetch():
+            with guard:
+                active.append(1)
+                if len(active) > 1:
+                    overlaps.append(1)
+            time.sleep(0.02)
+            with guard:
+                active.pop()
+            return {"ok": True}
+
+        account._fetch_credits_raw = slow_fetch
+        threads = [threading.Thread(target=account.fetch_credits) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+
+        self.assertEqual(overlaps, [], "两个取数同时进行说明锁没生效")
 
 
 if __name__ == "__main__":

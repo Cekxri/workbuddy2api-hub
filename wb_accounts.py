@@ -536,6 +536,12 @@ class Account(object):
         # minted token can be overwritten by a stale snapshot.
         self._refresh_lock = threading.Lock()
         self._save_lock = threading.Lock()
+        # Guards fetch_credits(). The background refresher and the sign-in /
+        # daily-activity tasks all call it, and two overlapping fetches would
+        # each spend an upstream billing call and then race to publish the
+        # result. Separate from _refresh_lock (token refresh) and _save_lock
+        # (file write) so the three never nest into each other.
+        self._credits_lock = threading.Lock()
         # The dashboard snapshots this state while request threads update it.
         # Keep it separate from _refresh_lock, which spans network requests.
         self._throttle_lock = threading.Lock()
@@ -1612,11 +1618,18 @@ class Account(object):
 
     def fetch_credits(self):
         """Refresh the balance; a refresh that shows credits again also lifts
-        an early 402 park (revive_balance_cooldown)."""
-        res = self._fetch_credits_raw()
-        if isinstance(res, dict) and res.get("ok"):
-            self.revive_balance_cooldown()
-        return res
+        an early 402 park (revive_balance_cooldown).
+
+        Serialised per account: the background refresher and the sign-in /
+        daily-activity tasks all land here, and without the lock two
+        overlapping calls would each spend an upstream billing request and
+        then race to publish whichever answer came back second.
+        """
+        with self._credits_lock:
+            res = self._fetch_credits_raw()
+            if isinstance(res, dict) and res.get("ok"):
+                self.revive_balance_cooldown()
+            return res
 
     def _fetch_credits_raw(self):
         if self.realm == "cn":
@@ -1839,11 +1852,19 @@ class CreditsRefresher(threading.Thread):
     update, and a restart inherited whatever balance was on disk. Every tick
     this refreshes the single stalest account that is past the TTL, so the
     upstream billing calls stay bounded - one per tick - and land spread across
-    the pool instead of arriving as a burst. A failed account is parked for an
-    hour so a broken credential cannot be retried on every tick.
+    the pool instead of arriving as a burst. A failed account is parked for six
+    hours so a broken credential cannot be retried on every tick.
+
+    The request volume is capped by the tick, not by the pool size: at the
+    default half-hour tick that is at most 48 billing calls a day however many
+    accounts there are. With a 12-hour TTL a 28-account pool wants 56 calls a
+    day, so the tick - not the TTL - is the binding limit and the effective
+    refresh age settles a little above the TTL. That is the intended trade:
+    the preference is measured in days, so a few extra hours of drift is worth
+    far less than the calls it saves.
     """
 
-    def __init__(self, pool, interval_seconds=600):
+    def __init__(self, pool, interval_seconds=1800):
         super().__init__(daemon=True, name="credits-refresher")
         self.pool = pool
         self.interval_seconds = max(60.0, float(interval_seconds))
@@ -1855,7 +1876,7 @@ class CreditsRefresher(threading.Thread):
         self._wake = threading.Event()
         self._lock = threading.Lock()
         self._parked = {}          # uid -> epoch until which we skip it
-        self._failed_cooldown = 3600.0
+        self._failed_cooldown = 6 * 3600.0
 
     def log(self, msg):
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -2405,22 +2426,29 @@ class AccountPool(object):
         largest running total wins, and the winner pays back the whole round's
         weight. Equal weights degenerate to a plain rotation, so the
         same-day-expiry accounts keep alternating.
+
+        The rotation state is shared by every request thread, so the
+        read-modify-write runs under the pool lock. The `ready()` checks that
+        feed this do NOT: those can reach the network (a token refresh), and
+        holding the lock across one expiring credential would serialise every
+        dispatch in the realm behind it.
         """
         ready_uids = set(a.uid for a in ready)
-        state = dict((uid, value) for uid, value in self._expiry_weights.items()
-                     if uid in ready_uids)
-        total = 0
-        chosen = None
-        for account in ready:
-            weight = self._expiry_weight(account)
-            state[account.uid] = state.get(account.uid, 0) + weight
-            total += weight
-            if chosen is None or state[account.uid] > state[chosen.uid]:
-                chosen = account
-        if chosen is None:
-            return None
-        state[chosen.uid] -= total
-        self._expiry_weights = state
+        weights = [(account, self._expiry_weight(account)) for account in ready]
+        with self._lock:
+            state = dict((uid, value) for uid, value in self._expiry_weights.items()
+                         if uid in ready_uids)
+            total = 0
+            chosen = None
+            for account, weight in weights:
+                state[account.uid] = state.get(account.uid, 0) + weight
+                total += weight
+                if chosen is None or state[account.uid] > state[chosen.uid]:
+                    chosen = account
+            if chosen is None:
+                return None
+            state[chosen.uid] -= total
+            self._expiry_weights = state
         return chosen
 
     def _rotate_pick(self, group, exclude, model):
