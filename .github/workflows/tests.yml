@@ -52,8 +52,10 @@ jobs:
         with:
           node-version: "20"
       - name: Run every suite
-        # Each suite's full output is kept on disk next to its summary line.
-        run: python tests/run_all.py --logs suite-logs
+        # The suites are independent processes (own temp dirs, spare ports), so
+        # they overlap; each one's full output is kept on disk next to its
+        # summary line.
+        run: python tests/run_all.py --jobs 4 --logs suite-logs
       - name: Keep what the failing suites printed
         # The console shows one line per suite plus its first error; this keeps
         # the whole output of every suite, which is what a red run needs.

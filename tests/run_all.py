@@ -2,6 +2,7 @@
 
     python tests/run_all.py                  # everything
     python tests/run_all.py realm            # only suites whose name contains "realm"
+    python tests/run_all.py --jobs 1         # one suite at a time (default: min(4, cpus))
     python tests/run_all.py --timeout 300    # per-suite wall clock, seconds
     python tests/run_all.py --logs DIR       # keep every suite's full output in DIR
 
@@ -32,6 +33,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Suite summaries are printed verbatim, and some of them are written in
 # Chinese. A Windows console defaults to a legacy ANSI code page (cp1252 on
@@ -204,6 +206,8 @@ def parse_args(argv):
         description="Run every bundled suite and print one line per file.")
     parser.add_argument("pattern", nargs="?", default="",
                         help="only run suites whose name contains this")
+    parser.add_argument("--jobs", type=int, default=None, metavar="N",
+                        help="suites to run at once (default: min(4, cpus))")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
                         metavar="SEC",
                         help="per-suite wall clock (default: %(default)s)")
@@ -212,6 +216,10 @@ def parse_args(argv):
     args = parser.parse_args(argv[1:])
     if args.timeout <= 0:
         parser.error("--timeout must be a positive number of seconds")
+    if args.jobs is not None and args.jobs <= 0:
+        parser.error("--jobs must be a positive number of suites")
+    if args.jobs is None:
+        args.jobs = min(4, os.cpu_count() or 1)
     return args
 
 
@@ -255,12 +263,17 @@ def main(argv):
             return 2
 
     passed, failed, skipped, durations = [], [], [], []
+    todo = []
     for name in selected:
         if name.endswith(".js") and not have_node:
             skipped.append(name)
             print("  [skip] %-38s node is not on PATH" % name)
-            continue
-        item = run_one(name, env, args.timeout, logs_dir)
+        else:
+            todo.append(name)
+
+    def report(item):
+        """One line per suite, plus where to read more when it failed."""
+        name = item["name"]
         durations.append((item["seconds"], name))
         if item["ok"]:
             passed.append(name)
@@ -280,6 +293,21 @@ def main(argv):
                 for line in item["tail"]:
                     print("        " + line)
 
+    started = time.time()
+    if args.jobs > 1:
+        # The suites are separate processes and were made independent of each
+        # other first (own temp dirs, spare ports), so they can overlap. Reported
+        # as they finish: a run that takes a minute should not go quiet.
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            futures = [pool.submit(run_one, name, env, args.timeout, logs_dir)
+                       for name in todo]
+            for future in as_completed(futures):
+                report(future.result())
+    else:
+        for name in todo:
+            report(run_one(name, env, args.timeout, logs_dir))
+    total = time.time() - started
+
     print("")
     if durations:
         slowest = sorted(durations, reverse=True)[:3]
@@ -287,6 +315,7 @@ def main(argv):
               % ", ".join("%s %.1fs" % (name, secs) for secs, name in slowest))
     print("  %d passed, %d failed, %d skipped  (%s)"
           % (len(passed), len(failed), len(skipped), ROOT))
+    print("  total %.1fs with --jobs %d" % (total, args.jobs))
     if failed:
         print("  failed: %s" % ", ".join(failed))
         return 1
