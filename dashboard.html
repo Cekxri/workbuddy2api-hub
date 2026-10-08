@@ -706,7 +706,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     'Token 消耗与推理指标透视': 'Token usage and reasoning metrics',
     'WorkBuddy 独立桌面客户端 (WB)': 'WorkBuddy standalone desktop client (WB)',
     'WorkBuddy 用量看板': 'WorkBuddy Usage Dashboard',
-    'WorkBuddy 网关看板': 'WorkBuddy Gateway Dashboard',
+    'WorkBuddy 网关': 'WorkBuddy Gateway',
     '[task_runner] 正在启动全自动任务接取、事件上报与奖励领取流水...': '[task_runner] Starting the fully automatic task claiming, event reporting and reward claiming pipeline...',
     '] 吗？密钥会被抹掉且无法恢复；看板里它已经产生的历史用量仍会保留这个名字。': ']? The secret will be erased and cannot be recovered; the usage it already produced in the dashboard keeps this name.',
     '] 已保存': '] saved',
@@ -778,7 +778,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '今日未签到': 'Not checked in today',
     '今日次数已用尽': 'No attempts left today',
     '今日消耗 Token': 'Tokens used today',
-    '今日请求数 & 成功率': 'Requests today & success rate',
+    '今日请求数': 'Requests today',
     '今日领取:': 'Claimed today:',
     '付费用户': 'Paid user',
     '代理地址': 'Proxy address',
@@ -806,6 +806,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '全部停用': 'Disable all',
     '全部历史': 'All time',
     '全部历史 (All Time)': 'All time',
+    '全部历史消耗 Token': 'Tokens used (all time)',
     '全部启用': 'Enable all',
     '全部启用 · 状态健康': 'All enabled · healthy',
     '全部国内账号 (批量)': 'All China accounts (batch)',
@@ -1015,11 +1016,10 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '已进入面板': 'Signed in to the dashboard',
     '已领取': 'Claimed',
     '平均首字延迟': 'Average time to first token',
-    '平均首字延迟 0 ms · 耗时 0 s': 'Average time to first token 0 ms · duration 0 s',
+    '平均耗时': 'Average duration',
     '延迟 / 速度列只覆盖日志末尾的部分请求（自': 'The latency / speed columns cover only the requests at the tail of the log (from',
     '异常': 'Errors',
     '当前': 'Current',
-    '当前为「全部历史」视图，两张卡片口径相同': 'Currently in the All time view; both cards use the same basis',
     '当前仍在使用默认密码': 'You are still using the default password',
     '当前密码': 'Current password',
     '当前是默认密码 admin，建议到「设置」里修改': 'The password is still the default admin; change it in Settings',
@@ -1077,7 +1077,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '操作失败:': 'Operation failed:',
     '支持查看各账号的总消耗及调用的每个具体模型细分占比': 'Shows the total usage of each account and the breakdown per model it called',
     '收起本页导航': 'Collapse section navigation',
-    '数据指标看板': 'Analytics',
+    '数据看板': 'Analytics',
     '整点排程': 'Scheduled hourly',
     '文件不是合法 JSON': 'The file is not valid JSON',
     '文件里没有找到账号（既没有 accounts 数组，也不是单个账号）': 'No account found in the file: it is neither an accounts array nor a single account',
@@ -1145,9 +1145,13 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '本出口累计消耗': 'Total used through this exit',
     '本周': 'This week',
     '本周 (This Week)': 'This week',
+    '本周消耗 Token': 'Tokens used this week',
+    '本周请求数': 'Requests this week',
     '本地网络工具': 'Local web tools',
     '本月': 'This month',
     '本月 (This Month)': 'This month',
+    '本月消耗 Token': 'Tokens used this month',
+    '本月请求数': 'Requests this month',
     '本机桌面客户端账号': 'Desktop client accounts on this machine',
     '本次请求实际使用的推理强度': 'The reasoning effort this request actually used',
     '本页区块导航': 'Section navigation',
@@ -1296,6 +1300,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '系统': 'System',
     '累计': 'Total',
     '累计消耗 Token': 'Tokens used in total',
+    '累计请求数': 'Total requests',
     '绑定账号': 'Bound accounts',
     '结果': 'Result',
     '缓存': 'Cache',
@@ -1303,7 +1308,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '缓存命中率': 'Cache hit rate',
     '编辑': 'Edit',
     '编辑 API Key': 'Edit API key',
-    '网关与运维': 'Gateway & ops',
+    '网关与账号': 'Gateway & accounts',
     '网关实时目录里新增的模型，上游新上架的名字无需改代码就会进入下一轮取价；两次取价之间就被调用的新模型，第一笔请求即按内存里的目录': 'models newly added to the live catalog of the gateway; names upstream has just listed enter the next price fetch with no code change, and a new model called between two fetches is',
     '网关平均生成速度': 'Gateway average generation speed',
     '网关日志已清空': 'Gateway logs cleared',
@@ -1329,6 +1334,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '自动续费': 'Auto-renew',
     '自定义 (Custom)': 'Custom',
     '自定义区间': 'Custom range',
+    '自定义区间消耗 Token': 'Tokens used in the custom range',
+    '自定义区间请求数': 'Requests in the custom range',
     '至少 4 位': 'at least 4 characters',
     '若要覆盖已存在的账号，请勾选下方「覆盖同 UID 账号」。': 'To overwrite existing accounts, tick Overwrite same-UID accounts below.',
     '获得奖励 +': 'Reward earned +',
@@ -1365,7 +1372,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '请求': 'Requests',
     '请求成功率': 'Request success rate',
     '请求数': 'Requests',
-    '请求数 & 成功率': 'Requests & success rate',
     '请求次数': 'Requests',
     '请确认 WorkBuddy 桌面客户端正在运行并已登录；': 'Make sure the WorkBuddy desktop client is running and signed in;',
     '请确认后端代理服务已重启以加载新代码': 'Restart the backend proxy service to load the new code',
@@ -1458,6 +1464,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '首字': 'TTFT',
     '首字延迟': 'Time to first token',
     '首字延迟 (TTFT)': 'Time to first token (TTFT)',
+    '首个 token 的平均等待时间': 'Average wait for the first token',
     '首次取到': 'first fetched',
     '首次取到）': 'first fetched)',
     '默认出口': 'Default exit',
@@ -1517,7 +1524,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     [/有 (\d+) 把 Key 没有绑定出口/, function(m, n){ return n + ' keys have no exit bound'; }],
     [/共 (\d+) 条记录/, function(m, n){ return n + ' records'; }],
     [/第 (\d+) \/ (\d+) 页 · 共 ([\d,]+) 条记录/, function(m, a, b, c){ return 'Page ' + a + ' / ' + b + ' · ' + c + ' records'; }],
-    [/共 (\d+) 个，启用 (\d+) 个/, function(m, a, b){ return a + ' total, ' + b + ' enabled'; }]
+    [/共 (\d+) 个，启用 (\d+) 个/, function(m, a, b){ return a + ' total, ' + b + ' enabled'; }],
+    [/含失败共 ([\d,]+) 次/, function(m, n){ return n + ' calls including failures'; }],
+    [/失败 ([\d,]+) 次/, function(m, n){ return n + ' failed'; }]
   ];
   var KEYS = Object.keys(DICT);
   KEYS.sort(function(a, b){ return b.length - a.length; });
@@ -1698,13 +1707,13 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 <body>
 <header>
   <div class="header-left" style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
-    <h1><span class="dot" id="statusDot"></span>WorkBuddy 网关看板</h1>
+    <h1><span class="dot" id="statusDot"></span>WorkBuddy 网关</h1>
     <nav class="main-nav">
       <button class="main-nav-btn active" id="btnNavGateway" onclick="switchMainTab('gateway')">
-        网关与运维
+        网关与账号
       </button>
       <button class="main-nav-btn" id="btnNavAnalytics" onclick="switchMainTab('analytics')">
-        数据指标看板
+        数据看板
       </button>
       <button class="main-nav-btn" id="btnNavLogs" onclick="switchMainTab('logs')">
         运行日志
@@ -1762,7 +1771,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
      align-items:center;justify-content:center;padding:20px;background:var(--bg)">
   <div style="width:min(380px,100%);background:var(--panel);border:1px solid var(--line);
               border-radius:14px;padding:26px 24px;box-shadow:0 10px 30px rgba(15,23,42,.12)">
-    <div style="font-size:16px;font-weight:700;margin-bottom:6px">WorkBuddy 网关看板</div>
+    <div style="font-size:16px;font-weight:700;margin-bottom:6px">WorkBuddy 网关</div>
     <div style="font-size:12px;color:var(--dim);margin-bottom:18px">请输入面板访问密码</div>
     <input id="panelPwdInput" type="password" placeholder="面板密码" autocomplete="current-password"
            onkeydown="if(event.key==='Enter') submitPanelLogin()"
@@ -2016,7 +2025,12 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <div class="card accent2">
         <div class="k">网关平均生成速度</div>
         <div class="v" id="kpiAvgSpeed">0.0 <span style="font-size:12px;font-weight:400;color:var(--dim)">tok/s</span></div>
-        <div class="s" id="kpiAvgLatency">平均首字延迟 0 ms · 耗时 0 s</div>
+        <div class="s" id="kpiAvgElapsed">平均耗时 0 s</div>
+      </div>
+      <div class="card accent2">
+        <div class="k">平均首字延迟</div>
+        <div class="v" id="kpiAvgLatency">0 <span style="font-size:12px;font-weight:400;color:var(--dim)">ms</span></div>
+        <div class="s">首个 token 的平均等待时间</div>
       </div>
       <div class="card">
         <div class="k">上下文缓存命中率</div>
@@ -2024,14 +2038,19 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         <div class="s">提示词前缀命中复用比</div>
       </div>
       <div class="card">
-        <div class="k" id="kpiReqTitle">今日请求数 & 成功率</div>
+        <div class="k" id="kpiReqTitle">今日请求数</div>
         <div class="v" id="kpiReqCount">0 次</div>
-        <div class="s" id="kpiReqSuccess">成功率 100% · 失败 0</div>
+        <div class="s" id="kpiReqDetail">含失败共 0 次</div>
+      </div>
+      <div class="card">
+        <div class="k">成功率</div>
+        <div class="v" id="kpiSuccessRate">100.0%</div>
+        <div class="s" id="kpiSuccessDetail">失败 0 次</div>
       </div>
       <div class="card warn" id="kpiCostCard">
         <div class="k">API 等价花费 <span id="kpiCostRange" style="font-size:11px;font-weight:400;color:var(--dim)"></span></div>
-        <div class="v" id="kpiCostValue">—</div>
-        <div class="s" id="kpiCostDetail">按 OpenRouter 模型价折算的等价 token 花费 <span id="kpiCostToggle"></span></div>
+        <div class="v" id="kpiCostValue" style="white-space:normal;line-height:1.25">—</div>
+        <div class="s" id="kpiCostDetail">按 OpenRouter 模型价折算的等价 token 花费</div>
       </div>
     </div>
 
@@ -3302,14 +3321,16 @@ function fmtCost(cny){
   const n = costCurrency === 'USD' ? raw / (costUsdRate || 1) : raw;
   return fmtCostVal(n, costSymbol());
 }
-function fmtCostBoth(cny){
+// size 是数值字号（默认 18px，网关页的卡片用）：KPI 卡片窄，调用方可以调小。
+function fmtCostBoth(cny, size){
   if(cny == null || cny === '') return '—';
   const raw = Number(cny) || 0;
+  const fs = size || 18;
   const cnyStr = fmtCostVal(raw, '￥');
   const usdStr = fmtCostVal(raw / (costUsdRate || 7.1), '$');
-  return '<span style="color:#ef4444;font-size:18px;font-weight:700">' + cnyStr + '</span> ' +
-         '<span style="color:var(--dim);font-weight:400;font-size:14px;margin:0 3px">/</span> ' +
-         '<span style="color:#22c55e;font-size:18px;font-weight:700">' + usdStr + '</span>';
+  return '<span style="color:#ef4444;font-size:' + fs + 'px;font-weight:700">' + cnyStr + '</span> ' +
+         '<span style="color:var(--dim);font-weight:400;font-size:' + (fs - 4) + 'px;margin:0 2px">/</span> ' +
+         '<span style="color:#22c55e;font-size:' + fs + 'px;font-weight:700">' + usdStr + '</span>';
 }
 function setCostCurrency(cur){
   costCurrency = (cur === 'USD') ? 'USD' : 'CNY';
@@ -7630,35 +7651,45 @@ function renderAnalytics(data){
     '<span style="color:var(--accent)">输入 ' + fmt(sumAll.prompt_tokens || 0) + '</span>' +
     ' <span style="color:var(--dim-light)">/</span> ' + '<span style="color:var(--accent2)">输出 ' + fmt(sumAll.completion_tokens || 0) + '</span>' +
     ' <span style="color:var(--dim-light)">/</span> ' + '<span style="color:var(--think)">思考 ' + fmt(sumAll.reasoning_tokens || 0) + '</span>' +
-    // Two cards showing the same number reads as a broken counter rather than
-    // as "there is nothing older to show", so say which case it is.
-    ((analyticsRange === 'all' && (sumAll.total_tokens || 0) > 0)
-      ? '<br><span style="color:var(--dim);font-size:11px">当前为「全部历史」视图，两张卡片口径相同</span>'
-      : ((analyticsRange !== 'all' && (sumAll.total_tokens || 0) === (sumWindow.total_tokens || 0) && (sumAll.total_tokens || 0) > 0)
-        ? '<br><span style="color:var(--dim);font-size:11px">与' + rangeLabel() + '相同：所选范围已覆盖日志中的全部请求</span>'
-        : ''));
+    // 只有「所选范围已经覆盖了日志里的全部请求」这一种情况需要说明：两张卡数字
+    // 相同不是计数器坏了，而是没有更早的数据。
+    ((analyticsRange !== 'all' && (sumAll.total_tokens || 0) === (sumWindow.total_tokens || 0) && (sumAll.total_tokens || 0) > 0)
+      ? '<br><span style="color:var(--dim);font-size:11px">与' + rangeLabel() + '相同：所选范围已覆盖日志中的全部请求</span>'
+      : '');
 
-  // KPI 3: 网关平均生成速度
+  // KPI 3: 网关平均生成速度（耗时作为副文案，速度与耗时是一对）
   const elAvgSpeed = document.getElementById('kpiAvgSpeed');
-  const elAvgLatency = document.getElementById('kpiAvgLatency');
+  const elAvgElapsed = document.getElementById('kpiAvgElapsed');
   if(elAvgSpeed) elAvgSpeed.innerHTML = (currentSum.speed_avg ? currentSum.speed_avg.toFixed(1) : '0.0') + ' <span style="font-size:12px;font-weight:400;color:var(--dim)">tok/s</span>';
-  if(elAvgLatency) elAvgLatency.textContent = '平均首字延迟 ' + (currentSum.ttft_ms_avg ? fmt(currentSum.ttft_ms_avg) + ' ms' : '—') + ' · 耗时 ' + (currentSum.elapsed_ms_avg ? (currentSum.elapsed_ms_avg / 1000).toFixed(2) + ' s' : '—');
+  if(elAvgElapsed) elAvgElapsed.textContent = '平均耗时 ' + (currentSum.elapsed_ms_avg ? (currentSum.elapsed_ms_avg / 1000).toFixed(2) + ' s' : '—');
 
-  // KPI 4: 缓存命中率
+  // KPI 4: 平均首字延迟，单独一张卡
+  const elAvgLatency = document.getElementById('kpiAvgLatency');
+  if(elAvgLatency) elAvgLatency.innerHTML = currentSum.ttft_ms_avg
+    ? fmt(currentSum.ttft_ms_avg) + ' <span style="font-size:12px;font-weight:400;color:var(--dim)">ms</span>'
+    : '—';
+
+  // KPI 5: 缓存命中率
   const elCacheRate = document.getElementById('kpiCacheRate');
   if(elCacheRate) elCacheRate.textContent = (currentSum.cache_hit_pct != null ? currentSum.cache_hit_pct.toFixed(1) : '0.0') + '%';
 
-  // KPI 5: 请求数与成功率
+  // KPI 6: 请求数（成功数）与 KPI 7: 成功率，拆成两张卡
   const elReqTitle = document.getElementById('kpiReqTitle');
   const elReqCount = document.getElementById('kpiReqCount');
-  const elReqSuccess = document.getElementById('kpiReqSuccess');
-  if(elReqTitle) elReqTitle.textContent = (analyticsRange === 'all' ? '累计' : rangeLabel()) + '请求数 & 成功率';
-  const totalReq = (currentSum.requests || 0) + (currentSum.errors || 0);
-  const successPct = totalReq > 0 ? ((currentSum.requests / totalReq) * 100).toFixed(1) : '100.0';
-  if(elReqCount) elReqCount.textContent = fmt(currentSum.requests || 0) + ' 次';
-  if(elReqSuccess) elReqSuccess.textContent = '成功率 ' + successPct + '% · 失败 ' + (currentSum.errors || 0);
+  const elReqDetail = document.getElementById('kpiReqDetail');
+  const elSuccessRate = document.getElementById('kpiSuccessRate');
+  const elSuccessDetail = document.getElementById('kpiSuccessDetail');
+  if(elReqTitle) elReqTitle.textContent = (analyticsRange === 'all' ? '累计' : rangeLabel()) + '请求数';
+  const okReq = currentSum.requests || 0;
+  const errReq = currentSum.errors || 0;
+  const totalReq = okReq + errReq;
+  const successPct = totalReq > 0 ? ((okReq / totalReq) * 100).toFixed(1) : '100.0';
+  if(elReqCount) elReqCount.textContent = fmt(okReq) + ' 次';
+  if(elReqDetail) elReqDetail.textContent = '含失败共 ' + fmt(totalReq) + ' 次';
+  if(elSuccessRate) elSuccessRate.innerHTML = '<span style="color:' + (errReq ? 'var(--warn)' : 'var(--accent2)') + '">' + successPct + '%</span>';
+  if(elSuccessDetail) elSuccessDetail.textContent = '失败 ' + fmt(errReq) + ' 次';
 
-  // KPI 6: API 等价花费（跟随范围切换；货币切换按钮挂在这里）
+  // KPI 8: API 等价花费（跟随范围切换；与网关页一致，人民币与美元同时给出）
   if(data.usd_cny) costUsdRate = Number(data.usd_cny) || costUsdRate;
   const elCostRange = document.getElementById('kpiCostRange');
   const elCostValue = document.getElementById('kpiCostValue');
@@ -7667,8 +7698,8 @@ function renderAnalytics(data){
   // 关闭时卡片留在原地（观感不变），数值显示「—」：后端根本没有折算金额，
   // 这里不能把「没有数」渲染成 ￥0.000。
   if(elCostValue) elCostValue.innerHTML = PRICING_ON
-    ? fmtCost(currentSum.cost_cny != null ? currentSum.cost_cny : 0) : '—';
-  if(elCostDetail) elCostDetail.innerHTML = '按 OpenRouter 模型价折算的等价 token 花费 ' + costToggleHtml();
+    ? fmtCostBoth(currentSum.cost_cny != null ? currentSum.cost_cny : 0, 14) : '—';
+  if(elCostDetail) elCostDetail.innerHTML = '按 OpenRouter 模型价折算的等价 token 花费';
 
   // Table 1: 账号透视表
   const acctTbody = document.getElementById('analyticsAccountTbody');
