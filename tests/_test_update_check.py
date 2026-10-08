@@ -16,6 +16,8 @@ No network access: every check runs against an injected fetcher.
 
     python tests/_test_update_check.py
 """
+import email
+import io
 import json
 import os
 import sys
@@ -451,6 +453,115 @@ class RouteTests(unittest.TestCase):
             self.assertEqual(request.status, 200)
             self.assertFalse(request.reply["update_available"])
             self.assertEqual(request.reply["msg"], "更新检查未运行")
+
+
+class DispatchRequest(proxy.Handler):
+    """A real Handler driven over an in-memory socket.
+
+    The update status is management state, so which boundary refuses it is a
+    property of the dispatcher, not of the endpoint method - the request has to
+    go through the real do_GET/do_POST for the test to mean anything.
+    """
+
+    def __init__(self, path, headers=None, command="GET"):
+        self.path = path
+        self.command = command
+        self.request_version = "HTTP/1.1"
+        self.close_connection = True
+        raw = "".join("%s: %s\r\n" % item for item in (headers or {}).items())
+        self.headers = email.message_from_string(raw)
+        self.rfile = io.BytesIO(b"")
+        self.wfile = io.BytesIO()
+        self.status = None
+        self.sent_headers = []
+
+    def send_response(self, code, message=None):
+        self.status = code
+
+    def send_header(self, key, value):
+        self.sent_headers.append((key, value))
+
+    def end_headers(self):
+        pass
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def dispatch(self):
+        """Run the real dispatcher and decode the reply it wrote."""
+        getattr(self, "do_" + self.command)()
+        raw = self.wfile.getvalue()
+        return self.status, (json.loads(raw.decode("utf-8")) if raw else None)
+
+
+class UpdateRouteAccessTests(unittest.TestCase):
+    """`/updates` is management state: a panel session, not just an API key."""
+
+    KEY = "panel-secret-key"
+
+    def _accounts(self, directory, with_key):
+        if with_key:
+            wb_settings.set_api_keys(directory, [
+                {"id": "k1", "name": "k", "key": self.KEY, "enabled": True}])
+
+    def _dispatch(self, directory, path, headers=None, command="GET",
+                  with_key=False, updates=None):
+        self._accounts(directory, with_key)
+        if updates is None:
+            updates = checker(directory, FakeFetcher([release("v1.6.18")]))
+            updates.check(manual=True)   # so the status has an answer to report
+        request = DispatchRequest(path, headers=headers, command=command)
+        with mock.patch.multiple(proxy, ACCOUNTS_DIR=directory, UPDATES=updates,
+                                 API_KEY=None):
+            return request.dispatch()
+
+    def test_the_route_is_on_the_panel_boundary(self):
+        self.assertTrue(proxy.Handler._is_panel_route("/updates"))
+        self.assertTrue(proxy.Handler._is_panel_route("/updates/check"))
+
+    def test_an_anonymous_request_cannot_read_the_status(self):
+        with tempfile.TemporaryDirectory(prefix="upd-auth-") as d:
+            status, body = self._dispatch(d, "/updates")
+        self.assertEqual(status, 401)
+        self.assertIn("panel password required", body["error"]["message"])
+        self.assertNotIn("current_version", body)
+
+    def test_an_api_key_alone_cannot_read_the_status(self):
+        with tempfile.TemporaryDirectory(prefix="upd-auth-") as d:
+            status, body = self._dispatch(
+                d, "/updates",
+                headers={"Authorization": "Bearer " + self.KEY}, with_key=True)
+        self.assertEqual(status, 401)
+        self.assertIn("panel password required", body["error"]["message"])
+        self.assertNotIn("current_version", body)
+
+    def test_a_valid_panel_session_can_read_the_status(self):
+        with tempfile.TemporaryDirectory(prefix="upd-auth-") as d:
+            token = proxy.PANEL.create()
+            status, body = self._dispatch(
+                d, "/updates", headers={"X-Panel-Token": token})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["current_version"], CURRENT)
+        self.assertTrue(body["update_available"])
+
+    def test_an_invalid_panel_token_is_refused(self):
+        with tempfile.TemporaryDirectory(prefix="upd-auth-") as d:
+            status, _body = self._dispatch(
+                d, "/updates", headers={"X-Panel-Token": "not-a-session"})
+        self.assertEqual(status, 401)
+
+    def test_the_manual_check_is_panel_only_too(self):
+        with tempfile.TemporaryDirectory(prefix="upd-auth-") as d:
+            status, _body = self._dispatch(
+                d, "/updates/check", command="POST",
+                headers={"Authorization": "Bearer " + self.KEY}, with_key=True)
+            self.assertEqual(status, 401)
+            token = proxy.PANEL.create()
+            status, body = self._dispatch(
+                d, "/updates/check", command="POST",
+                headers={"X-Panel-Token": token})
+        self.assertEqual(status, 200)
+        self.assertIs(body["ok"], True)
 
 
 if __name__ == "__main__":

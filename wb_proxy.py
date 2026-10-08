@@ -7472,6 +7472,8 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if path.startswith("/settings"):
             return True
+        if path.startswith("/updates"):
+            return True
         if path.startswith("/logs"):
             return True
         return False
