@@ -239,6 +239,36 @@ CN_REALM_MARKERS = ("copilot.tencent.com", "codebuddy.cn", "workbuddy.cn")
 INTL_REALM_MARKERS = ("workbuddy.ai", "codebuddy.ai")
 REALM_MARKERS = {"cn": CN_REALM_MARKERS, "intl": INTL_REALM_MARKERS}
 
+#: 上游用一个远超任何真实计费周期的抵扣截止时间表示「不会过期」。实测
+#: （2026-10-08，31 行真实包数据）Free Plan Subscription 与个人体验版的
+#: DeductionEndTime 落在 2034/2035 年，而真实包周期是 14 天或 1 个月。超过
+#: 这个天数就按「不过期」处理，不再参与到期倒计时与临期判定。
+EXPIRY_SENTINEL_DAYS = 730
+
+
+def deduction_end_text(acc):
+    """包的「抵扣截止时间」——积分到这个点就不能再抵扣，即作废时刻。
+
+    取上游的 DeductionEndTime（epoch 毫秒）。上游没给就返回空串，调用方
+    回退到 CycleEndTime。实测 Bonus Pack / 裂变包 / 体验版的 CycleEndTime
+    与 DeductionEndTime 完全一致，但免费包/体验版这类包的 CycleEndTime 只是
+    每月的计费周期边界，两者能差 8 年——所以到期要认这个字段。
+    """
+    raw = acc.get("DeductionEndTime")
+    if raw in (None, "", 0, "0"):
+        return ""
+    try:
+        stamp = float(raw)
+    except (TypeError, ValueError):
+        return ""
+    if stamp > 1e11:
+        stamp /= 1000.0
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp))
+    except (OSError, ValueError):
+        return ""
+
+
 def realm_evidence(token, domain=None):
     """从 token / 域名里看区域，看不出返回 None（不要瞎猜成 intl）。
 
@@ -674,11 +704,13 @@ class Account(object):
         None when nothing can be said: no credit data, no package with a
         usable remainder, or an end date the upstream never gave.
 
-        Packages the upstream renews by resetting the allowance are skipped.
-        The enterprise quota is one of those - its cycleEndTime refills the
-        balance rather than voiding it - so treating it as an expiry would
-        make the account look permanently "about to lapse". Every other
-        package's end really does take the remaining credits with it.
+        Packages the upstream never really expires are skipped. The enterprise
+        quota resets its allowance rather than voiding it, and the free plan /
+        trial packs carry a deduction deadline years out, so both are marked
+        `no_expiry` where they are built. Treating either as an expiry would
+        make those accounts look permanently "about to lapse" - the free plan
+        would even look urgent at every month end, when its billing cycle rolls
+        over but its credits keep working.
         """
         credits = self.credits
         if not isinstance(credits, dict):
@@ -686,6 +718,11 @@ class Account(object):
         soonest = None
         for package in (credits.get("packages") or []):
             if not isinstance(package, dict):
+                continue
+            # `no_expiry` is the general rule; the package_code check is a
+            # belt-and-braces guard for credit blobs written before the flag
+            # existed, which are still on disk until the next refresh.
+            if package.get("no_expiry"):
                 continue
             if package.get("package_code") == "enterprise":
                 continue
@@ -1237,15 +1274,23 @@ class Account(object):
                 create_time = str(raw_create)
 
         end_time_str = acc.get("CycleEndTime") or acc.get("ExpiredTime") or ""
+        # 到期认「抵扣截止时间」而不是「周期结束时间」：周期结束只是计费周期
+        # 的边界，积分未必跟着作废。免费包/体验版这两个字段能差 8 年，只认
+        # CycleEndTime 会让这类账号每到月底都被误判成「即将到期」。
+        expire_time_str = deduction_end_text(acc) or end_time_str
         days_left = None
         is_expired = False
-        if end_time_str:
+        no_expiry = False
+        if expire_time_str:
             try:
-                clean_time = end_time_str.replace("T", " ")[:19]
+                clean_time = expire_time_str.replace("T", " ")[:19]
                 end_ts = time.mktime(time.strptime(clean_time, "%Y-%m-%d %H:%M:%S"))
                 diff_sec = end_ts - time.time()
-                days_left = round(diff_sec / 86400.0, 1)
-                is_expired = diff_sec < 0
+                if diff_sec > EXPIRY_SENTINEL_DAYS * 86400.0:
+                    no_expiry = True
+                else:
+                    days_left = round(diff_sec / 86400.0, 1)
+                    is_expired = diff_sec < 0
             except Exception:
                 pass
 
@@ -1270,6 +1315,8 @@ class Account(object):
             "auto_renew": bool(acc.get("AutoRenewFlag") or acc.get("SupportAutoRenew")),
             "cycle_start_time": acc.get("CycleStartTime") or "",
             "cycle_end_time": end_time_str,
+            "expire_time": expire_time_str,
+            "no_expiry": no_expiry,
             "days_left": days_left,
             "is_expired": is_expired,
             "status": acc.get("Status", 0),
@@ -1515,16 +1562,12 @@ class Account(object):
 
         cycle_start = str(data.get("cycleStartTime") or "")
         cycle_end = str(data.get("cycleEndTime") or data.get("cycleResetTime") or "")
+        # 企业额度按周期重置（额度回满），不是到期作废：cycleEndTime 到期后
+        # 额度是回满而不是清零。所以它不参与到期倒计时——把它算成「即将到期」
+        # 会让企业账号永远落在临期窗口里。
         days_left = None
         is_expired = False
-        if cycle_end:
-            try:
-                clean = cycle_end.replace("T", " ")[:19]
-                end_ts = time.mktime(time.strptime(clean, "%Y-%m-%d %H:%M:%S"))
-                days_left = round((end_ts - time.time()) / 86400.0, 1)
-                is_expired = (end_ts - time.time()) < 0
-            except Exception:
-                pass
+        no_expiry = True
 
         package = {
             "name": "企业额度" if size else "企业周期额度",
@@ -1543,6 +1586,8 @@ class Account(object):
             "auto_renew": True,
             "cycle_start_time": cycle_start,
             "cycle_end_time": cycle_end,
+            "expire_time": "",
+            "no_expiry": no_expiry,
             "days_left": days_left,
             "is_expired": is_expired,
             "status": 0,
@@ -1556,13 +1601,7 @@ class Account(object):
             "is_paid_user": True,
             "is_enterprise": True,
             "checkin": None,
-            "earliest_expiring": ({
-                "name": package["name"],
-                "package_code": "enterprise",
-                "remain": remain,
-                "cycle_end_time": cycle_end,
-                "days_left": days_left,
-            } if cycle_end else None),
+            "earliest_expiring": None,
             "packages": [package] if size > 0 else [],
             "updated_at": time.time(),
             "updated_iso": time.strftime("%Y-%m-%d %H:%M:%S"),
