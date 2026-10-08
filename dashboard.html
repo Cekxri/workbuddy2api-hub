@@ -1159,6 +1159,9 @@ a:hover{text-decoration:underline}
     '启用临期优先': 'Enable expiring-credits first',
     '已开启临期积分优先': 'Expiring-credits priority on',
     '已关闭临期积分优先': 'Expiring-credits priority off',
+    '积分数据刷新间隔（小时）': 'Credit refresh interval (hours)',
+    '已保存积分数据刷新间隔': 'Credit refresh interval saved',
+    '积分数据刷新间隔请填 0 或正整数（0 = 关闭后台刷新）': 'Credit refresh interval must be 0 or a positive integer (0 turns the background refresh off)',
     '每日签到 (国内版)': 'Daily check-in (China)',
     '每日签到:': 'Daily check-in:',
     '每账号每日上限（token）': 'Daily cap per account (tokens)',
@@ -2243,6 +2246,12 @@ a:hover{text-decoration:underline}
                   <span class="switch-track"></span>
                   <span style="font-size:12px">启用临期优先</span>
                 </label>
+                <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+                  <span style="font-size:12px;color:var(--dim)">积分数据刷新间隔（小时）</span>
+                  <input id="setCreditsRefreshHours" type="number" min="0" step="1" value="6"
+                         style="width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;color:var(--fg);font:inherit">
+                  <button class="sec" onclick="saveCreditsRefreshHours(this)">保存</button>
+                </div>
               </td>
               <td data-label="全局默认"><input id="limitGlobalExpiringWindow" class="limit-input" type="number" min="0" step="1" value="7"></td>
               <td class="limit-realm-col" style="display:none" data-label="国际版"><input id="limitIntlExpiringWindow" class="limit-input" type="number" min="0" step="1" placeholder="继承全局"></td>
@@ -5424,6 +5433,11 @@ async function loadSettings(showToast){
 
     applyLimits(data);
 
+      const creditsHoursInput = document.getElementById('setCreditsRefreshHours');
+      if(creditsHoursInput && data.credits_refresh_hours !== undefined){
+        creditsHoursInput.value = String(Number(data.credits_refresh_hours || 0));
+      }
+
       const pricingOn = data.pricing_enabled !== false;
       const pricingEnabledInput = document.getElementById('setPricingEnabled');
       if(pricingEnabledInput) pricingEnabledInput.checked = pricingOn;
@@ -5674,6 +5688,27 @@ async function toggleExpiringWindow(el){
     el.checked = !enabled;
   } finally {
     el.disabled = false;
+  }
+}
+
+/* 积分数据的后台刷新间隔。分派读的是账号上缓存的积分余额，只有签到/每日活跃
+   会刷新它；这里给一个 TTL，超时的账号由后台每十分钟挑最旧的一个刷一次，填 0
+   关闭后台刷新。 */
+async function saveCreditsRefreshHours(btn){
+  const input = document.getElementById('setCreditsRefreshHours');
+  const value = Number(input && input.value);
+  if(!Number.isFinite(value) || value < 0){
+    toast('积分数据刷新间隔请填 0 或正整数（0 = 关闭后台刷新）', 'warn'); return;
+  }
+  if(btn) btn.disabled = true;
+  try {
+    await postJSON('/settings/save', {credits_refresh_hours: value});
+    toast('已保存积分数据刷新间隔', 'ok');
+    loadSettings();
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'bad');
+  } finally {
+    if(btn) btn.disabled = false;
   }
 }
 

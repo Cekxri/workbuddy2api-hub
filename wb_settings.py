@@ -30,6 +30,12 @@ LEGACY_PRICING_REFRESH_HOURS_KEY = "pricing_refresh_hours"
 PRICING_REFRESH_MINUTES_KEY = "pricing_refresh_minutes"
 # A month, the old cap converted: 720 hours = 43200 minutes.
 MAX_PRICING_REFRESH_MINUTES = 24 * 30 * 60
+# How stale an account's credit balance may get before the background
+# refresher updates it, in hours. Only the sign-in / daily-activity tasks used
+# to refresh balances, so a dispatch decision could rest on a balance days old.
+DEFAULT_CREDITS_REFRESH_HOURS = 6.0
+MAX_CREDITS_REFRESH_HOURS = 24 * 30
+CREDITS_REFRESH_HOURS_KEY = "credits_refresh_hours"
 # Whether a model name may inherit its price from a suffix-stripped base
 # (deepseek-r1-0528-lkeap → deepseek-r1-0528). Missing key reads as on.
 PRICING_VARIANT_INHERIT_KEY = "pricing_variant_inherit"
@@ -684,6 +690,42 @@ def expiring_window_days(accounts_dir, realm=None):
 def set_expiring_window_days(accounts_dir, value):
     """Persist the window. Returns the stored value."""
     return set_limit(accounts_dir, "expiring_window_days", "global", value)["global"]
+
+
+def credits_refresh_hours(accounts_dir):
+    """How stale a credit balance may get before the background refresher
+    updates it, in hours.
+
+    The dispatch preference reads the balance, and only the sign-in and
+    daily-activity tasks used to refresh it, so an account could be judged on a
+    balance days old - or on whatever was on disk when the process started.
+    Zero disables the refresher. Anything not a number falls back to the
+    default, so a hand-edited settings.json cannot wedge the loop.
+    """
+    with _lock:
+        data = load(accounts_dir)
+        raw = data.get(CREDITS_REFRESH_HOURS_KEY)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_CREDITS_REFRESH_HOURS
+    if value < 0:
+        return DEFAULT_CREDITS_REFRESH_HOURS
+    return min(value, MAX_CREDITS_REFRESH_HOURS)
+
+
+def set_credits_refresh_hours(accounts_dir, value):
+    """Persist the refresh TTL. Returns the stored value."""
+    try:
+        hours = float(value)
+    except (TypeError, ValueError):
+        hours = 0.0
+    hours = max(0.0, min(MAX_CREDITS_REFRESH_HOURS, hours))
+    with _lock:
+        data = load(accounts_dir)
+        data[CREDITS_REFRESH_HOURS_KEY] = hours
+        save(accounts_dir, data)
+    return hours
 
 
 def _clamp_refresh_minutes(value):

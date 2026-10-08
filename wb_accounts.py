@@ -1831,6 +1831,136 @@ def _realm_limit(values, realm):
         return 0
 
 
+class CreditsRefresher(threading.Thread):
+    """Keep account credit balances fresh, off the request path.
+
+    The dispatch preference reads `account.credits`, which only the sign-in and
+    daily-activity tasks used to refresh: an account could go days without an
+    update, and a restart inherited whatever balance was on disk. Every tick
+    this refreshes the single stalest account that is past the TTL, so the
+    upstream billing calls stay bounded - one per tick - and land spread across
+    the pool instead of arriving as a burst. A failed account is parked for an
+    hour so a broken credential cannot be retried on every tick.
+    """
+
+    def __init__(self, pool, interval_seconds=600):
+        super().__init__(daemon=True, name="credits-refresher")
+        self.pool = pool
+        self.interval_seconds = max(60.0, float(interval_seconds))
+        self.last_run = None
+        self.last_uid = None
+        self.last_error = None
+        self.logs = []
+        self._stop_event = threading.Event()
+        self._wake = threading.Event()
+        self._lock = threading.Lock()
+        self._parked = {}          # uid -> epoch until which we skip it
+        self._failed_cooldown = 3600.0
+
+    def log(self, msg):
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.logs.append("[%s] %s" % (stamp, msg))
+        if len(self.logs) > 40:
+            self.logs = self.logs[-40:]
+
+    def stop(self):
+        self._stop_event.set()
+        self._wake.set()
+
+    def wake(self):
+        self._wake.set()
+
+    def ttl_seconds(self):
+        """The current TTL in seconds - the one place the unit is applied."""
+        try:
+            import wb_settings
+            hours = wb_settings.credits_refresh_hours(self.pool.dir)
+        except Exception:
+            return 0.0
+        try:
+            return max(0.0, float(hours)) * 3600.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    def stalest_account(self, ttl_seconds, now=None):
+        """The account whose balance is oldest and past the TTL, or None.
+
+        A balance that was never fetched counts as infinitely old, so a fresh
+        install fills in its accounts before any timed-out one is revisited.
+        """
+        now = time.time() if now is None else now
+        with self.pool._lock:
+            accounts = list(self.pool.accounts)
+        chosen = None
+        chosen_age = None
+        for account in accounts:
+            if not account.enabled or not account.access_token:
+                continue
+            if self._parked.get(account.uid, 0) > now:
+                continue
+            credits = account.credits
+            updated = credits.get("updated_at") if isinstance(credits, dict) else None
+            if isinstance(updated, (int, float)):
+                age = now - updated
+            else:
+                age = float("inf")
+            if age < ttl_seconds:
+                continue
+            if chosen_age is None or age > chosen_age:
+                chosen, chosen_age = account, age
+        return chosen
+
+    def refresh_once(self, now=None):
+        """Refresh one stale account; returns its uid, or None when none was due."""
+        ttl = self.ttl_seconds()
+        if ttl <= 0:
+            return None
+        with self._lock:
+            account = self.stalest_account(ttl, now=now)
+            if account is None:
+                return None
+            try:
+                result = account.fetch_credits()
+            except Exception as exc:
+                result = {"ok": False, "error": str(exc)}
+            if not isinstance(result, dict) or not result.get("ok"):
+                error = (result or {}).get("error") or "unknown error"
+                self._parked[account.uid] = \
+                    (time.time() if now is None else now) + self._failed_cooldown
+                self.last_error = str(error)
+                self.log("刷新 %s 积分失败，暂缓一小时: %s"
+                         % (account.uid[:8], error))
+                return None
+            self.last_run = time.time() if now is None else now
+            self.last_uid = account.uid
+            self.last_error = None
+            self.log("已刷新 %s 的积分（%s）"
+                     % (account.uid[:8], (account.credits or {}).get("updated_iso")))
+            return account.uid
+
+    def run(self):
+        while not self._stop_event.is_set():
+            self._wake.wait(timeout=self.interval_seconds)
+            if self._stop_event.is_set():
+                break
+            self._wake.clear()
+            try:
+                self.refresh_once()
+            except Exception as exc:
+                self.last_error = str(exc)
+                self.log("刷新循环异常: %s" % exc)
+
+    def status(self):
+        return {
+            "ttl_hours": round(self.ttl_seconds() / 3600.0, 2),
+            "interval_seconds": self.interval_seconds,
+            "last_run": self.last_run,
+            "last_uid": self.last_uid,
+            "last_error": self.last_error,
+            "logs": self.logs[-10:],
+        }
+
+
 class AccountPool(object):
     def __init__(self, directory, log=None):
         self.dir = directory
@@ -1839,6 +1969,10 @@ class AccountPool(object):
         self.logins = {}
         self._lock = threading.RLock()
         self._cursor = 0
+        # Smooth weighted round-robin state for the expiring-credits window,
+        # keyed by uid (see _weighted_pick). Runtime-only: a restart just
+        # restarts the rotation.
+        self._expiry_weights = {}
         self.affinity = SessionAffinity()
 
     def load(self):
@@ -2229,29 +2363,65 @@ class AccountPool(object):
         return self._rotate_pick(snapshot, exclude, model)
 
     def _pick_expiring_first(self, snapshot, exclude, model):
-        """Serve the soonest-expiring accounts first, or None when none can.
+        """Serve the in-window accounts first, or None when none can.
 
-        Accounts are bucketed by whole days-to-expiry, and the earliest bucket
-        that has a ready account wins. Bucketing (rather than a strict
-        soonest-first order) keeps accounts that lapse on the same day on the
-        round-robin, so a burst of traffic does not land on one account and
-        draw an upstream rate limit.
+        Within the window the pick is a weighted round-robin: an account's
+        share grows the closer its credits are to lapsing, but no account is
+        ever handed the whole window. A strict soonest-first order would put
+        every request on the one account expiring tomorrow until the upstream
+        rate-limited it, which is exactly the burst this spreads out; weighting
+        keeps the preference while giving the accounts expiring later a real
+        share. Accounts that lapse on the same day carry the same weight, so
+        they keep taking turns.
         """
         urgent = [a for a in snapshot if a.in_expiring_window()]
         if not urgent:
             return None
-        urgent.sort(key=lambda a: int(a.soonest_expiring_days() or 0))
-        index = 0
-        while index < len(urgent):
-            days = int(urgent[index].soonest_expiring_days() or 0)
-            bucket = []
-            while index < len(urgent) and int(urgent[index].soonest_expiring_days() or 0) == days:
-                bucket.append(urgent[index])
-                index += 1
-            account = self._rotate_pick(bucket, exclude, model)
-            if account is not None:
-                return account
-        return None
+        ready = [a for a in urgent if a.uid not in exclude and a.ready(model=model)]
+        if not ready:
+            return None
+        return self._weighted_pick(ready)
+
+    def _expiry_weight(self, account):
+        """How much of the window's traffic this account should take.
+
+        Linear in how close the credits are to lapsing, floored at 1 so an
+        account at the far edge of the window still gets served rather than
+        starved until the others run dry.
+        """
+        try:
+            window = int(account.expiring_window_days or 0)
+        except (TypeError, ValueError):
+            window = 0
+        days = account.soonest_expiring_days()
+        if days is None:
+            return 1
+        return max(1, int(round(window - days)) + 1)
+
+    def _weighted_pick(self, ready):
+        """Smooth weighted round-robin over the ready accounts.
+
+        nginx's algorithm: every account accrues its weight each pick, the
+        largest running total wins, and the winner pays back the whole round's
+        weight. Equal weights degenerate to a plain rotation, so the
+        same-day-expiry accounts keep alternating.
+        """
+        ready_uids = set(a.uid for a in ready)
+        state = dict((uid, value) for uid, value in self._expiry_weights.items()
+                     if uid in ready_uids)
+        total = 0
+        chosen = None
+        for account in ready:
+            weight = self._expiry_weight(account)
+            state[account.uid] = state.get(account.uid, 0) + weight
+            total += weight
+            if chosen is None or state[account.uid] > state[chosen.uid]:
+                chosen = account
+        if chosen is None:
+            return None
+        state[chosen.uid] -= total
+        self._expiry_weights = state
+        return chosen
 
     def _rotate_pick(self, group, exclude, model):
         """Round-robin one group of accounts, advancing the shared cursor."""

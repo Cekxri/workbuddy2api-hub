@@ -1,15 +1,22 @@
 """临期积分优先分派：快到期的积分先被消耗。
 
-分派原本是纯轮询。加了这条偏好之后，活跃积分包进入窗口（默认 7 天）的账号
-先被交出去，窗口内按到期先后使用，同一天到期的账号之间仍轮询——所以既要证明
-「临期账号确实被优先」，也要证明「没有临期账号时行为与原来完全一致」，还要
-证明「看不懂的积分数据不会被当成临期」。
+分派原本是纯轮询。加了这条偏好之后，活跃积分包进入窗口（默认 7 天）的账号先
+被交出去，窗口内按紧迫度加权轮询——越接近到期分到的流量越多，但没人独占；
+窗口外的账号只在窗口内无人可用时兜底。既要证明「临期账号确实被优先」，也要
+证明「没有临期账号时行为与原来完全一致」，还要证明「看不懂的积分数据不会被
+当成临期」。
+
+到期语义按实测校正：认 DeductionEndTime（抵扣截止时间）而不是 CycleEndTime
+（计费周期结束）。免费包/体验版这两个字段能差 8 年，只认周期结束会让这些账号
+每到月底都被误判成临期。
 
 Run with the current interpreter (python tests/run_all.py expiring).
 """
+import datetime
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,7 +33,7 @@ def make_account(uid, realm="cn", credits=None, **extra):
     return wb_accounts.Account(data)
 
 
-def credits(*days, package_code="package", remain=100):
+def credits(*days, package_code="package", remain=100, no_expiry=False):
     """A credits blob whose packages expire in the given days.
 
     A None day stands for a package the upstream gave no end date for.
@@ -40,10 +47,39 @@ def credits(*days, package_code="package", remain=100):
             "used": 0,
             "size": remain,
             "days_left": day,
+            "no_expiry": no_expiry,
             "is_expired": day is not None and day < 0,
         })
     total = remain * len(packages)
     return {"remain": total, "used": 0, "size": total, "packages": packages}
+
+
+def _local_text(offset_days, base=None):
+    stamp = (base or datetime.datetime.now()) + datetime.timedelta(days=offset_days)
+    return stamp.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _epoch_ms(offset_days, base=None):
+    stamp = (base or datetime.datetime.now()) + datetime.timedelta(days=offset_days)
+    return int(stamp.timestamp() * 1000)
+
+
+def raw_package(cycle_end, deduction_end=None, size=100, remain=100, code="pkg"):
+    acc = {
+        "PackageName": "P", "PackageCode": code,
+        "CycleCapacitySize": size, "CycleCapacityRemain": remain,
+        "CycleCapacityUsed": size - remain,
+        "CycleEndTime": cycle_end,
+    }
+    if deduction_end is not None:
+        acc["DeductionEndTime"] = deduction_end
+    return acc
+
+
+def built_package(cycle_end, deduction_end):
+    """A package the way _parse_package_account would have built it."""
+    return make_account("helper")._parse_package_account(
+        raw_package(cycle_end=cycle_end, deduction_end=deduction_end))
 
 
 class ExpiringWindowSettingTests(unittest.TestCase):
@@ -68,6 +104,77 @@ class ExpiringWindowSettingTests(unittest.TestCase):
             self.assertEqual(wb_settings.model_daily_token_limit(directory), 0)
 
 
+class CreditsRefreshSettingTests(unittest.TestCase):
+    def test_default_is_six_hours(self):
+        with tempfile.TemporaryDirectory(prefix="refresh-setting-") as directory:
+            self.assertEqual(wb_settings.credits_refresh_hours(directory), 6.0)
+
+    def test_round_trip(self):
+        with tempfile.TemporaryDirectory(prefix="refresh-setting-") as directory:
+            self.assertEqual(wb_settings.set_credits_refresh_hours(directory, 12), 12.0)
+            self.assertEqual(wb_settings.credits_refresh_hours(directory), 12.0)
+            self.assertEqual(wb_settings.set_credits_refresh_hours(directory, 0), 0.0)
+            self.assertEqual(wb_settings.credits_refresh_hours(directory), 0.0)
+
+    def test_junk_and_negative_fall_back_to_the_default(self):
+        with tempfile.TemporaryDirectory(prefix="refresh-setting-") as directory:
+            data = wb_settings.load(directory)
+            data[wb_settings.CREDITS_REFRESH_HOURS_KEY] = "not a number"
+            wb_settings.save(directory, data)
+            self.assertEqual(wb_settings.credits_refresh_hours(directory), 6.0)
+
+            data = wb_settings.load(directory)
+            data[wb_settings.CREDITS_REFRESH_HOURS_KEY] = -5
+            wb_settings.save(directory, data)
+            self.assertEqual(wb_settings.credits_refresh_hours(directory), 6.0)
+
+
+class ExpirySemanticsTests(unittest.TestCase):
+    """到期认 DeductionEndTime，不认 CycleEndTime（实测校正）。"""
+
+    def test_deduction_end_wins_over_the_cycle_end(self):
+        account = make_account("s1")
+        package = account._parse_package_account(raw_package(
+            cycle_end=_local_text(20), deduction_end=_epoch_ms(3)))
+        self.assertAlmostEqual(package["days_left"], 3.0, delta=0.2)
+        self.assertFalse(package["no_expiry"])
+
+    def test_a_far_future_deduction_end_means_no_expiry(self):
+        # 免费包/体验版：周期月底就结束，抵扣截止却远在 8 年后。
+        account = make_account("s2")
+        package = account._parse_package_account(raw_package(
+            cycle_end=_local_text(23), deduction_end=_epoch_ms(365 * 8)))
+        self.assertTrue(package["no_expiry"])
+        self.assertIsNone(package["days_left"])
+        self.assertFalse(package["is_expired"])
+
+    def test_missing_deduction_end_falls_back_to_the_cycle_end(self):
+        account = make_account("s3")
+        package = account._parse_package_account(raw_package(
+            cycle_end=_local_text(4)))
+        self.assertAlmostEqual(package["days_left"], 4.0, delta=0.2)
+        self.assertFalse(package["no_expiry"])
+
+    def test_the_free_plan_no_longer_looks_urgent(self):
+        # 这条修正的实际收益：月底的免费包不该让账号进临期窗口。
+        account = make_account("s4", credits={
+            "remain": 100, "used": 0, "size": 100,
+            "packages": [built_package(_local_text(23), _epoch_ms(365 * 8))],
+        })
+        account.expiring_window_days = 7
+        self.assertFalse(account.in_expiring_window())
+
+    def test_soonest_expiring_days_skips_no_expiry_packages(self):
+        account = make_account("s5", credits={
+            "remain": 200, "used": 0, "size": 200,
+            "packages": [
+                built_package(_local_text(23), _epoch_ms(365 * 8)),
+                built_package(_local_text(5), _epoch_ms(5)),
+            ],
+        })
+        self.assertAlmostEqual(account.soonest_expiring_days(), 5.0, delta=0.2)
+
+
 class SoonestExpiringTests(unittest.TestCase):
     def test_picks_the_earliest_live_package(self):
         account = make_account("u1", credits=credits(9, 2.5, 4))
@@ -80,9 +187,12 @@ class SoonestExpiringTests(unittest.TestCase):
         self.assertIsNone(account.soonest_expiring_days())
 
     def test_skips_the_enterprise_quota(self):
-        # 企业额度的 cycleEndTime 是周期重置（额度回满），不是积分作废，
-        # 拿它当临期信号会让企业账号永远「即将到期」。
+        # 企业额度的 cycleEndTime 是周期重置（额度回满），不是积分作废。
         account = make_account("u3", credits=credits(1, package_code="enterprise"))
+        self.assertIsNone(account.soonest_expiring_days())
+
+    def test_skips_packages_marked_no_expiry(self):
+        account = make_account("u3b", credits=credits(1, no_expiry=True))
         self.assertIsNone(account.soonest_expiring_days())
 
     def test_unknown_data_is_not_a_preference(self):
@@ -122,12 +232,6 @@ class PickPrefersExpiringTests(unittest.TestCase):
         later = make_account("later", credits=credits(40))
         pool = self._pool([later, soon])
         self.assertEqual({pool.pick(realm="cn").uid for _ in range(6)}, {"soon"})
-
-    def test_earliest_bucket_wins_over_a_later_one(self):
-        in_two = make_account("in-two", credits=credits(2))
-        in_five = make_account("in-five", credits=credits(5))
-        pool = self._pool([in_five, in_two])
-        self.assertEqual({pool.pick(realm="cn").uid for _ in range(4)}, {"in-two"})
 
     def test_same_day_accounts_still_take_turns(self):
         # 同一天到期的两个账号之间必须轮询，否则一拨流量会全压在单个账号上。
@@ -176,6 +280,35 @@ class PickPrefersExpiringTests(unittest.TestCase):
         self.assertEqual({pool.pick(realm="cn").uid for _ in range(4)}, {"cn-later"})
 
 
+class LoadSpreadTests(unittest.TestCase):
+    """窗口内不再由最早到期的账号独占。"""
+
+    def _pool(self, accounts, window=7):
+        directory = tempfile.mkdtemp(prefix="expiry-spread-")
+        pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+        pool.accounts = accounts
+        pool.apply_expiring_window({"global": window, "intl": window, "cn": window})
+        return pool
+
+    def test_the_sooner_account_gets_the_larger_share_not_everything(self):
+        sooner = make_account("sooner", credits=credits(1))
+        later = make_account("later", credits=credits(6))
+        pool = self._pool([sooner, later])
+        picks = [pool.pick(realm="cn").uid for _ in range(60)]
+        sooner_count = picks.count("sooner")
+        later_count = picks.count("later")
+        self.assertGreater(later_count, 0, "较晚到期的账号也要分到流量，否则就是独占")
+        self.assertGreater(sooner_count, later_count, "越接近到期应分到更多流量")
+        self.assertGreater(sooner_count, later_count * 1.5)
+
+    def test_a_lone_window_account_still_serves_everything(self):
+        # 窗口内只有一个账号时它当然全接——负载分散是窗口内的事。
+        only = make_account("only", credits=credits(1))
+        outside = make_account("outside", credits=credits(60))
+        pool = self._pool([only, outside])
+        self.assertEqual({pool.pick(realm="cn").uid for _ in range(6)}, {"only"})
+
+
 class SessionAffinityTests(unittest.TestCase):
     def _pool(self, accounts):
         directory = tempfile.mkdtemp(prefix="expiry-affinity-")
@@ -221,6 +354,80 @@ class ApplyWindowTests(unittest.TestCase):
             pool.load()
             self.assertEqual(pool.accounts[0].expiring_window_days, 5)
             self.assertTrue(pool.accounts[0].in_expiring_window())
+
+
+class CreditsRefresherTests(unittest.TestCase):
+    def _pool_with(self, accounts, hours=6):
+        directory = tempfile.mkdtemp(prefix="expiry-refresh-")
+        wb_settings.set_credits_refresh_hours(directory, hours)
+        pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+        pool.accounts = accounts
+        return directory, pool
+
+    def _account(self, uid, age_seconds, fetch=None):
+        if age_seconds is None:
+            blob = None
+        else:
+            blob = {"remain": 1, "used": 0, "size": 1, "packages": [],
+                    "updated_at": time.time() - age_seconds}
+        account = make_account(uid, credits=blob)
+        if fetch is not None:
+            account.fetch_credits = fetch
+        return account
+
+    def test_picks_the_stalest_account_past_the_ttl(self):
+        fresh = self._account("fresh", 60)
+        old = self._account("old", 7 * 3600)
+        _, pool = self._pool_with([fresh, old])
+        refresher = wb_accounts.CreditsRefresher(pool)
+        self.assertEqual(refresher.stalest_account(refresher.ttl_seconds()).uid, "old")
+
+    def test_never_fetched_counts_as_the_oldest(self):
+        fetched = self._account("fetched", 7 * 3600)
+        never = self._account("never", None)
+        _, pool = self._pool_with([fetched, never])
+        refresher = wb_accounts.CreditsRefresher(pool)
+        self.assertEqual(refresher.stalest_account(refresher.ttl_seconds()).uid, "never")
+
+    def test_nothing_is_due_inside_the_ttl(self):
+        _, pool = self._pool_with([self._account("fresh", 60)])
+        refresher = wb_accounts.CreditsRefresher(pool)
+        self.assertIsNone(refresher.stalest_account(refresher.ttl_seconds()))
+        self.assertIsNone(refresher.refresh_once())
+
+    def test_ttl_zero_turns_the_refresher_off(self):
+        called = []
+        account = self._account("off", None,
+                                fetch=lambda: called.append(1) or {"ok": True})
+        _, pool = self._pool_with([account], hours=0)
+        refresher = wb_accounts.CreditsRefresher(pool)
+        self.assertIsNone(refresher.refresh_once())
+        self.assertEqual(called, [])
+
+    def test_a_successful_refresh_records_the_uid(self):
+        account = self._account("ok", None, fetch=lambda: {"ok": True})
+        _, pool = self._pool_with([account])
+        refresher = wb_accounts.CreditsRefresher(pool)
+        self.assertEqual(refresher.refresh_once(), "ok")
+        self.assertEqual(refresher.last_uid, "ok")
+        self.assertIsNone(refresher.last_error)
+
+    def test_a_failure_parks_the_account(self):
+        account = self._account("bad", None,
+                                fetch=lambda: {"ok": False, "error": "boom"})
+        _, pool = self._pool_with([account])
+        refresher = wb_accounts.CreditsRefresher(pool)
+        self.assertIsNone(refresher.refresh_once())
+        self.assertEqual(refresher.last_error, "boom")
+        # 失败后一小时内不再重试同一个账号，免得每个 tick 都打上游。
+        self.assertIsNone(refresher.stalest_account(refresher.ttl_seconds()))
+
+    def test_disabled_accounts_are_skipped(self):
+        account = self._account("off-account", None)
+        account.enabled = False
+        _, pool = self._pool_with([account])
+        refresher = wb_accounts.CreditsRefresher(pool)
+        self.assertIsNone(refresher.stalest_account(refresher.ttl_seconds()))
 
 
 if __name__ == "__main__":
