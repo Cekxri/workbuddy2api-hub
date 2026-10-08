@@ -692,11 +692,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '0 个 Key': '0 keys',
     '0 个 Key 生效': '0 keys active',
     '0 次': '0 calls',
-    '429 自动切换出站身份': '429 auto-switch outbound identity',
-    '429 自动切换出站身分': '429 auto-switch outbound identity',
     '7天内到期': 'expiring within 7 days',
     'API Key 不能为空': 'API Key cannot be empty',
-    'API Key 与出口绑定': 'API Key exit binding',
     'API Key 内容': 'API Key value',
     'API 等价花费': 'API-equivalent cost',
     'CNY（策略记录的汇率，': 'CNY (rate recorded with the policy,',
@@ -1148,7 +1145,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '本出口累计消耗': 'Total used through this exit',
     '本周': 'This week',
     '本周 (This Week)': 'This week',
-    '本地网络工具 (web_search / web_fetch)': 'Local web tools (web_search / web_fetch)',
+    '本地网络工具': 'Local web tools',
     '本月': 'This month',
     '本月 (This Month)': 'This month',
     '本机桌面客户端账号': 'Desktop client accounts on this machine',
@@ -1171,6 +1168,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '槽位还没有填写代理地址': 'The slot has no proxy address yet',
     '模型': 'Model',
     '模型 ID': 'Model ID',
+    '模型价格估算': 'Model price estimate',
     '模型名称': 'Model name',
     '模型性能指标与用量一览': 'Model performance and usage',
     '模型能力': 'Capabilities',
@@ -1214,7 +1212,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '汇率：1 USD =': 'Rate: 1 USD =',
     '没有勾选任何出口': 'No exits ticked',
     '没有可导入的账号。': 'No accounts to import.',
-    '没有启用的代理槽，请先在「设置 → 代理槽」添加并保存': 'No proxy slot is enabled; add and save one under Settings → Proxy slots first',
+    '没有启用的代理槽，请先在「设置 → 账号代理槽」添加并保存': 'No proxy slot is enabled; add and save one under Settings → Account proxy slots first',
     '注意：切换后的身分会被保存，重启后继续沿用，不会自动回到 WB。': 'Note: the switched identity is saved and kept after a restart; it does not go back to WB on its own.',
     '注意：开启后网关会主动出网抓取模型给出的 URL（只挡字面私网地址），且每轮代跑都会多跑一次上游、多消耗该账号的额度；国内网络下 DuckDuckGo 可能连不上，那时模型拿到的是错误文本。': 'Note: with this on, the gateway goes out to fetch the URLs the model asks for (only literal private addresses are blocked), and every proxied round makes one extra upstream call and spends more of that account quota; on Chinese networks DuckDuckGo may be unreachable, and the model then gets error text.',
     '注意：网页通道会真的起一次任务，消耗该账号少量积分，换来的是每日 30/50 积分活跃奖励。': 'Note: the web channel really runs a task and spends a few credits from that account, in exchange for the daily 30/50 credit activity reward.',
@@ -1323,6 +1321,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '能力': 'Capabilities',
     '能量': 'energy',
     '自': 'from',
+    '自动切换出站身份': 'Auto-switch outbound identity',
     '自动发现 mihomo 端口': 'Auto-discover mihomo ports',
     '自动发现失败:': 'Auto-discovery failed:',
     '自动滚屏: 关': 'Auto-scroll: off',
@@ -1383,6 +1382,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '账号 (昵称 / UID)': 'Account (nickname / UID)',
     '账号 Token 自动保活与凭证常驻 (每日 22:00 集中巡检)': 'Automatic account token keep-alive and persistent credentials (batch check daily at 22:00)',
     '账号不存在': 'Account does not exist',
+    '账号代理槽': 'Account proxy slots',
     '账号余额低于该值时不再接单，避免余额被用尽后触发上游的短信提醒。填 0 表示关闭。': 'An account stops taking orders once its balance drops below this, so the balance is never drained enough to trigger the upstream SMS alert. 0 turns it off.',
     '账号凭证刷新成功': 'Account credentials refreshed',
     '账号列表是空的': 'The account list is empty',
@@ -1496,6 +1496,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '未找到指定账号': 'No matching account found',
     '账号池未初始化': 'The account pool is not initialized',
     '账号池不可用': 'The account pool is unavailable',
+    '账号限额': 'Account limits',
     '调度器未初始化': 'The scheduler is not initialized',
     '未运行': 'Not running',
     '价格刷新未运行': 'Price refresh is not running',
@@ -2176,7 +2177,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <section>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
         <div>
-          <h2 style="margin:0">API Key 与出口绑定 <em id="setKeyState"></em></h2>
+          <h2 style="margin:0">API Key <em id="setKeyState"></em></h2>
           <div style="font-size:12px;color:var(--dim);margin-top:4px">
             为每个 Key 绑定专属出口。客户端使用该 Key 请求将固定走对应区域，实现双出口并发。
           </div>
@@ -2192,7 +2193,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <section>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
         <div>
-          <h2 style="margin:0">代理槽 <em id="slotState"></em></h2>
+          <h2 style="margin:0">账号代理槽 <em id="slotState"></em></h2>
           <div style="font-size:12px;color:var(--dim);margin-top:4px">
             每个账号固定绑定一个出口代理槽。槽位地址变化时绑定账号自动跟随；禁用或删除后回退直连。
           </div>
@@ -2210,7 +2211,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <section>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
         <div>
-          <h2 style="margin:0">限额 <em id="setLimitsState"></em></h2>
+          <h2 style="margin:0">账号限额 <em id="setLimitsState"></em></h2>
           <div style="font-size:12px;color:var(--dim);margin-top:4px">
             五条护栏默认按<b>全局默认</b>生效，同时作用于<b>国际版</b>与<b>国内版</b>；需要时可单独给某一版本设值，留空即<b>继承全局</b>。每条护栏填 0 表示关闭该项。
           </div>
@@ -2311,7 +2312,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <section>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
-            <h2 style="margin:0">OpenRouter 价估算 <em id="setPricingEnabledState"></em></h2>
+            <h2 style="margin:0">模型价格估算 <em id="setPricingEnabledState"></em></h2>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
               按 OpenRouter 上同名模型的价格，把每条请求的 token 折算成人民币，供面板的「OpenRouter 价估算」列与「API 等价花费」卡片使用。<b>默认开启</b>；关闭后不再向 OpenRouter 取价，也不再折算任何金额，相关列、卡片与取价控件一并隐藏（只留这个开关）。<b>重新打开会补算关闭期间的请求</b>：那段请求按之后第一次取到的价折算并标 <code>*</code>，所以关掉再打开不会丢数。
             </div>
@@ -2357,7 +2358,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <section>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
-            <h2 style="margin:0">429 自动切换出站身分 <em id="setAutoSwitchState"></em></h2>
+            <h2 style="margin:0">自动切换出站身份 <em id="setAutoSwitchState"></em></h2>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
               某账号在某模型上被上游限流（429）时，自动在 WB / VSC / CLI 之间换身分重试，每轮最多 4 次。三条身分走不同的配额通道，开启后 429 会少一些。默认关闭。
             </div>
@@ -2399,7 +2400,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <section>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
-            <h2 style="margin:0">本地网络工具 (web_search / web_fetch) <em id="setLocalWebToolsState"></em></h2>
+            <h2 style="margin:0">本地网络工具 <em id="setLocalWebToolsState"></em></h2>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
               部分客户端（如 Codex App）会宣告 web_search / web_fetch 这类服务端工具，而上游没有对应的执行器：声明送上去，模型看到工具却没有执行器，客户端最后只拿到一句 unsupported call。开启后由本网关代跑——把声明换成自己的同名函数，在本地执行（搜索走 DuckDuckGo，抓页面抓这个 URL）再把结果喂回模型。默认关闭，关闭时声明原样透传，客户端自己声明的搜索工具照常拿到调用。
             </div>
@@ -6750,7 +6751,7 @@ async function autoAssignSlots(){
   const unbound = (window.ACCOUNTS || []).filter(a => a.enabled && !a.proxySlot);
   if(!unbound.length){ toast('所有已启用账号都已绑定代理出口', 'ok'); return; }
   const slots = PROXY_SLOTS.filter(s => s.enabled !== false);
-  if(!slots.length){ toast('没有启用的代理槽，请先在「设置 → 代理槽」添加并保存', 'warn'); return; }
+  if(!slots.length){ toast('没有启用的代理槽，请先在「设置 → 账号代理槽」添加并保存', 'warn'); return; }
   let i = 0;
   for(const a of unbound){
     const slot = slots[i % slots.length];
