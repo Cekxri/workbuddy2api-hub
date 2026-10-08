@@ -59,7 +59,7 @@ main{padding:24px 24px 60px;max-width:1280px;margin:0 auto}
 .card.accent .v{color:var(--accent)}
 .card.accent2 .v{color:var(--accent2)}
 .card.err .v{color:var(--bad)}
-#cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:20px}
+#cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:20px}
 #cards .card{padding:14px 18px;min-width:0;border-radius:12px;background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow);display:flex;flex-direction:column;justify-content:space-between;min-height:92px}
 #cards .card .k{font-size:12px;color:var(--dim);margin-bottom:8px;font-weight:600;letter-spacing:.2px}
 #cards .card .v{font-size:22px;font-weight:700;letter-spacing:-.3px;color:var(--fg);display:flex;align-items:baseline}
@@ -337,12 +337,7 @@ a:hover{text-decoration:underline}
 /* 页面级两栏：左侧区块导航由 initPageNav() 依据页面内的 section 现场生成，
    这里的样式只描述外观，既不预设任何页面，也不预设任何区块。给页面加
    .page-nav-on 即可启用，区块不足两项的页面不加这个类，保持单栏。 */
-.main-page.page-nav-on.active{display:grid;grid-template-columns:196px minmax(0,1fr);gap:20px;align-items:start}
-.main-page.page-nav-on > *{grid-column:2;min-width:0}
-.main-page.page-nav-on > .page-sidebar{grid-column:1;grid-row:1 / -1;position:sticky;
-  top:var(--page-nav-top,84px);z-index:6;background:var(--panel);border:1px solid var(--line);
-  border-radius:14px;padding:10px;box-shadow:var(--shadow);
-  max-height:calc(100vh - var(--page-nav-top,84px) - 20px);overflow:auto}
+.page-sidebar{display:none!important}
 .page-sidebar-title{font-size:11px;font-weight:700;color:var(--dim);text-transform:uppercase;
   letter-spacing:.6px;padding:6px 10px 8px}
 .page-nav{display:flex;flex-direction:column;gap:2px}
@@ -1740,7 +1735,7 @@ a:hover{text-decoration:underline}
       <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px">
         <div style="display:flex;align-items:baseline;gap:6px">
           <span id="tabIntlCredits" style="font-size:22px;font-weight:700;color:var(--accent2);letter-spacing:-.5px">0</span>
-          <span style="font-size:12px;color:var(--dim)">剩余积分 · <b id="tabIntlAccts" style="color:var(--fg)">0</b> 账号</span>
+          <span style="font-size:12px;color:var(--dim)">剩余积分 · <span id="tabIntlAccts" style="color:var(--fg);font-weight:600">0/0 可用</span></span>
         </div>
         <span id="tabIntlKeyBadge" class="badge s mini" style="font-weight:600">0 个 Key</span>
       </div>
@@ -1759,7 +1754,7 @@ a:hover{text-decoration:underline}
       <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px">
         <div style="display:flex;align-items:baseline;gap:6px">
           <span id="tabCnCredits" style="font-size:22px;font-weight:700;color:var(--accent2);letter-spacing:-.5px">0</span>
-          <span style="font-size:12px;color:var(--dim)">剩余积分 · <b id="tabCnAccts" style="color:var(--fg)">0</b> 账号</span>
+          <span style="font-size:12px;color:var(--dim)">剩余积分 · <span id="tabCnAccts" style="color:var(--fg);font-weight:600">0/0 可用</span></span>
         </div>
         <span id="tabCnKeyBadge" class="badge warn mini" style="font-weight:600">0 个 Key</span>
       </div>
@@ -2772,15 +2767,19 @@ function updateUI(){
   let cnCred = 0, hasCnCred = false;
   cnAccts.forEach(a => { if(a.credits && a.credits.remain != null){ cnCred += a.credits.remain; hasCnCred = true; } });
 
+  const isAcctActive = a => a.enabled && !a.reserveBlocked && !a.dailyLimitBlocked && !a.creditLimitReached;
+  const intlActive = intlAccts.filter(isAcctActive).length;
+  const cnActive = cnAccts.filter(isAcctActive).length;
+
   const elIntlCred = document.getElementById("tabIntlCredits");
   if(elIntlCred) elIntlCred.textContent = hasIntlCred ? fmt(intlCred) : "—";
   const elIntlAcct = document.getElementById("tabIntlAccts");
-  if(elIntlAcct) elIntlAcct.textContent = intlAccts.length;
+  if(elIntlAcct) elIntlAcct.innerHTML = '<b style="color:var(--accent)">' + intlActive + '</b>/' + intlAccts.length + ' 可用';
 
   const elCnCred = document.getElementById("tabCnCredits");
   if(elCnCred) elCnCred.textContent = hasCnCred ? fmt(cnCred) : "—";
   const elCnAcct = document.getElementById("tabCnAccts");
-  if(elCnAcct) elCnAcct.textContent = cnAccts.length;
+  if(elCnAcct) elCnAcct.innerHTML = '<b style="color:var(--accent)">' + cnActive + '</b>/' + cnAccts.length + ' 可用';
 };
 
 async function switchViewRealm(r){
@@ -4858,7 +4857,6 @@ async function refreshInner(gen){
   if(t.usd_cny) costUsdRate = Number(t.usd_cny) || costUsdRate;
 
   document.getElementById('cards').innerHTML =
-    card('可用账号池', poolHtml, '', 'accent') +
     card('网关调用量', fmt(t.requests) + ' <span style="font-size:13px;font-weight:500;color:var(--dim);margin-left:4px">次</span>', '', '') +
     card('估算价格', fmtCostBoth(t.cost_cny), '', 'warn') +
     card('请求成功率', '<span style="color:' + (perf.errors ? 'var(--warn)' : 'var(--accent2)') + '">' + succStr + '</span>', '', '');
@@ -5272,7 +5270,7 @@ function onPageNavScroll(){
   pageNavSpy();
 }
 
-function initPageNav(page){
+function initPageNav(page){ return;
   if(!page) return;
   syncPageNavOffset();
   const sections = pageNavSections(page);
