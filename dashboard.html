@@ -810,6 +810,7 @@ a:hover{text-decoration:underline}
     '刷新': 'Refresh',
     '刷新中...': 'Refreshing...',
     '刷新凭证': 'Refresh token',
+    '一键刷新凭证': 'Refresh all tokens',
     '刷新失败:': 'Refresh failed:',
     '刷新完成:': 'Refresh finished:',
     '刷新明细': 'Refresh details',
@@ -1807,6 +1808,7 @@ a:hover{text-decoration:underline}
     <button class="sec" onclick="exportAccounts(this)">导出账号</button>
     <button class="sec" onclick="openImport()">导入账号</button>
     <button class="sec" onclick="fetchCredits(this)">刷新积分</button>
+    <button class="sec" onclick="refreshAccounts(this)" title="逐个刷新所有账号的上游访问凭证（相当于对每个账号点一次「刷新凭证」）">一键刷新凭证</button>
     <button class="sec" onclick="autoAssignSlots()" title="把尚未绑定出口的已启用账号依次分配到已启用的代理槽；已有绑定的账号不受影响">分配代理出口给未绑定账号</button>
     <button class="sec" onclick="setAll(true, this)">全部启用</button>
     <button class="sec" onclick="setAll(false, this)">全部停用</button>
@@ -3944,12 +3946,23 @@ async function testAccount(uid, btn){
     if(btn){ btn.disabled = false; btn.textContent = '测试'; }
   }
 }
-async function refreshAccounts(){
-  try{ const r = await postJSON('/accounts/refresh', {});
-       const okc = (r.results||[]).filter(x=>x.ok).length;
-       toast('刷新完成: ' + okc + '/' + (r.results||[]).length);
-       await loadAccounts(); }
-  catch(e){ toast(e.message); }
+async function refreshAccounts(btn){
+  if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
+  try{
+    const r = await postJSON('/accounts/refresh', {});
+    const results = r.results || [];
+    const okc = results.filter(x=>x.ok).length;
+    const bad = results.filter(x=>!x.ok);
+    toast('刷新完成: ' + okc + '/' + results.length, bad.length ? 'warn' : 'ok');
+    if(bad.length){
+      toast('刷新失败: ' + (bad[0].error || '未知错误') + ' (' + bad.length + ')', 'bad');
+    }
+    await loadAccounts();
+  }catch(e){
+    toast('刷新失败: ' + e.message, 'bad');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '一键刷新凭证'; }
+  }
 }
 async function setAll(enable, btn){
   if(btn) btn.disabled = true;

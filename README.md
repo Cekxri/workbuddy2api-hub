@@ -171,7 +171,7 @@ python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
 - `tests/_mobile_check.py` 是独立的 Playwright 手机/桌面布局检查器（需自行安装 Playwright），按需手动运行，不在上面的套件集里。
-- 75 个套件：59 个 Python + 16 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 76 个套件：59 个 Python + 17 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - CI（`.github/workflows/tests.yml`）跑同一条命令：Ubuntu 上 python 3.9 与 3.12（3.9 是本项目声称的最低版本），Windows 上 python 3.12。推送 `v*` tag 时额外断言 **tag == 源码版本**（`wb_proxy.py` 里的两处版本串必须先一致，`-ci` 演练 tag 豁免）。
 
 ---
@@ -391,6 +391,8 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 - 新增 `tests/_test_affinity_length_cap.py`（13 项）：钉住阈值边界（`msgs == cap` 仍绑定、`cap + 1` 释放）、`0` 关闭上限、长对话的键稳定性、不同对话不碰撞、`None` / 空列表安全，以及并发上限的按池取值、下限回落、只增不减、固定值下为空操作、脏输入忽略与扩容后的许可计数。
 
 - **修复 `tests/run_all.py` 在非 UTF-8 控制台下崩溃**（Windows CI 长期红灯的根因）：各套件本身以 `PYTHONIOENCODING=utf-8` 运行、输出也按 utf-8 从日志读回，但 `run_all.py` **自己**再打印这行摘要时用的是控制台编码。Windows runner 的 stdout 是 cp1252，于是第一条含中文的摘要就抛 `UnicodeEncodeError` —— 而这时所有套件其实**已经全部通过**，是汇总环节把整轮判成了失败。main 上连续多个版本（含 v1.6.15 自身）的 Windows job 都是这么挂的。现在启动时把本进程的 stdout/stderr 重设为 utf-8，并以 `errors="replace"` 兜底（生僻码位退化成 `?` 而不是终止整轮）。新增 `tests/_test_run_all_encoding.py`（3 项）：分别在 cp1252 与 utf-8 下跑一个含中文摘要的套件，断言退出码为 0、输出里没有 `UnicodeEncodeError`，并确认摘要确实来自被选中的那个套件。
+
+- **一键刷新凭证**：账号工具栏新增批量按钮，等价于对池中每个账号点一次「刷新凭证」——后端 `/accounts/refresh` 不带 `uid` 时本就刷新整池，但看板上一直没有入口，`refreshAccounts()` 是没人调用的死代码（issue #167）。按钮在飞行期间禁用并显示「刷新中...」，结束后按成功数回报（全部成功为绿色，有失败则降级为黄色，并附上首个错误与失败条数），随后重画账号卡片让新凭证立刻可见。新增 `tests/_test_refresh_all_credentials.js`（10 项）：只发一次不带 `uid` 的请求、成功 / 部分失败 / 网络异常三档回报与配色、缺失 `error` 时兜底、刷新后必重载列表、按钮禁用与复位、按钮与英文词条确实在页面上。
 
 ### v1.6.15
 
