@@ -1293,8 +1293,12 @@ _count_lock = threading.Lock()
 _COUNT_TTL = float(os.environ.get("WB_COUNT_TTL", 30))
 
 
+_series_cache = {}
+_series_lock = threading.Lock()
+
+
 def usage_timeseries(realm=None, range=None, since=None, until=None,
-                     bucket_seconds=None):
+                     bucket_seconds=None, ttl=None):
     """Bucketed token/credit series for the analytics chart.
 
     Bucket size auto-scales with the window: minute (<=6h), hour (<=14d),
@@ -1302,9 +1306,23 @@ def usage_timeseries(realm=None, range=None, since=None, until=None,
     requests contribute tokens; every non-client-aborted row contributes
     credit (money already spent). The most recent credited requests ride
     along so the panel can show a credit history without another endpoint.
+
+    Cached wrapper: the Token chart polls this endpoint whenever the metrics
+    tab is open, and one uncached call re-reads and re-parses the whole log.
+    Same shared TTL as its siblings, and the rebuild runs under the lock so a
+    burst of pollers cannot each start their own scan.
     """
+    ttl = _STATS_TTL if ttl is None else ttl
     r = realm_scope(realm, CURRENT_REALM)
     lo, hi = range_window(range, since, until)
+    # Which bounds the caller pinned, captured before the fallbacks below fill
+    # the rest in. Only a pinned bound may enter the cache key as a value:
+    # "now" (and the 24h-before-now default lo) is recomputed on every call,
+    # so a key holding it could never be reused while the panel polls the same
+    # chart, and the cache would buy nothing. The "auto" sentinel keeps the two
+    # kinds of bound apart, so a rolling window is never served a pinned
+    # window's series.
+    pinned_lo, pinned_hi = lo, hi
     if hi is None:
         hi = time.time()
     if lo is None:
@@ -1318,6 +1336,70 @@ def usage_timeseries(realm=None, range=None, since=None, until=None,
         step = 3600
     else:
         step = 86400
+    now = time.time()
+    with _series_lock:
+        # Bounds, not a range flag: this week and this month overlap, so a flag
+        # would let one window serve the other's series from the cache. The
+        # bucket step joins the key for the same reason: an explicit bucket
+        # changes every bucket's width, and the auto-scaled one flips with the
+        # span, so two different steps are two different payloads.
+        key = (r or "all",
+               pinned_lo if pinned_lo is not None else "auto",
+               pinned_hi if pinned_hi is not None else "auto",
+               step)
+        hit = _series_cache.get(key)
+        if hit is not None and (now - hit[0]) < ttl:
+            return hit[1]
+        data = _usage_timeseries_uncached(r, lo, hi, step)
+        _series_cache[key] = (time.time(), data)
+    return data
+
+
+# Every row this process writes starts with `{"at": <float>,` - record_usage
+# and record_error put the timestamp first and json.dumps keeps that order -
+# which is what makes the window pre-filter below possible.
+_AT_PREFIX = '{"at": '
+
+
+def _line_outside_window(line, lo, hi):
+    """True when this log line's `at` is provably outside [lo, hi].
+
+    The scan uses it to drop out-of-window lines without paying for
+    json.loads, which is what made a cold pass over the log expensive. False
+    means "parse it as before" - both for lines that match the shape and fall
+    inside the window, and for anything the check cannot read exactly:
+
+    * another key order or a hand-edited line: no leading `{"at": `, or no
+      comma to end the value;
+    * an integer token: json.loads would hand back an int, and int/float
+      comparison stays exact where float(token) rounds once the value passes
+      2**53 (a float token round-trips through float() exactly, which is why
+      those are the only ones accepted);
+    * a later `"at"` key: json.loads keeps the last duplicate, so the first
+      value read here would be the wrong one. Escaped quotes inside string
+      values (\\") cannot produce a false `"at"`, so this check only ever
+      costs a parse - and it runs only for lines that would be skipped, so a
+      line the scan is going to parse anyway never pays for it.
+    """
+    if not line.startswith(_AT_PREFIX):
+        return False
+    end = line.find(",", len(_AT_PREFIX))
+    if end < 0:
+        return False
+    token = line[len(_AT_PREFIX):end]
+    if "." not in token and "e" not in token and "E" not in token:
+        return False
+    try:
+        at = float(token)
+    except ValueError:
+        return False
+    if not (at < lo or at > hi):
+        return False
+    return line.find('"at"', end) < 0
+
+
+def _usage_timeseries_uncached(realm, lo, hi, step):
+    """One uncached pass over the log, folding rows into fixed-width buckets."""
     buckets = {}
     credits = []
     try:
@@ -1326,11 +1408,19 @@ def usage_timeseries(realm=None, range=None, since=None, until=None,
                 line = line.strip()
                 if not line:
                     continue
+                # Cheap window test first: a day or week window covers a small
+                # slice of a multi-day log, and the json.loads this skips is
+                # what made a cold scan expensive. A line the check cannot read
+                # exactly falls through to the full parse and the full test
+                # below, so a skipped row is always one the parse would have
+                # skipped as well - same output, fewer parses.
+                if _line_outside_window(line, lo, hi):
+                    continue
                 try:
                     row = json.loads(line)
                 except Exception:
                     continue
-                if r and not row_matches_realm(row, r):
+                if realm and not row_matches_realm(row, realm):
                     continue
                 at = row.get("at") or 0
                 if at < lo or at > hi:
@@ -1368,7 +1458,7 @@ def usage_timeseries(realm=None, range=None, since=None, until=None,
         log("usage timeseries read failed: %s" % exc)
     credits.sort(key=lambda item: item.get("at") or 0, reverse=True)
     return {
-        "ok": True, "realm": r or "all", "bucket_seconds": step,
+        "ok": True, "realm": realm or "all", "bucket_seconds": step,
         "since": lo, "until": hi,
         "series": [buckets[key] for key in sorted(buckets)],
         "credits": credits[:50],
