@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from wb_fingerprint import derive_id, generate_request_id
+import wb_activity
 import wb_atrest
 import wb_identity
 import wb_settings
@@ -1075,7 +1076,7 @@ class Account(object):
             "User-Agent": WEB_USER_AGENT,
         }
 
-    def daily_chat_web(self, prompt=None):
+    def daily_chat_web(self, prompt=None, trigger="unknown"):
         """网页通道的每日活跃会话（issue #75 / #59 / #90）。
 
         只建会话是不够的：agent 要等客户端接上沙箱并请求这一轮才会跑，否则会话
@@ -1085,9 +1086,18 @@ class Account(object):
 
         返回 {"ok": True, "conversation": id, "status": "completed", "chunks": n,
         "elapsed_ms": n}，失败时 {"ok": False, "error": ...}（尽量带上会话 id）。
+
+        trigger 只用于活动历史的来源标注；trigger=None 表示这一步算在外层尝试
+        里、不单独记一行 —— daily_chat() 内部就是这么调的。
         """
         if self.realm != "intl":
             return {"ok": False, "error": "web daily chat is only for international accounts"}
+        res = self._daily_chat_web_upstream(prompt)
+        wb_activity.record_attempt(self, wb_activity.TASK_DAILY_CHAT, trigger, res)
+        return res
+
+    def _daily_chat_web_upstream(self, prompt=None):
+        """网页通道的实际流程；返回形状见 daily_chat_web。"""
         body = {
             "prompt": prompt or DAILY_CHAT_WEB_PROMPT,
             "model": DAILY_CHAT_MODEL,
@@ -1158,15 +1168,24 @@ class Account(object):
         data = payload.get("data") if isinstance(payload, dict) else None
         return str((data or {}).get("status") or "")
 
-    def daily_chat(self, web=None):
+    def daily_chat(self, web=None, trigger="unknown"):
         """国际版每日活跃对话（官方每日活跃 30/50 积分）。
 
         两步：桌面端身分的轻量对话（一直以来的做法），以及网页通道的会话
         （issue #75/#59/#90：算数的是「跑完的 agent 会话」）。web=None 时按
         settings.json 里的 daily_chat_web 决定，True/False 可显式指定。
+
+        trigger 只用于活动历史的来源标注；整次尝试记一行，网页通道那一步的结果
+        并进同一行的说明里，不再多记一行。
         """
         if self.realm != "intl":
             return {"ok": False, "error": "daily chat is only for international accounts"}
+        res = self._daily_chat_upstream(web)
+        wb_activity.record_attempt(self, wb_activity.TASK_DAILY_CHAT, trigger, res)
+        return res
+
+    def _daily_chat_upstream(self, web=None):
+        """每日活跃对话的实际流程；返回形状见 daily_chat。"""
         import wb_proxy
         url = self.chat_base_url() + wb_proxy.CHAT_PATH
         headers = self.headers("chat")
@@ -1194,7 +1213,7 @@ class Account(object):
             if web is None:
                 web = bool(self.path) and wb_settings.daily_chat_web(os.path.dirname(self.path))
             if web:
-                res = self.daily_chat_web()
+                res = self.daily_chat_web(trigger=None)
                 result["web"] = res
                 if res.get("ok"):
                     result["msg"] = ("每日活跃对话成功完成（网页通道 %s：%d 段输出，%d ms）"
@@ -1213,9 +1232,20 @@ class Account(object):
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
-    def checkin(self):
+    def checkin(self, trigger="unknown"):
+        """国内版每日签到。
+
+        trigger 只用于活动历史的来源标注（scheduler / manual / account_add /
+        account_import）；记录写失败不会改变签到结果。
+        """
         if self.realm != "cn":
             return {"ok": False, "error": "checkin is only available for CN realm accounts"}
+        res = self._checkin_upstream()
+        wb_activity.record_attempt(self, wb_activity.TASK_CHECKIN, trigger, res)
+        return res
+
+    def _checkin_upstream(self):
+        """签到的实际请求；返回形状见 checkin。"""
         cfg = get_realm_config("cn")
         url = cfg["billing_upstream"] + CHECKIN_PATH
         headers = self.headers(purpose="billing")
@@ -2557,7 +2587,7 @@ class AccountPool(object):
         })
         self.add(account)
         if realm == "cn":
-            try: account.checkin()
+            try: account.checkin(trigger="account_add")
             except Exception: pass
         with self._lock: self.logins.pop(state, None)
         return {"status": "ok", "account": account.public()}
@@ -2606,7 +2636,7 @@ class AccountPool(object):
         })
         self.add(account)
         if detected_realm == "cn":
-            try: account.checkin()
+            try: account.checkin(trigger="account_import")
             except Exception: pass
         return account
 

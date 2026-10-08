@@ -47,6 +47,7 @@ import urllib.error
 import urllib.request
 import uuid
 import wb_accounts
+import wb_activity
 import wb_atrest
 import wb_catalog
 import wb_ipintel
@@ -7464,6 +7465,8 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if path.startswith("/usage") or path.startswith("/v1/usage"):
             return True
+        if path.startswith("/activity"):
+            return True
         if path.startswith("/tasks") or path.startswith("/scheduler"):
             return True
         if path.startswith("/settings"):
@@ -7517,6 +7520,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_usage_perf(query)
         if path == "/usage/timeseries":
             return self._get_usage_timeseries(query)
+        if path == "/activity/history":
+            return self._get_activity_history(query)
         if path == "/tasks":
             return self._get_tasks(query)
         if path == "/scheduler":
@@ -7620,6 +7625,29 @@ class Handler(BaseHTTPRequestHandler):
             page = 1
         req_realm = query.get('realm', [None])[0] or self.headers.get('X-Realm') or CURRENT_REALM
         return self._json(200, recent_usage(limit, realm=req_realm, page=page))
+
+    def _get_activity_history(self, query):
+        """账号每日活动的结构化历史（issue #34）。只读，供面板的签到记录用。
+
+        筛选条件写错时返回 400 而不是静默忽略：调用方拿着一个被忽略的
+        result=failed 会以为「这几天没有失败」，实际上它拿回的是全部结果。
+        """
+        if not self._authorized():
+            return
+
+        def first(name):
+            values = query.get(name) or [""]
+            return (values[0] if values else "") or ""
+
+        try:
+            payload = wb_activity.query(range_key=first("range") or None,
+                                        uid=first("uid"),
+                                        task=first("task"),
+                                        result=first("result"),
+                                        limit=first("limit") or None)
+        except ValueError as exc:
+            return self._error(400, str(exc), "invalid_request_error")
+        return self._json(200, payload)
 
     def _get_accounts_credits(self):
         if not self._authorized():
@@ -8715,7 +8743,7 @@ class Handler(BaseHTTPRequestHandler):
         for account in targets:
             if account is None:
                 continue
-            res = account.checkin()
+            res = account.checkin(trigger="manual")
             results.append({"uid": account.uid, "nickname": account.nickname, **res})
         return self._json(200, {"results": results, "accounts": account_views()})
 
@@ -8729,7 +8757,7 @@ class Handler(BaseHTTPRequestHandler):
         for account in targets:
             if account is None:
                 continue
-            res = account.daily_chat()
+            res = account.daily_chat(trigger="manual")
             results.append({"uid": account.uid, "nickname": account.nickname, **res})
         return self._json(200, {"results": results, "accounts": account_views()})
 
@@ -8748,7 +8776,7 @@ class Handler(BaseHTTPRequestHandler):
         for account in targets:
             if account is None:
                 continue
-            res = account.daily_chat_web()
+            res = account.daily_chat_web(trigger="manual")
             log("account %s: 网页通道打卡 -> %s"
                 % (account.uid[:8], res.get("conversation") if res.get("ok") else res.get("error")),
                 level="INFO" if res.get("ok") else "WARN")
@@ -9725,6 +9753,9 @@ def _apply_cli_overrides(args):
     if args.usage_dir:
         USAGE_DIR = os.path.abspath(args.usage_dir)
         USAGE_LOG = os.path.join(USAGE_DIR, "usage.jsonl")
+    # 账号活动历史与用量日志同目录，并且要在任何后台线程起来之前定下来：调度器
+    # 的第一轮巡检不能落在 --usage-dir 生效之前，否则记录会写进默认目录。
+    wb_activity.set_data_dir(USAGE_DIR)
 
 def _probe_running_instance(args):
     # Refuse to start a second copy. On Windows SO_REUSEADDR lets two sockets
