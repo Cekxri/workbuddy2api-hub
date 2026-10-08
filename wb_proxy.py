@@ -7964,6 +7964,8 @@ class Handler(BaseHTTPRequestHandler):
                 apply_daily_credit_limit(refresh=True)
             if "model_daily_token_limit" in touched:
                 apply_model_daily_token_limit(refresh=True)
+            if "expiring_window_days" in touched and POOL:
+                POOL.apply_expiring_window()
 
         if "pricing_enabled" in payload:
             raw = payload.get("pricing_enabled")

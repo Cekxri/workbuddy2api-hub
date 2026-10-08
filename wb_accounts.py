@@ -465,6 +465,12 @@ class Account(object):
         # what makes the upstream start sending nagging SMS). Resolved from the
         # global setting by AccountPool.apply_reserve_credits(); 0 disables it.
         self.reserve_credits = 0
+        # Expiring-credits preference: while this account's soonest-expiring
+        # credit package is inside this many days, the pool hands the account
+        # out before accounts whose credits lapse later, so credits about to
+        # be written off get spent first. Resolved from the global setting by
+        # AccountPool.apply_expiring_window(); 0 disables the preference.
+        self.expiring_window_days = 0
         # Daily token guard: an account that already burned this many tokens
         # today stops being handed out, so a client that would burn the rest
         # of the day's quota rotates to another account instead of hitting
@@ -661,6 +667,55 @@ class Account(object):
         except (TypeError, ValueError):
             return False
         return remain <= reserve
+
+    def soonest_expiring_days(self):
+        """Days until the earliest credit package that still has credits left.
+
+        None when nothing can be said: no credit data, no package with a
+        usable remainder, or an end date the upstream never gave.
+
+        Packages the upstream renews by resetting the allowance are skipped.
+        The enterprise quota is one of those - its cycleEndTime refills the
+        balance rather than voiding it - so treating it as an expiry would
+        make the account look permanently "about to lapse". Every other
+        package's end really does take the remaining credits with it.
+        """
+        credits = self.credits
+        if not isinstance(credits, dict):
+            return None
+        soonest = None
+        for package in (credits.get("packages") or []):
+            if not isinstance(package, dict):
+                continue
+            if package.get("package_code") == "enterprise":
+                continue
+            if package.get("is_expired"):
+                continue
+            days = package.get("days_left")
+            remain = package.get("remain")
+            if not isinstance(days, (int, float)) or days < 0:
+                continue
+            if not isinstance(remain, (int, float)) or remain <= 0:
+                continue
+            if soonest is None or days < soonest:
+                soonest = float(days)
+        return soonest
+
+    def in_expiring_window(self):
+        """True when this account should jump the dispatch queue.
+
+        Unknown or missing credit data is never a preference: an account the
+        gateway cannot judge keeps its plain round-robin turn instead of being
+        pushed to the front on a guess.
+        """
+        try:
+            window = int(self.expiring_window_days or 0)
+        except (TypeError, ValueError):
+            window = 0
+        if window <= 0:
+            return False
+        soonest = self.soonest_expiring_days()
+        return soonest is not None and soonest <= window
 
     def daily_limit_blocked(self):
         """True when today's counted usage has reached the configured limit.
@@ -1763,6 +1818,7 @@ class AccountPool(object):
                 if account.uid:
                     self.accounts.append(account)
             self.apply_reserve_credits()
+            self.apply_expiring_window()
             return self.accounts
 
     def list_public(self, realm=None):
@@ -1798,6 +1854,7 @@ class AccountPool(object):
             account.save(self.dir)
             self.apply_proxy_slots()
             self.apply_reserve_credits()
+            self.apply_expiring_window()
             return account
 
     def remove(self, uid):
@@ -1939,6 +1996,24 @@ class AccountPool(object):
         with self._lock:
             for account in self.accounts:
                 account.reserve_credits = _realm_limit(values, account.realm)
+        return values
+
+    def apply_expiring_window(self, values=None):
+        """Re-resolve the expiring-credits window for every account.
+
+        Same shape as apply_reserve_credits(): settings.json holds the window
+        per realm (global by default) and each account reads its own, so the
+        request path needs no extra settings lookup. The window is a dispatch
+        preference, not a guard: it never makes an account unavailable, it
+        only decides who is handed out first.
+        """
+        import wb_settings
+
+        if values is None:
+            values = wb_settings.limit_values(self.dir, "expiring_window_days")
+        with self._lock:
+            for account in self.accounts:
+                account.expiring_window_days = _realm_limit(values, account.realm)
         return values
 
     def apply_daily_token_limit(self, values=None, usage=None):
@@ -2099,15 +2174,61 @@ class AccountPool(object):
         exclude = exclude or set()
         with self._lock:
             snapshot = [a for a in self.accounts if not realm or a.realm == realm]
+        if not snapshot:
+            return None
+        # Expiring-credits preference: accounts whose soonest-expiring credit
+        # package is inside the window are served first, so credits about to
+        # lapse get spent. It only reorders who is offered; an account the
+        # window covers is still skipped when it is cooling down, over a daily
+        # limit, or excluded. When the window covers nobody - or everyone it
+        # covers is unavailable right now - the pool falls back to the plain
+        # round-robin it always had, so a single lapsed account can never wedge
+        # the realm.
+        account = self._pick_expiring_first(snapshot, exclude, model)
+        if account is not None:
+            return account
+        return self._rotate_pick(snapshot, exclude, model)
+
+    def _pick_expiring_first(self, snapshot, exclude, model):
+        """Serve the soonest-expiring accounts first, or None when none can.
+
+        Accounts are bucketed by whole days-to-expiry, and the earliest bucket
+        that has a ready account wins. Bucketing (rather than a strict
+        soonest-first order) keeps accounts that lapse on the same day on the
+        round-robin, so a burst of traffic does not land on one account and
+        draw an upstream rate limit.
+        """
+        urgent = [a for a in snapshot if a.in_expiring_window()]
+        if not urgent:
+            return None
+        urgent.sort(key=lambda a: int(a.soonest_expiring_days() or 0))
+        index = 0
+        while index < len(urgent):
+            days = int(urgent[index].soonest_expiring_days() or 0)
+            bucket = []
+            while index < len(urgent) and int(urgent[index].soonest_expiring_days() or 0) == days:
+                bucket.append(urgent[index])
+                index += 1
+            account = self._rotate_pick(bucket, exclude, model)
+            if account is not None:
+                return account
+        return None
+
+    def _rotate_pick(self, group, exclude, model):
+        """Round-robin one group of accounts, advancing the shared cursor."""
+        total = len(group)
+        if total == 0:
+            return None
+        with self._lock:
             start = self._cursor
-        total = len(snapshot)
-        if total == 0: return None
         for offset in range(total):
             index = (start + offset) % total
-            account = snapshot[index]
-            if account.uid in exclude: continue
+            account = group[index]
+            if account.uid in exclude:
+                continue
             if account.ready(model=model):
-                with self._lock: self._cursor = (index + 1) % total
+                with self._lock:
+                    self._cursor = (index + 1) % total
                 return account
         return None
 
