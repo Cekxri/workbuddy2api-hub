@@ -77,6 +77,10 @@ table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{text-align:right;padding:9px 12px;border-bottom:1px solid var(--line);
   font-variant-numeric:tabular-nums;vertical-align:middle}
 th{color:var(--dim);font-weight:600;font-size:12px;white-space:nowrap;background:var(--panel2)}
+/* 积分扣减历史：外层容器自己纵向滚动，表头不钉住的话滑到下面就看不出哪列是哪列。
+   表头本来就有 --panel2 底色（不透明），加 sticky 即可盖住滚上来的行。 */
+#creditHistoryTable thead th{position:sticky;top:0;z-index:2;
+  box-shadow:inset 0 -1px 0 var(--line)}
 th:first-child{border-top-left-radius:8px;border-bottom-left-radius:8px}
 th:last-child{border-top-right-radius:8px;border-bottom-right-radius:8px}
 th:first-child,td:first-child{text-align:left}
@@ -3870,6 +3874,8 @@ async function loadAccounts(){
     await loadProxySlots();
     renderAccounts();
     updateUI();
+    // 昵称刚到位，补画一次积分扣减历史：它和本请求是并行的，先渲染的那次只有 uid。
+    if(LAST_CREDIT_DATA) renderCreditHistory();
     // Auto-fetch credits once if not present
     if(window.ACCOUNTS.length && window.ACCOUNTS.some(a => !a.credits)){
       postJSON('/accounts/credits', {}).then(r => {
@@ -7436,14 +7442,27 @@ async function loadCreditHistory(btn){
   }
 }
 
+// 最近一次的积分扣减数据。账号昵称来自 /accounts（另一条并行请求），
+// 它比 /usage/timeseries 晚到时就先用 uid 兜底，等账号到位后再补画一次。
+let LAST_CREDIT_DATA = null;
+
+// uid -> 昵称。取不到（账号已删除/尚未加载完）就回退 uid 前 8 位，不留空。
+function creditAccountLabel(uid){
+  const id = String(uid || '');
+  if(!id) return '—';
+  const acct = (window.ACCOUNTS || []).find(a => a.uid === id);
+  return (acct && acct.nickname) || id.slice(0, 8);
+}
+
 function renderCreditHistory(data){
-  const rows = ((data && data.credits) || []).slice(0, 50);
+  if(data) LAST_CREDIT_DATA = data;
+  const rows = ((LAST_CREDIT_DATA && LAST_CREDIT_DATA.credits) || []).slice(0, 50);
   const tbody = document.querySelector('#creditHistoryTable tbody');
   if(!tbody) return;
   tbody.innerHTML = rows.map(x => '<tr>'
     + '<td>' + esc(x.iso || '') + '</td>'
     + '<td>' + esc(x.model || '') + '</td>'
-    + '<td class="mono">' + esc(String(x.account || '').slice(0,8)) + '</td>'
+    + '<td title="' + esc(x.account || '') + '">' + esc(creditAccountLabel(x.account)) + '</td>'
     + '<td>' + fmt(x.credit) + '</td>'
     + '<td>' + fmt(x.total_tokens || 0) + '</td>'
     + '</tr>').join('') || '<tr><td colspan="5" style="color:var(--dim)">没有积分扣减记录</td></tr>';
