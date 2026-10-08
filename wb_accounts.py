@@ -342,6 +342,44 @@ def next_local_4am(now=None):
         stamp += 86400
     return stamp
 
+
+# Account-level failure governance. A repeatedly soft-limited credential
+# backs off exponentially instead of being retried on every request; a
+# credential that keeps failing hard trips a breaker; unknown failures degrade
+# it for a while. The counters live on Account, these helpers only turn a
+# count into seconds (panel project's pool semantics).
+SOFT_RATE_BASE = 600.0          # first account-level 429: 10 minutes
+SOFT_RATE_MAX = 7200.0          # ... doubling up to 2 hours
+BREAKER_THRESHOLD = 3           # consecutive hard failures before the breaker
+BREAKER_COOLDOWN = 1800.0       # first breaker window: 30 minutes
+BREAKER_COOLDOWN_MAX = 21600.0  # ... doubling up to 6 hours
+DEGRADE_THRESHOLD = 5           # consecutive unknown failures before degrading
+DEGRADE_COOLDOWN = 600.0        # first degrade window: 10 minutes
+DEGRADE_COOLDOWN_MAX = 7200.0   # ... doubling up to 2 hours
+
+
+def _exponential_backoff(count, base, cap, offset):
+    """base * 2 ** (count - offset), clamped to cap and to 20 steps."""
+    step = max(0, int(count) - int(offset))
+    return min(float(base) * (2 ** min(step, 20)), float(cap))
+
+
+def soft_backoff(streak):
+    """Cooldown seconds for `streak` consecutive account-level soft limits."""
+    return _exponential_backoff(streak, SOFT_RATE_BASE, SOFT_RATE_MAX, 1)
+
+
+def breaker_backoff(fails):
+    """Breaker cooldown for `fails` consecutive hard failures."""
+    return _exponential_backoff(fails, BREAKER_COOLDOWN, BREAKER_COOLDOWN_MAX,
+                                BREAKER_THRESHOLD)
+
+
+def degrade_backoff(fails):
+    """Degrade window for `fails` consecutive unknown failures."""
+    return _exponential_backoff(fails, DEGRADE_COOLDOWN, DEGRADE_COOLDOWN_MAX,
+                                DEGRADE_THRESHOLD)
+
 class Account(object):
     def __init__(self, data, path=None):
         data = data or {}
@@ -406,11 +444,19 @@ class Account(object):
         # otherwise a single throttled model blackholes every request on the pool.
         # Deliberately runtime-only (not persisted): see VOLATILE_FIELDS.
         self.model_cooldowns = {}
-        # 402 (out of credits): a hard park until the next local 04:00,
+# 402 (out of credits): a hard park until the next local 04:00,
         # instead of a short cooldown that would retry an empty account all
         # day. Runtime-only, like the other throttle windows; a balance
         # refresh that shows credits again lifts it early.
         self.balance_until = 0.0
+# Account-level failure streaks; see the *_backoff() helpers above.
+        # All runtime-only, like the other throttle windows: a restart clears
+        # them and the account gets a clean slate.
+        self.soft_streak = 0
+        self.fails = 0
+        self.degrade_count = 0
+        self.breaker_until = 0.0
+        self.degrade_until = 0.0
         self.credits = data.get("credits") or None
         self.last_checkin = data.get("lastCheckin") or None
         self.last_daily_chat = data.get("lastDailyChat") or None
@@ -493,7 +539,7 @@ class Account(object):
         with self._throttle_lock:
             error = self.last_error
             detail = self.last_error_detail
-            deadline = max(self.cooldown_until, self.balance_until)
+            deadline = max(self.cooldown_until, self.balance_until, self.breaker_until, self.degrade_until)
             active = [(model, until) for model, until in self.model_cooldowns.items()
                       if until > now]
         active.sort(key=lambda pair: (pair[1], pair[0]))
@@ -528,6 +574,9 @@ class Account(object):
             "inCooldown": deadline > now,
             "cooldownFor": round(max(0.0, deadline - now)) or None,
             "modelCooldowns": models,
+            "softStreak": int(self.soft_streak),
+            "breakerFor": round(max(0.0, self.breaker_until - now)) or None,
+            "degradeFor": round(max(0.0, self.degrade_until - now)) or None,
             "addedAt": self.added_at,
             "file": os.path.basename(self.path) if self.path else None,
             "credits": self.credits,
@@ -1557,6 +1606,54 @@ class Account(object):
             self.last_error_detail = ""
         return True
 
+    def note_soft_rate(self, message):
+        """Account-level rate limit: soft cooldown with exponential backoff."""
+        with self._throttle_lock:
+            self.soft_streak += 1
+            wait = soft_backoff(self.soft_streak)
+            self.last_error = str(message)[:200]
+            self.cooldown_until = max(self.cooldown_until, time.time() + wait)
+        return wait
+
+    def note_failure(self, message):
+        """5xx / transport failure: feed the breaker counter."""
+        with self._throttle_lock:
+            self.last_error = str(message)[:200]
+            self.fails += 1
+            if self.fails >= BREAKER_THRESHOLD:
+                wait = breaker_backoff(self.fails)
+                self.breaker_until = max(self.breaker_until, time.time() + wait)
+        return self.breaker_until
+
+    def note_unknown_failure(self, message):
+        """Unknown error: degrade counter plus the shared breaker counter."""
+        with self._throttle_lock:
+            self.last_error = str(message)[:200]
+            self.degrade_count += 1
+            self.fails += 1
+            now = time.time()
+            if self.degrade_count >= DEGRADE_THRESHOLD:
+                wait = degrade_backoff(self.degrade_count)
+                self.degrade_until = max(self.degrade_until, now + wait)
+            if self.fails >= BREAKER_THRESHOLD:
+                wait = breaker_backoff(self.fails)
+                self.breaker_until = max(self.breaker_until, now + wait)
+        return self.degrade_until
+
+    def note_success(self, model=None):
+        """A served request clears every account-level penalty."""
+        with self._throttle_lock:
+            if model:
+                self.model_cooldowns.pop(model, None)
+            self.soft_streak = 0
+            self.fails = 0
+            self.degrade_count = 0
+            self.breaker_until = 0.0
+            self.degrade_until = 0.0
+            self.last_error = ""
+            self.last_error_detail = ""
+            self.cooldown_until = 0.0
+
     def throttle_wait(self, model=None):
         """Seconds until this account can serve `model` again (0 = right now)."""
         if not self.enabled or not self.access_token:
@@ -1564,7 +1661,7 @@ class Account(object):
         now = time.time()
         with self._throttle_lock:
             wait = max(0.0, self.cooldown_until - now,
-                       self.balance_until - now)
+self.balance_until - now, self.breaker_until - now, self.degrade_until - now)
             if model:
                 wait = max(wait, max(0.0, self.model_cooldowns.get(model, 0.0) - now))
         return wait
