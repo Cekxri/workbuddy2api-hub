@@ -17,6 +17,13 @@ probe suites beside it. Nothing is ever written into the repository's tests/
 directory, and the copy is compared against the real file first, so these tests
 cannot silently drift away from the code they cover.
 
+Cleanup never asks the code under test for help. The thing under test is exactly
+what may be broken, so the harness starts every sandbox runner in a group it
+owns, keeps the pids it may have to kill outside the disposable scenario
+directory, and terminates the whole tree through the OS (TerminateProcess /
+SIGKILL) rather than through taskkill - a locked-down host refuses that just as
+readily as it refuses the runner's own call.
+
 Run with: python tests/_test_run_all_contracts.py
 No network, no credentials. Every probe file, process and log directory this
 suite creates is removed in a finally block.
@@ -32,6 +39,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from ctypes import wintypes
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REAL_RUNNER = os.path.join(HERE, "run_all.py")
@@ -46,10 +54,53 @@ HANG_TIMEOUT = 5
 HANG_SECONDS = 600
 HANG_BUDGET = 60
 
-if os.name == "nt":
+#: The bound the harness itself puts on a sandbox runner, far below
+#: HANG_SECONDS on purpose: the harness must never wait for a runner that has
+#: stopped honouring its own wall clock.
+SANDBOX_BUDGET = 15
+
+#: The grandchild outlives the check but not the test session, so a host that
+#: refuses the tree kill cannot leave a ten-minute orphan behind.
+ORPHAN_SECONDS = 120
+
+#: The line in run_all.py that applies the per-suite wall clock. The negative
+#: harness check removes it from its own copy, so the runner under test stops
+#: honouring --timeout and only the harness's own bound can end the run.
+TIMEOUT_ANCHOR = "code = proc.wait(timeout=timeout)"
+
+_WINDOWS = os.name == "nt"
+
+if _WINDOWS:
     _KERNEL32 = ctypes.windll.kernel32
     _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _PROCESS_TERMINATE = 0x0001
     _STILL_ACTIVE = 259
+    _TH32CS_SNAPPROCESS = 0x2
+
+    class _PROCESSENTRY32(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD),
+                    ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                    ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long),
+                    ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_char * 260)]
+
+    def _process_tree():
+        """{pid: parent pid} straight from the OS - no tasklist, no taskkill."""
+        snapshot = _KERNEL32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+        table = {}
+        entry = _PROCESSENTRY32()
+        entry.dwSize = ctypes.sizeof(_PROCESSENTRY32)
+        ok = _KERNEL32.Process32First(snapshot, ctypes.byref(entry))
+        while ok:
+            table[entry.th32ProcessID] = entry.th32ParentProcessID
+            ok = _KERNEL32.Process32Next(snapshot, ctypes.byref(entry))
+        _KERNEL32.CloseHandle(snapshot)
+        return table
 
     def alive(pid):
         """Liveness through the OS, not tasklist.
@@ -69,13 +120,149 @@ if os.name == "nt":
             return code.value == _STILL_ACTIVE
         finally:
             _KERNEL32.CloseHandle(handle)
+
+    def terminate_pid(pid):
+        """Kill one pid through the OS, with no shell-out to taskkill.
+
+        taskkill is what the runner uses, and the host that refuses it refuses
+        the harness too; the last line of defence cannot be the same call.
+        """
+        handle = _KERNEL32.OpenProcess(_PROCESS_TERMINATE, False, pid)
+        if not handle:
+            return False
+        try:
+            return bool(_KERNEL32.TerminateProcess(handle, 1))
+        finally:
+            _KERNEL32.CloseHandle(handle)
 else:
+    def _process_tree():
+        """{pid: parent pid} from /proc, which is where Linux CI lives."""
+        return _proc_process_tree()
+
     def alive(pid):
         try:
             os.kill(pid, 0)
         except OSError:
             return False
         return True
+
+    def terminate_pid(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+            return True
+        except OSError:
+            return False
+
+
+def _parse_proc_stat(data):
+    """The parent pid out of one /proc/<pid>/stat line.
+
+    Split on the *last* ')' rather than on whitespace: the command name sits in
+    parentheses and may itself contain spaces and parentheses, and everything
+    after it is fixed-position (state, then ppid).
+    """
+    rest = data.rsplit(b")", 1)[1].split()
+    return int(rest[1])
+
+
+def _proc_process_tree(proc_root="/proc"):
+    """{pid: parent pid} from a /proc-shaped tree.
+
+    Parameterised on the root so the Linux branch can be exercised from any
+    platform against a synthetic tree, instead of only ever failing on CI. The
+    shape has to match the Windows branch: _descendants() reads one mapping and
+    must not have to know which platform filled it in.
+    """
+    try:
+        names = [n for n in os.listdir(proc_root) if n.isdigit()]
+    except OSError:
+        return None
+    table = {}
+    for name in names:
+        try:
+            with open(os.path.join(proc_root, name, "stat"), "rb") as fh:
+                table[int(name)] = _parse_proc_stat(fh.read())
+        except (OSError, IndexError, ValueError):
+            continue
+    return table
+
+
+def _descendants(root, table=None):
+    """Every pid below root, deepest first, with root itself last.
+
+    Windows keeps the creator's pid in a child's parent field even after that
+    parent exits, so the walk still finds an orphan whose parent is already
+    gone. On POSIX this needs /proc; without it the caller's group kill is the
+    only tree mechanism, which is why probes register their own pids as well.
+
+    `table` is a {pid: parent pid} mapping and exists so the traversal can be
+    tested without the platform it happens to be running on.
+    """
+    if table is None:
+        table = _process_tree()
+    if table is None:
+        return [root]
+    children = {}
+    for pid, parent in table.items():
+        children.setdefault(parent, []).append(pid)
+    levels, frontier, seen = [], [root], {root}
+    while frontier:
+        levels.append(frontier)
+        nxt = []
+        for pid in frontier:
+            for child in children.get(pid, []):
+                if child not in seen:
+                    seen.add(child)
+                    nxt.append(child)
+        frontier = nxt
+    order = []
+    for level in reversed(levels):
+        order.extend(level)
+    return order
+
+
+def new_group_kwargs():
+    """Start a child in its own group/session.
+
+    Used twice for the same reason: the harness owns the sandbox runner so it
+    can take that runner's tree back, and run_all.py gives every suite its own
+    group for exactly the same purpose.
+    """
+    if _WINDOWS:
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def kill_owned_tree(proc):
+    """Terminate a harness-owned runner and everything under it, then reap.
+
+    Deliberately independent of the code under test and of taskkill: this is
+    the path that has to work when the runner has stopped honouring its own
+    timeout, and when the host refuses the runner's own tree kill.
+
+    It also never raises. It runs on the path where the run has already failed,
+    and an exception here would skip the rest of the cleanup and leave exactly
+    the orphans this function exists to remove.
+    """
+    if proc.poll() is not None:
+        return
+    try:
+        if not _WINDOWS:
+            # The runner leads its own session, so its group catches anything
+            # that did not detach into a group of its own.
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except OSError:
+                pass
+        for pid in _descendants(proc.pid):
+            terminate_pid(pid)
+    except Exception:
+        pass
+    terminate_pid(proc.pid)
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def wait_gone(pid, seconds=10.0):
@@ -88,23 +275,22 @@ def wait_gone(pid, seconds=10.0):
     return not alive(pid)
 
 
-def kill_best_effort(pid):
-    """Tidy up a probe process the runner could not reach on this host."""
-    try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                           stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=30)
-        else:
-            os.kill(pid, signal.SIGKILL)
-    except Exception:
-        pass
+def read_pids(path, seconds=15.0):
+    """Read a probe's registered pids, waiting for the file to appear."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            time.sleep(0.1)
+    raise AssertionError("the probe never registered its pids in %s" % path)
 
 
-#: A parent that starts a grandchild and reports its pid. Used both as the
-#: hanging probe and, unmodified, to ask the host what it permits. The
-#: grandchild is given a working directory outside the scenario tree, so a host
-#: that cannot kill it still leaves the scenario directory removable.
+#: A parent that starts a grandchild, registers both pids and then waits. Used
+#: both as the hanging probe and, unmodified, to ask the host what it permits.
+#: The grandchild is given a working directory outside the scenario tree, so a
+#: host that cannot kill it still leaves the scenario directory removable.
 TREE_PROBE = (
     "import json, os, subprocess, sys, tempfile, time\n"
     "child = subprocess.Popen([sys.executable, '-c',\n"
@@ -114,17 +300,6 @@ TREE_PROBE = (
     "print('probe started', flush=True)\n"
     "time.sleep(%d)\n"
 )
-
-#: The grandchild outlives the check but not the test session, so a host that
-#: refuses the tree kill cannot leave a ten-minute orphan behind.
-ORPHAN_SECONDS = 120
-
-
-def tree_start_kwargs():
-    """The same group/session flags run_all.start_kwargs() gives a suite."""
-    if os.name == "nt":
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-    return {"start_new_session": True}
 
 
 def host_can_kill_trees():
@@ -136,6 +311,9 @@ def host_can_kill_trees():
     "Access denied"), and the runner then falls back to killing only the direct
     child; the caller has to know which of the two it is looking at, otherwise a
     refused kill reads as a passing cleanup.
+
+    The probe's own cleanup does not use taskkill: that is the call being
+    measured, and it is the call that may be refused.
     """
     env = dict(os.environ)
     handle, pid_file = tempfile.mkstemp(prefix="runall-tree-", suffix=".json")
@@ -146,21 +324,13 @@ def host_can_kill_trees():
                                                                  ORPHAN_SECONDS)],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             cwd=tempfile.gettempdir(), env=env,
-                            **tree_start_kwargs())
+                            **new_group_kwargs())
     grand = None
     try:
-        for _ in range(100):
-            if os.path.exists(pid_file):
-                break
-            time.sleep(0.1)
-        try:
-            with open(pid_file, encoding="utf-8") as fh:
-                grand = json.load(fh)["child"]
-        except (OSError, ValueError, KeyError):
-            return False, "the tree probe never reported a grandchild pid"
+        grand = read_pids(pid_file)["child"]
 
         permitted = False
-        if os.name == "nt":
+        if _WINDOWS:
             done = subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                                   stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL, timeout=30)
@@ -175,29 +345,30 @@ def host_can_kill_trees():
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=10)
+            pass
         if not permitted:
             return False, "this host refuses the tree kill"
         if wait_gone(grand, 5):
             return True, "the tree kill removed parent and grandchild"
         return False, "the tree kill was accepted but the grandchild survived"
     finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait(timeout=10)
+        kill_owned_tree(proc)
         if grand is not None and alive(grand):
-            kill_best_effort(grand)
+            terminate_pid(grand)
         try:
             os.unlink(pid_file)
         except OSError:
             pass
 
 
+class SandboxTimeout(Exception):
+    """The sandbox runner outlived the harness's own bound."""
+
+
 class Scenario(object):
     """A throwaway tests/ directory: a copy of the runner plus probe suites."""
 
-    def __init__(self, label):
+    def __init__(self, label, pids_root):
         self.uid = "%s-%s" % (label, uuid.uuid4().hex[:8])
         self.dir = tempfile.mkdtemp(prefix="runall-contracts-")
         self.tests = os.path.join(self.dir, "tests")
@@ -205,6 +376,12 @@ class Scenario(object):
         self.runner = os.path.join(self.tests, "run_all.py")
         shutil.copyfile(REAL_RUNNER, self.runner)
         self.logs_dir = os.path.join(self.dir, "kept-logs")
+        #: Registered probe pids live beside the scenario directory, never
+        #: inside it: tearDown has to read them after the run and before the
+        #: files go away, and a probe can outlive the run.
+        self.pids_dir = os.path.join(pids_root, self.uid)
+        os.makedirs(self.pids_dir)
+        self.owned = []
         self.names = []
         self._runs = 0
 
@@ -216,8 +393,36 @@ class Scenario(object):
         self.names.append(name)
         return name
 
+    def pid_file(self, label="probe"):
+        """Where a probe registers the pids the harness may have to kill."""
+        return os.path.join(self.pids_dir, label + ".json")
+
+    def break_timeout(self):
+        """Regress the copied runner so its own --timeout never fires.
+
+        Anchored on the exact line and loud when the anchor is gone: a negative
+        check that quietly stopped breaking anything would be worse than no
+        check at all.
+        """
+        with open(self.runner, encoding="utf-8") as fh:
+            text = fh.read()
+        broken = text.replace(TIMEOUT_ANCHOR, "code = proc.wait()", 1)
+        if broken == text:
+            raise AssertionError(
+                "cannot break the copied runner: %r is no longer in run_all.py, "
+                "so the negative harness check would prove nothing"
+                % TIMEOUT_ANCHOR)
+        with open(self.runner, "w", encoding="utf-8") as fh:
+            fh.write(broken)
+
     def run(self, *extra, **kwargs):
         """Run the sandboxed runner; return (returncode, output, seconds).
+
+        The runner is started in a group the harness owns and managed with
+        Popen, not subprocess.run(timeout=...): that helper's timeout owns only
+        the direct process, so a runner that stopped honouring --timeout would
+        leave its probe tree behind. Here the outer bound takes the whole tree
+        and reaps it before raising.
 
         The output goes to a file, never a pipe: a probe that survives the run
         would otherwise hold the pipe open and stall the reader.
@@ -229,27 +434,72 @@ class Scenario(object):
         out_path = os.path.join(self.dir, "runner-output-%d.txt" % self._runs)
         started = time.time()
         with open(out_path, "w", encoding="utf-8") as sink:
-            result = subprocess.run([sys.executable, self.runner] + list(extra),
+            proc = subprocess.Popen([sys.executable, self.runner] + list(extra),
                                     cwd=self.dir, env=env, stdout=sink,
-                                    stderr=subprocess.STDOUT, timeout=timeout)
+                                    stderr=subprocess.STDOUT,
+                                    **new_group_kwargs())
+            self.owned.append(proc)
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                kill_owned_tree(proc)
+                # run_all.py gives every suite its own group, so a probe is not
+                # in the runner's group; the pid it registered is reachable.
+                self.kill_registered()
+                raise SandboxTimeout(
+                    "the sandbox runner did not return within %ds: %s"
+                    % (timeout, " ".join(extra)))
         seconds = time.time() - started
         with open(out_path, encoding="utf-8", errors="replace") as fh:
-            return result.returncode, fh.read(), seconds
+            return proc.returncode, fh.read(), seconds
+
+    def kill_registered(self):
+        """Kill any probe that registered a pid and is still running.
+
+        Deepest first: a grandchild is nobody's child once its parent is gone,
+        and on Windows the tree walk could no longer reach it.
+        """
+        try:
+            entries = sorted(os.listdir(self.pids_dir))
+        except OSError:
+            return
+        for entry in entries:
+            try:
+                with open(os.path.join(self.pids_dir, entry),
+                          encoding="utf-8") as fh:
+                    pids = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            for key in ("child", "parent"):
+                pid = pids.get(key)
+                if pid and alive(pid):
+                    terminate_pid(pid)
+
+    def stop_owned(self):
+        for proc in self.owned:
+            kill_owned_tree(proc)
 
     def cleanup(self):
         shutil.rmtree(self.dir, ignore_errors=True)
+        shutil.rmtree(self.pids_dir, ignore_errors=True)
 
 
 class RunnerContractTests(unittest.TestCase):
     def setUp(self):
         self._scenarios = []
+        self._pids_root = tempfile.mkdtemp(prefix="runall-contract-pids-")
 
     def tearDown(self):
+        # Order matters: the harness takes its processes back before any file
+        # it needs to find them by is deleted.
         for scenario in self._scenarios:
+            scenario.stop_owned()
+            scenario.kill_registered()
             scenario.cleanup()
+        shutil.rmtree(self._pids_root, ignore_errors=True)
 
     def scenario(self, label):
-        created = Scenario(label)
+        created = Scenario(label, self._pids_root)
         self._scenarios.append(created)
         return created
 
@@ -261,6 +511,74 @@ class RunnerContractTests(unittest.TestCase):
         with open(REAL_RUNNER, "rb") as real, open(scenario.runner, "rb") as copy:
             self.assertEqual(real.read(), copy.read(),
                              "the sandbox runner is not the repository's run_all.py")
+
+    # -- the tree walk the cleanup depends on -------------------------------
+
+    def test_the_process_table_is_pid_to_parent(self):
+        """Both platform branches must hand _descendants the same shape.
+
+        Windows walks Toolhelp32 and POSIX parses /proc. A mismatch between the
+        two only shows up on the platform the author is not sitting in front
+        of, which is exactly how a cleanup path rots unnoticed.
+        """
+        table = _process_tree()
+        if table is None:
+            self.skipTest("this host exposes no process table")
+        self.assertTrue(table, "the process table came back empty")
+        for pid, parent in table.items():
+            self.assertIsInstance(pid, int, "a process-table key is not an int")
+            self.assertIsInstance(parent, int,
+                                  "the parent of pid %r is not an int" % (pid,))
+        self.assertIn(os.getpid(), table,
+                      "the process table does not list this process")
+        self.assertIn(os.getpid(), _descendants(os.getpid()),
+                      "_descendants dropped the root it was given")
+
+    def test_the_proc_stat_parser_survives_an_awkward_command_name(self):
+        """The Linux branch is the one a local Windows run cannot exercise."""
+        line = b"4242 (python (weird) name) S 99 4242 4242 0 -1 4194560 0 0"
+        self.assertEqual(_parse_proc_stat(line), 99)
+        self.assertEqual(_parse_proc_stat(b"7 (sh) R 1 7 7 0 -1 0 0"), 1)
+
+    def test_the_proc_reader_gives_the_same_shape_as_the_other_platform(self):
+        """A synthetic /proc, so the Linux reader is checked everywhere.
+
+        The two branches have to agree on {pid: parent pid}; when they did not,
+        nothing on Windows noticed and the cleanup path only fell over on CI.
+        """
+        root = tempfile.mkdtemp(prefix="fake-proc-")
+        try:
+            for pid, ppid in ((11, 1), (22, 11), (33, 11)):
+                os.makedirs(os.path.join(root, str(pid)))
+                with open(os.path.join(root, str(pid), "stat"), "wb") as fh:
+                    fh.write(b"%d (python) S %d %d %d 0 -1 0 0"
+                             % (pid, ppid, pid, pid))
+            # Neither of these may contribute a row: a non-numeric directory
+            # and a stat file that cannot be parsed.
+            os.makedirs(os.path.join(root, "not-a-pid"))
+            os.makedirs(os.path.join(root, "44"))
+            with open(os.path.join(root, "44", "stat"), "wb") as fh:
+                fh.write(b"garbage")
+
+            table = _proc_process_tree(root)
+            self.assertEqual(table, {11: 1, 22: 11, 33: 11})
+            self.assertEqual(_descendants(11, table), [22, 33, 11])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_the_proc_reader_reports_no_table_when_proc_is_absent(self):
+        """macOS and friends: no /proc means "fall back", not "empty tree"."""
+        self.assertIsNone(_proc_process_tree(os.path.join(tempfile.gettempdir(),
+                                                          "no-such-proc-root")))
+
+    def test_descendants_are_returned_deepest_first(self):
+        """The order decides what is reachable when: kill a parent first and
+        its child becomes nobody's child, which on Windows means the tree walk
+        can no longer find it."""
+        table = {10: 1, 11: 10, 12: 11, 13: 10, 99: 1}
+        self.assertEqual(_descendants(10, table), [12, 11, 13, 10])
+        self.assertEqual(_descendants(12, table), [12])
+        self.assertEqual(_descendants(77, table), [77])
 
     # -- argument validation ------------------------------------------------
 
@@ -369,7 +687,7 @@ class RunnerContractTests(unittest.TestCase):
         """The probe sleeps for ten minutes; --timeout has to end it."""
         scenario = self.scenario("hang")
         name = scenario.add("hang", TREE_PROBE % (ORPHAN_SECONDS, HANG_SECONDS))
-        pid_file = os.path.join(scenario.dir, "hang-pids.json")
+        pid_file = scenario.pid_file("hang")
         code, output, seconds = scenario.run(scenario.uid, "--timeout",
                                              str(HANG_TIMEOUT), timeout=HANG_BUDGET + 60,
                                              env={"PROBE_PID_FILE": pid_file})
@@ -379,8 +697,7 @@ class RunnerContractTests(unittest.TestCase):
         self.assertLess(seconds, HANG_BUDGET,
                         "run_all.py was not bounded by --timeout: %.1fs" % seconds)
 
-        with open(pid_file, encoding="utf-8") as fh:
-            pids = json.load(fh)
+        pids = read_pids(pid_file)
         parent, grand = pids["parent"], pids["child"]
 
         can, why = host_can_kill_trees()
@@ -399,7 +716,38 @@ class RunnerContractTests(unittest.TestCase):
                             "the timed-out suite %d was not reaped" % parent)
         finally:
             if alive(grand):
-                kill_best_effort(grand)
+                terminate_pid(grand)
+
+    def test_a_broken_runner_is_abandoned_boundedly_and_leaves_nothing(self):
+        """The harness must clean up without the runner's cooperation.
+
+        The copied runner is regressed so its own wall clock never fires: the
+        probe sleeps for ten minutes and nothing inside run_all.py will stop
+        it. Only the harness's own bound can end the run, and it has to take
+        the probe and its grandchild with it - otherwise the failure path of
+        this very suite is what leaks processes.
+        """
+        scenario = self.scenario("broken")
+        scenario.break_timeout()
+        scenario.add("hang", TREE_PROBE % (ORPHAN_SECONDS, HANG_SECONDS))
+        pid_file = scenario.pid_file("broken")
+
+        started = time.time()
+        with self.assertRaises(SandboxTimeout):
+            scenario.run(scenario.uid, "--timeout", str(HANG_TIMEOUT),
+                         timeout=SANDBOX_BUDGET,
+                         env={"PROBE_PID_FILE": pid_file})
+        elapsed = time.time() - started
+        self.assertLess(elapsed, SANDBOX_BUDGET + 30,
+                        "the harness did not give up boundedly: %.1fs" % elapsed)
+
+        pids = read_pids(pid_file)
+        self.assertTrue(wait_gone(pids["parent"], 10),
+                        "the probe %d outlived the harness timeout"
+                        % pids["parent"])
+        self.assertTrue(wait_gone(pids["child"], 10),
+                        "the grandchild %d outlived the harness timeout"
+                        % pids["child"])
 
     # -- serial and parallel agree -----------------------------------------
 
