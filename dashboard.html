@@ -1027,7 +1027,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '当前深色': 'currently dark',
     '当前版本': 'Current version',
     '当前版本暂无模型请求或性能数据': 'No model requests or performance data for the current version yet',
-    '当前版本模型库与能力清单': 'Model catalog and capabilities of the current version',
+    '当前禁用': 'Currently disabled',
+    '网关模型清单': 'Gateway model catalog',
     '当前生效': 'In effect',
     '当前系统（': 'Current OS (',
     '当前视图': 'Current view',
@@ -1314,7 +1315,12 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '网关日志已清空': 'Gateway logs cleared',
     '网关每隔这段时间去 OpenRouter 取一次价：每个模型每份不同的价格存成一条': 'The gateway fetches prices from OpenRouter every so often: each distinct price set of a model is stored as one',
     '网关设置': 'Gateway settings',
+    '估算价格': 'Estimated cost',
+    '估算价格（国内版）': 'Estimated cost (China)',
+    '估算价格（国际版）': 'Estimated cost (Global)',
     '网关调用量': 'Gateway calls',
+    '网关调用量（国内版）': 'Gateway calls (China)',
+    '网关调用量（国际版）': 'Gateway calls (Global)',
     '网关运行日志': 'Gateway logs',
     '网关默认上游已切换并永久保存为:': 'The default upstream is switched and permanently saved as:',
     '网关默认出口': 'Default gateway exit',
@@ -1371,6 +1377,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '请填写当前密码和新密码': 'Enter the current and the new password',
     '请求': 'Requests',
     '请求成功率': 'Request success rate',
+    '请求成功率（国内版）': 'Request success rate (China)',
+    '请求成功率（国际版）': 'Request success rate (Global)',
     '请求数': 'Requests',
     '请求次数': 'Requests',
     '请确认 WorkBuddy 桌面客户端正在运行并已登录；': 'Make sure the WorkBuddy desktop client is running and signed in;',
@@ -1385,6 +1393,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '调用的模型分布 (请求数 · 消耗)': 'Model distribution (requests · usage)',
     '调用的模型分布明细 (请求数 · 消耗)': 'Model distribution detail (requests · usage)',
     '账号': 'Accounts',
+    '账号列表': 'Accounts',
     '账号 (昵称 / UID)': 'Account (nickname / UID)',
     '账号 Token 自动保活与凭证常驻 (每日 22:00 集中巡检)': 'Automatic account token keep-alive and persistent credentials (batch check daily at 22:00)',
     '账号不存在': 'Account does not exist',
@@ -1861,7 +1870,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   <div class="cards" id="cards"></div>
 
   <section>
-    <h2>账号<em id="acctCount"></em></h2>
+      <h2>账号列表<em id="acctCount"></em></h2>
     <div class="toolbar">
     <button onclick="openLoginModal()">+ 添加账号 (OAuth)</button>
     <button class="sec" id="btnCheckin" onclick="doCheckin(this)" style="display:none">每日签到 (国内版)</button>
@@ -1887,7 +1896,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
        数据全部取自 /accounts（window.ACCOUNTS），不额外发请求。 -->
   <section>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-      <h2 style="margin:0">当前禁用账号与模型 <em id="disabledCount"></em></h2>
+      <h2 style="margin:0">当前禁用 <em id="disabledCount"></em></h2>
       <div class="legend" style="margin:0"><span>「上游限流」到点自动恢复；「本地停用」需手动启用；「日限额」次日零点恢复</span></div>
     </div>
     <div id="disabledList"></div>
@@ -1923,7 +1932,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   <!-- 版本模型库与能力清单 -->
   <section>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-      <h2 style="margin:0">当前版本模型库与能力清单 <em id="availModelCount"></em></h2>
+      <h2 style="margin:0">网关模型清单 <em id="availModelCount"></em></h2>
       <div style="font-size:12px;color:var(--dim)">展示当前视图下官方对话大模型、上下文容量、推理/视觉能力及在售倍率</div>
     </div>
     <div style="overflow-x:auto">
@@ -4971,10 +4980,13 @@ async function refreshInner(gen){
   const succStr = (perf.success_rate_pct != null ? pct(perf.success_rate_pct) : '100.0%');
   if(t.usd_cny) costUsdRate = Number(t.usd_cny) || costUsdRate;
 
+  // 这三张卡的数字都按当前视图区域取（/usage 等接口带 realm），标题带上区域，
+  // 免得把国际版的用量看成全局的。
+  const realmTag = '（' + (window.VIEW_REALM === 'cn' ? '国内版' : '国际版') + '）';
   document.getElementById('cards').innerHTML =
-    card('网关调用量', fmt(t.requests) + ' <span style="font-size:13px;font-weight:500;color:var(--dim);margin-left:4px">次</span>', '', '') +
-    card('估算价格', fmtCostBoth(t.cost_cny), '', 'warn') +
-    card('请求成功率', '<span style="color:' + (perf.errors ? 'var(--warn)' : 'var(--accent2)') + '">' + succStr + '</span>', '', '');
+    card('网关调用量' + realmTag, fmt(t.requests) + ' <span style="font-size:13px;font-weight:500;color:var(--dim);margin-left:4px">次</span>', '', '') +
+    card('估算价格' + realmTag, fmtCostBoth(t.cost_cny), '', 'warn') +
+    card('请求成功率' + realmTag, '<span style="color:' + (perf.errors ? 'var(--warn)' : 'var(--accent2)') + '">' + succStr + '</span>', '', '');
 
   const total = recent.total || 0;
   RECENT_PAGE = recent.page || 1;
