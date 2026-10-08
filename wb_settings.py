@@ -47,6 +47,11 @@ PRICING_VARIANT_INHERIT_KEY = "pricing_variant_inherit"
 # reads as on: an install that predates the setting behaves exactly as it did,
 # and only an explicit false turns the feature off.
 PRICING_ENABLED_KEY = "pricing_enabled"
+# Whether the panel's account section is collapsed. Missing, or anything that is
+# not the boolean true, reads as expanded: a fresh install and a value a hand
+# edit or an older client left behind both keep the default view, and only an
+# explicit true hides the accounts.
+ACCOUNTS_COLLAPSED_KEY = "accounts_collapsed"
 
 _lock = threading.RLock()
 
@@ -1072,6 +1077,27 @@ def set_local_web_tools(accounts_dir, enabled):
         data["local_web_tools"] = enabled
         save(accounts_dir, data)
     return enabled
+
+
+def accounts_collapsed(accounts_dir):
+    """Whether the panel's account section is collapsed.
+
+    Expanded unless the stored value is the boolean true. `is True` is the whole
+    normalisation: a hand-edited "false", a 1, an object or a missing key all
+    read as expanded, so none of them can hide the accounts by accident. The
+    panel only ever writes a real boolean through set_accounts_collapsed.
+    """
+    return load(accounts_dir).get(ACCOUNTS_COLLAPSED_KEY) is True
+
+
+def set_accounts_collapsed(accounts_dir, collapsed):
+    """Persist the account-section disclosure state. Returns the stored boolean."""
+    collapsed = bool(collapsed)
+    with _lock:
+        data = load(accounts_dir)
+        data[ACCOUNTS_COLLAPSED_KEY] = collapsed
+        save(accounts_dir, data)
+    return collapsed
 
 
 _SLOT_ID_RE = re.compile(r"^slot-(\d+)$")
