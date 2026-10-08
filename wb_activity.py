@@ -254,6 +254,19 @@ def load(usage_dir=None):
     return _read_rows(path)
 
 
+def local_midnight(now=None):
+    """本地日历零点的 epoch。
+
+    必须按「那个零点本身」的本地时间规则推导，不能拿此刻生效的 UTC 偏移去替换
+    字段：夏令时切换日里，本地零点与此刻的偏移差一小时，前者会把前一天的记录算
+    进「今日」，或者漏掉今天凌晨的记录。time.mktime 把这件事交给平台 —— 它按给
+    定的那个本地时刻判断当时是否在夏令时（tm_isdst=-1），而不是按调用时刻。
+    """
+    moment = time.localtime(now) if now is not None else time.localtime()
+    return time.mktime((moment.tm_year, moment.tm_mon, moment.tm_mday,
+                        0, 0, 0, 0, 0, -1))
+
+
 def range_cutoff(value):
     """range 参数对应的下界（epoch 秒）；None 表示不设下界。认不出来抛 ValueError。
 
@@ -262,9 +275,7 @@ def range_cutoff(value):
     """
     key = str(value or DEFAULT_RANGE).strip().lower()
     if key == "today":
-        midnight = datetime.datetime.now().astimezone().replace(
-            hour=0, minute=0, second=0, microsecond=0)
-        return midnight.timestamp()
+        return local_midnight()
     if key not in RANGE_DAYS:
         raise ValueError("range must be one of: " + ", ".join(RANGES))
     days = RANGE_DAYS[key]

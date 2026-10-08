@@ -4,6 +4,7 @@
 自己的目录，所以既不会碰仓库自己的 usage/ 与 accounts/，用例之间也互相看不见
 对方的记录。
 """
+import calendar
 import datetime
 import importlib
 import inspect
@@ -494,18 +495,70 @@ class ReadApiTests(IsolatedCase):
         self.assertEqual(len(self.messages(range_key="all")), 6)
 
     def test_today_is_the_local_calendar_day_not_a_rolling_24h(self):
-        # 昨天 23:59 与今天 00:00:01 只差一分钟，但只有后者算「今日」。
-        now = datetime.datetime.now().astimezone()
-        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        # 昨天 23:59 与今天 00:00:01 只差一分钟，但只有后者算「今日」。边界按平台
+        # 对本地零点的规则算（mktime），所以在夏令时切换日这条依然成立。
+        today = time.localtime()
+        midnight = time.mktime((today.tm_year, today.tm_mon, today.tm_mday,
+                                0, 0, 0, 0, 0, -1))
+
+        def stamp(epoch):
+            return datetime.datetime.fromtimestamp(epoch).astimezone().isoformat(
+                timespec="seconds")
+
         self.seed([
             ("late-yesterday", "u-cn", "cn", "checkin", "scheduler", True,
-             (midnight - datetime.timedelta(minutes=1)).isoformat(timespec="seconds")),
+             stamp(midnight - 60)),
             ("just-after-midnight", "u-cn", "cn", "checkin", "scheduler", True,
-             (midnight + datetime.timedelta(seconds=1)).isoformat(timespec="seconds")),
+             stamp(midnight + 1)),
         ])
         self.assertEqual(self.messages(range_key="today"), ["just-after-midnight"],
                          "today 是本地日历日，昨天深夜那条不该混进来")
         self.assertEqual(len(self.messages(range_key="all")), 2)
+
+    def test_local_midnight_is_the_local_calendar_zero(self):
+        """零点的 epoch：它的本地时间必须是今天 00:00:00，而不是昨天 23:00。"""
+        injected = time.time()
+        midnight = wb_activity.local_midnight(injected)
+        local = time.localtime(midnight)
+        today = time.localtime(injected)
+        self.assertEqual((local.tm_hour, local.tm_min, local.tm_sec), (0, 0, 0))
+        self.assertEqual((local.tm_year, local.tm_mon, local.tm_mday),
+                         (today.tm_year, today.tm_mon, today.tm_mday))
+        now_midnight = time.localtime(wb_activity.local_midnight())
+        self.assertEqual((now_midnight.tm_hour, now_midnight.tm_min), (0, 0))
+
+    def test_local_midnight_uses_the_offset_in_force_at_midnight(self):
+        """夏令时切换日：本地零点与此刻的偏移不同，零点要按零点那一刻的规则算。
+
+        美国 2026-03-08 02:00 进入夏令时：当天 12:00 是 EDT(-4)，而当天零点还是
+        EST(-5)。拿此刻的偏移去替换字段会得到 04:00Z（早一小时），把前一天 23:00
+        之后的记录算进「今日」；11-01 回拨那天反过来晚一小时，把今天 00:00-01:00
+        的记录漏掉。这条检查需要平台能在进程内切换时区（POSIX 的 tzset），
+        Windows 上跳过 —— 核心用例不依赖它。
+        """
+        if not hasattr(time, "tzset"):
+            self.skipTest("this platform cannot switch time zones at runtime")
+        original = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = "America/New_York"
+            time.tzset()
+            spring_noon = calendar.timegm((2026, 3, 8, 16, 0, 0, 0, 0, 0))
+            if time.localtime(spring_noon).tm_hour != 12:
+                self.skipTest("no America/New_York tz data on this platform")
+            # 春季：真零点 05:00Z（EST），按此刻的 -4 会算成 04:00Z
+            self.assertEqual(wb_activity.local_midnight(spring_noon),
+                             calendar.timegm((2026, 3, 8, 5, 0, 0, 0, 0, 0)))
+            # 秋季：真零点 04:00Z（EDT），按此刻的 -5 会算成 05:00Z
+            fall_noon = calendar.timegm((2026, 11, 1, 17, 0, 0, 0, 0, 0))
+            self.assertEqual(time.localtime(fall_noon).tm_hour, 12)
+            self.assertEqual(wb_activity.local_midnight(fall_noon),
+                             calendar.timegm((2026, 11, 1, 4, 0, 0, 0, 0, 0)))
+        finally:
+            if original is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = original
+            time.tzset()
 
     def test_filters(self):
         self.seed(self.window_rows())
