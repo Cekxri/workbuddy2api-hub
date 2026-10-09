@@ -3735,9 +3735,19 @@ function ensureHoverTip(){
   return el;
 }
 
+// 当前视图的账号：realm 为空的账号两侧都可见，与账号卡片一直以来的口径一致。
+// 全页只留这一处 realm 过滤表达式 —— 账号卡片与「当前禁用账号与模型」都走它，
+// 两处不会各写一份、然后各自漂移。视图的真源是 window.VIEW_REALM。
+function accountsInView(){
+  const view = window.VIEW_REALM || "intl";
+  return (window.ACCOUNTS || []).filter(a => !a.realm || a.realm === view);
+}
+
 // 当前禁用总览：把散落在账号卡片上的停用/限流状态汇总成一张表。
 // 四类来源：①面板手动停用 ②上游账号级冷却 ③上游模型级冷却 ④本地日限额/积分护栏。
 // 全部读 window.ACCOUNTS，不额外发请求；数据与账号卡片同源，不会互相矛盾。
+// 只描述当前视图（accountsInView）：计数、分组与空状态都从这同一份过滤后的数据
+// 算出来，否则切到国内版时会看到国际版的停用状态（issue #31）。
 function disabledRows(){
   const rows = [];
   const now = Math.floor(Date.now() / 1000);
@@ -3746,7 +3756,7 @@ function disabledRows(){
     const d = new Date(); d.setHours(24, 0, 0, 0);
     return Math.floor(d.getTime() / 1000);
   })();
-  (window.ACCOUNTS || []).forEach(a => {
+  accountsInView().forEach(a => {
     const who = (a.nickname || '?') + ' (' + String(a.uid || '').slice(0, 8) + ')';
     const realm = a.realm === 'cn' ? '国内版' : '国际版';
     const detail = a.lastErrorDetail || '';
@@ -3827,7 +3837,7 @@ function renderAccounts(){
   renderDisabled();
   const box = document.getElementById('accounts');
   const currentView = (window.VIEW_REALM || "intl");
-  let list = (window.ACCOUNTS || []).filter(a => !a.realm || a.realm === currentView);
+  let list = accountsInView();
   // Enabled accounts first; disabled ones sink to the bottom. Within each
   // group keep the server order stable so the table does not jump around.
   list = list.map((a, i) => [a, i])
