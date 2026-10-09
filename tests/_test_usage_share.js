@@ -92,18 +92,26 @@ const visible = (cell) => cell.replace(/<[^>]*>/g, '').trim();
 const BAR_FLOOR = 3;
 const barMatches = (row) => row.bar === Math.max(BAR_FLOOR, row.pct);
 
-/* Every model row, keyed by the model it is about.
+/* Every model row, in render order - one entry per rendered row.
+ *
+ * A list, not a map keyed by model name: a map silently collapses two rows for
+ * the same model into one, and that is the shape of regression the old count
+ * check used to catch. A stray duplicate would leave the keys looking right
+ * while the DOM carried an extra row, making this suite weaker than the check
+ * it replaces. Keeping the list puts the multiplicity in the data, so it has
+ * to be asserted rather than assumed away.
  *
  * The model cell and the share cell are taken from the same <tr>, which is the
- * whole point: a share cannot be attributed to a row it does not sit in.
+ * other half of the point: a share cannot be attributed to a row it does not
+ * sit in.
  *
  * The summary row is the one row whose share cell carries no bar - it prints
  * the total as a bare percentage - and that is what separates the two, exactly
  * as before; only the way the bar is recognised changed, from its class to the
  * width it carries.
  */
-function rowsByModel(out){
-  const rows = {};
+function modelRows(out){
+  const rows = [];
   for(const match of out.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/g)){
     const row = match[1];
     const modelCell = row.match(/<td[^>]*data-label="模型"[^>]*>([\s\S]*?)<\/td>/);
@@ -115,13 +123,20 @@ function rowsByModel(out){
     if(!bar) continue;
     const pct = visible(cell).match(/([\d.]+)\s*%/);
     const model = visible(modelCell[1]);
-    rows[model] = { model: model, pct: pct ? Number(pct[1]) : null, bar: Number(bar[1]) };
+    rows.push({ model: model, pct: pct ? Number(pct[1]) : null, bar: Number(bar[1]) });
   }
   return rows;
 }
 
-const modelsOf = (rows) => Object.keys(rows).sort();
-const sharesOf = (rows) => modelsOf(rows).map(id => id + '=' + rows[id].pct).join(' ');
+const namesOf = (rows) => rows.map(r => r.model);
+const rowsFor = (rows, name) => rows.filter(r => r.model === name);
+/* The single row for a model, or null when it is missing or duplicated - so a
+ * model that renders twice fails the assertion reading it instead of being
+ * quietly resolved to one of the two. */
+const onlyRow = (rows, name) => { const hits = rowsFor(rows, name); return hits.length === 1 ? hits[0] : null; };
+/* Every rendered row, duplicates included: a collapsed summary would hide the
+ * very thing this diagnostic exists to show. */
+const sharesOf = (rows) => rows.map(r => r.model + '=' + r.pct).join(' ') || '(none)';
 
 /* The summary row is the row that prints a share without a bar. */
 function summaryShare(out){
@@ -141,19 +156,21 @@ console.log('[1] no filter: each row is its own tokens over the total');
 api.setFilters('', '');
 api.renderPerfMatrix(buildUsage(), perf);
 let out = document.getElementById('perfMatrix').innerHTML;
-let rows = rowsByModel(out);
-check('one row per model', JSON.stringify(modelsOf(rows)) === '["model-big","model-mid","model-small"]',
+let rows = modelRows(out);
+check('exactly three model rows are rendered', rows.length === 3, sharesOf(rows));
+check('each model appears exactly once, and nothing else is rendered',
+      JSON.stringify(namesOf(rows).slice().sort()) === '["model-big","model-mid","model-small"]',
       sharesOf(rows));
-check('model-big owns 50% of the total', !!rows['model-big'] && rows['model-big'].pct === 50, sharesOf(rows));
-check('model-mid owns 30% of the total', !!rows['model-mid'] && rows['model-mid'].pct === 30, sharesOf(rows));
-check('model-small owns 20% of the total', !!rows['model-small'] && rows['model-small'].pct === 20, sharesOf(rows));
-check('the largest row is not forced to 100%', rows['model-big'].pct !== 100, rows['model-big'].pct);
+check('model-big owns 50% of the total', (onlyRow(rows, 'model-big') || {}).pct === 50, sharesOf(rows));
+check('model-mid owns 30% of the total', (onlyRow(rows, 'model-mid') || {}).pct === 30, sharesOf(rows));
+check('model-small owns 20% of the total', (onlyRow(rows, 'model-small') || {}).pct === 20, sharesOf(rows));
+check('the largest row is not forced to 100%', onlyRow(rows, 'model-big').pct !== 100, sharesOf(rows));
 check('shares add up to the whole',
-      Math.round(modelsOf(rows).reduce((s, id) => s + rows[id].pct, 0) * 10) / 10 === 100,
+      Math.round(rows.reduce((s, r) => s + r.pct, 0) * 10) / 10 === 100,
       sharesOf(rows));
 check('bar width follows the printed share in every row',
-      modelsOf(rows).every(id => barMatches(rows[id])),
-      modelsOf(rows).map(id => id + ': bar ' + rows[id].bar + ' vs ' + rows[id].pct).join(', '));
+      rows.every(barMatches),
+      rows.map(r => r.model + ': bar ' + r.bar + ' vs ' + r.pct).join(', '));
 check('summary still prints the total', summaryTok(out) === '10,000', summaryTok(out));
 check('summary row is the 100% end of the scale', summaryShare(out) === '100%', summaryShare(out));
 
@@ -162,9 +179,10 @@ console.log('[2] a filter re-bases the share on the filtered total');
 api.setFilters('', 'model-mid');
 api.renderPerfMatrix(buildUsage(), perf);
 out = document.getElementById('perfMatrix').innerHTML;
-rows = rowsByModel(out);
-check('only the filtered model remains', JSON.stringify(modelsOf(rows)) === '["model-mid"]', sharesOf(rows));
-check('model-mid is 100% of what is now shown', rows['model-mid'].pct === 100, sharesOf(rows));
+rows = modelRows(out);
+check('only the filtered model remains, once',
+      rows.length === 1 && rows[0].model === 'model-mid', sharesOf(rows));
+check('model-mid is 100% of what is now shown', onlyRow(rows, 'model-mid').pct === 100, sharesOf(rows));
 check('summary is the filtered total', summaryTok(out) === '3,000', summaryTok(out));
 
 console.log();
@@ -176,10 +194,11 @@ console.log('[3] tokens the table does not list stay in the denominator');
 api.setFilters('', '');
 api.renderPerfMatrix(buildUsage({ 'default-model': 2000 }, 12000), perf);
 out = document.getElementById('perfMatrix').innerHTML;
-rows = rowsByModel(out);
-check('model-big is a share of 12,000, not of its own 10,000', rows['model-big'].pct === 41.7, sharesOf(rows));
-check('model-mid is a share of 12,000', rows['model-mid'].pct === 25, sharesOf(rows));
-check('model-small is a share of 12,000', rows['model-small'].pct === 16.7, sharesOf(rows));
+rows = modelRows(out);
+check('model-big is a share of 12,000, not of its own 10,000',
+      onlyRow(rows, 'model-big').pct === 41.7, sharesOf(rows));
+check('model-mid is a share of 12,000', onlyRow(rows, 'model-mid').pct === 25, sharesOf(rows));
+check('model-small is a share of 12,000', onlyRow(rows, 'model-small').pct === 16.7, sharesOf(rows));
 check('summary prints the full total', summaryTok(out) === '12,000', summaryTok(out));
 
 console.log();
@@ -190,14 +209,14 @@ console.log('[4] a lopsided total still resolves the small rows');
 api.setFilters('', '');
 api.renderPerfMatrix(buildUsage({ 'model-big': 5700000000, 'model-mid': 8800000, 'model-small': 5000000 }), perf);
 out = document.getElementById('perfMatrix').innerHTML;
-rows = rowsByModel(out);
-check('the dominant model reads 99.8%, not 100%', rows['model-big'].pct === 99.8, sharesOf(rows));
+rows = modelRows(out);
+check('the dominant model reads 99.8%, not 100%', onlyRow(rows, 'model-big').pct === 99.8, sharesOf(rows));
 check('the runner-up keeps a visible share',
-      rows['model-mid'].pct > 0 && rows['model-mid'].pct < 1, sharesOf(rows));
-check('the smallest row is not a bare zero', rows['model-small'].pct > 0, sharesOf(rows));
+      onlyRow(rows, 'model-mid').pct > 0 && onlyRow(rows, 'model-mid').pct < 1, sharesOf(rows));
+check('the smallest row is not a bare zero', onlyRow(rows, 'model-small').pct > 0, sharesOf(rows));
 check('bar width still follows the printed share in every row',
-      modelsOf(rows).every(id => barMatches(rows[id])),
-      modelsOf(rows).map(id => id + ': bar ' + rows[id].bar + ' vs ' + rows[id].pct).join(', '));
+      rows.every(barMatches),
+      rows.map(r => r.model + ': bar ' + r.bar + ' vs ' + r.pct).join(', '));
 
 console.log();
 console.log('PASS=' + pass + ' FAIL=' + fail);
