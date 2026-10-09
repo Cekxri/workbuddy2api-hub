@@ -113,6 +113,20 @@ tbody tr:hover{background:var(--panel2)}
   .toolbar{gap:6px}
   .toolbar button{padding:5px 10px;font-size:11px}
 }
+/* 账号区折叠。chevron 的指向跟着 aria-expanded 走，正文用
+   grid-template-rows 收放：0fr 本身就是收起，所以没有动画也正确，也不必给
+   列表猜一个 max-height（账号一多就会被截断）。hoverTip 是挂在 body 上的
+   全局单例，不受这里的 overflow 影响。 */
+.disclosure{display:inline-flex;align-items:center;gap:7px;background:transparent;
+  border:none;padding:0;margin:0;font:inherit;color:inherit;cursor:pointer;border-radius:6px}
+.disclosure:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.disclosure-chevron{width:0;height:0;border-left:5px solid currentColor;
+  border-top:4px solid transparent;border-bottom:4px solid transparent;
+  transition:transform .18s ease;transform:rotate(90deg)}
+.disclosure[aria-expanded="false"] .disclosure-chevron{transform:rotate(0deg)}
+.collapse{display:grid;grid-template-rows:1fr;transition:grid-template-rows .18s ease}
+.collapse.collapsed{grid-template-rows:0fr}
+.collapse>.collapse-inner{min-height:0;overflow:hidden}
 .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;
   background:var(--panel2);border:1px solid var(--line);color:var(--dim);white-space:nowrap;font-weight:600}
 .badge.ok{color:#15803d;background:rgba(34,197,94,.14);border-color:rgba(34,197,94,.32)}
@@ -2657,7 +2671,15 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   <div class="cards" id="cards"></div>
 
   <section>
-      <h2>账号列表<em id="acctCount"></em></h2>
+    <h2>
+      <!-- 折叠开关：真按钮，所以键盘可达；aria-expanded、chevron
+           方向与正文可见性三者永远同步。标题与计数留在正文之外，收起时仍可见。 -->
+      <button type="button" class="disclosure" id="accountsToggle" aria-expanded="true"
+              aria-controls="accountsBody" onclick="toggleAccountsSection(event)"
+              title="折叠 / 展开账号区"><span class="disclosure-chevron" aria-hidden="true"></span>账号列表</button><em id="acctCount"></em>
+    </h2>
+    <div id="accountsBody" class="collapse">
+      <div class="collapse-inner">
     <div class="toolbar">
     <button onclick="openLoginModal()">+ 添加账号 (OAuth)</button>
     <button class="sec" id="btnCheckin" onclick="doCheckin(this)" style="display:none">每日签到 (国内版)</button>
@@ -2677,6 +2699,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     
   </div>
     <div id="accounts"></div>
+      </div>
+    </div>
   </section>
 
   <!-- 当前禁用总览：把散落在账号卡片上的停用/限流状态汇总成一张表。
@@ -6499,6 +6523,44 @@ function restorePageNavHash(){
   if(navigable) scrollToPageSection(page, id, false);
 }
 
+// ==== 账号区折叠开始 ====
+// 折叠纯粹是呈现：账号轮询（loadAccounts）、realm 切换、签到/启用停用等逻辑
+// 都不碰这里，所以收起之后它们照常跑，也不会把区域顶开。偏好存在服务端的
+// accounts/settings.json（accounts_collapsed），不用 localStorage。
+let _accountsCollapsed = false;
+
+function accountsSectionBody(){
+  return document.getElementById('accountsBody');
+}
+
+// 唯一的写入口：aria-expanded、正文的 collapsed 类与内存状态一起改，
+// 三者不可能不同步。
+function applyAccountsCollapsed(collapsed){
+  _accountsCollapsed = collapsed === true;
+  const body = accountsSectionBody();
+  const btn = document.getElementById('accountsToggle');
+  if(body) body.classList.toggle('collapsed', _accountsCollapsed);
+  if(btn) btn.setAttribute('aria-expanded', _accountsCollapsed ? 'false' : 'true');
+  return _accountsCollapsed;
+}
+
+function accountsCollapsed(){
+  return _accountsCollapsed;
+}
+
+// 显式选择走既有的 settings save 通道（一个键的 patch，不动别的设置）。
+async function toggleAccountsSection(evt){
+  if(evt && evt.preventDefault) evt.preventDefault();
+  const next = !_accountsCollapsed;
+  applyAccountsCollapsed(next);
+  try {
+    await postJSON('/settings/save', {accounts_collapsed: next});
+  } catch(e) {
+    toast('折叠状态保存失败: ' + e.message, 'bad');
+  }
+}
+// ==== 账号区折叠结束 ====
+
 async function loadSettings(showToast){
   try {
     const data = await getJSON('/settings');
@@ -6516,6 +6578,9 @@ async function loadSettings(showToast){
 
     applyLimits(data);
     applyUiLanguageSelect(data.ui_language || 'zh');
+
+    // 账号区折叠：服务端没存过、存坏了，或后端根本没这个字段，都按展开算。
+    applyAccountsCollapsed(data.accounts_collapsed === true);
 
       const creditsHoursInput = document.getElementById('setCreditsRefreshHours');
       if(creditsHoursInput && data.credits_refresh_hours !== undefined){
