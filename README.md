@@ -385,6 +385,8 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
+- **猫猫旅行不再误判「没有 Buddy」**（[PR #235](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/235)，感谢 [@ayeaaaa](https://github.com/ayeaaaa)）：`travel/status` 的 `buddy_id` 是**当前旅行实例**的 id，猫在家（idle）时恒为 0，之前拿它判断「有没有 Buddy」，于是所有 idle 账号（包括早就领过 Buddy 的）点旅行都会被挡下。现在以 `depart` 返回的 400 `no active buddy` 为准：先直接派，确实缺 Buddy 才完成并领取 `first_buddy`（其奖励就是 Buddy 实例）后重试一次，其余失败原样透出上游提示。
+
 - **页面头部结构统一**：「网关与账号」页补上标题 + 一行说明（原来直接从卡片开始），并给「网关设置」补上同款说明行（原来只有标题）——五个页面现在都是「16px 深色标题 + 12px 灰字说明」。新标题不在 `<section>` 里，所以不会变成侧栏「本页导航」项；英文与正體中文词条同步补上。
 
 - **顶部页签顺序调整**：改成「网关与账号 → 数据看板 → 智能体配置 → 设置 → 运行日志」，把运行日志放最后、设置放倒数第二；`MAIN_TABS` 与启动脚本里那份 `TABS` 同步按新顺序排列（两处注释本来就要求与导航顺序一致）。
