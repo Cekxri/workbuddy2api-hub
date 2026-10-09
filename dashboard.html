@@ -4586,6 +4586,14 @@ function fmtCoolAt(epoch){
   return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate())
     + ' ' + two(d.getHours()) + ':' + two(d.getMinutes());
 }
+// 徽章里放不下完整时间，折算成剩余量：45s / 29m / 2h05m。
+function fmtLeft(seconds){
+  const s = Math.max(0, Math.round(Number(seconds) || 0));
+  if(s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if(m < 60) return m + 'm';
+  return Math.floor(m / 60) + 'h' + String(m % 60).padStart(2, '0') + 'm';
+}
 function coolPills(a){
   const list = a && Array.isArray(a.modelCooldowns) ? a.modelCooldowns : [];
   const pills = list.map(c => {
@@ -4623,7 +4631,12 @@ function accountRow(a){
               : a.reserveBlocked ? '<span class="badge warn">保留积分</span>'
               : a.dailyLimitBlocked ? '<span class="badge warn" title="今日已用 ' + fmt(a.dailyTokensToday || 0) + ' / ' + fmt(a.dailyTokenLimit || 0) + ' token，暂停接单（本地 0 点恢复）">日限额</span>'
               : a.creditLimitReached ? '<span class="badge warn" title="今日已消费 ' + Number(a.dailyCreditsToday || 0).toFixed(2) + ' / ' + (a.dailyCreditLimit || 0) + ' 积分，仅免费模型可用（本地 0 点恢复）">积分限额</span>'
-              : a.inCooldown ? '<span class="badge warn">冷却 ' + (a.cooldownFor||0) + 's</span>'
+              // 熔断/降权也是"不接单"，但跟上游配额无关：上游连续失败把账号
+              // 关进本地保护窗口。少了这两支，账号会被画成绿色「可用」，而池子
+              // 其实是空的——生产上就是这么误导排查的。
+              : a.breakerFor ? '<span class="badge bad" title="上游连续失败触发熔断，本窗口内不接单；账号与凭证本身没问题，' + fmtLeft(a.breakerFor) + '后自动恢复">熔断 ' + fmtLeft(a.breakerFor) + '</span>'
+              : a.degradeFor ? '<span class="badge warn" title="连续未知失败进入降权窗口，' + fmtLeft(a.degradeFor) + '后恢复">降权 ' + fmtLeft(a.degradeFor) + '</span>'
+              : a.inCooldown ? '<span class="badge warn"' + (Number(a.softStreak || 0) > 1 ? ' title="连续软限流 ' + Number(a.softStreak) + ' 次，冷却时间按 2 倍递增"' : '') + '>冷却 ' + (a.cooldownFor||0) + 's</span>'
               : a.expiresIn === 'expired' ? '<span class="badge bad">已过期</span>'
               : '<span class="badge ok">可用</span>';
   const pills = coolPills(a);
@@ -4761,8 +4774,22 @@ function disabledRows(){
     }
     if(a.inCooldown){
       const secs = Number(a.cooldownFor || 0);
+      const streak = Number(a.softStreak || 0);
       rows.push({who, realm, scope: '账号', kind: '上游限流', detail,
-                 reason: a.lastError || '上游 429',
+                 reason: (a.lastError || '上游 429')
+                       + (streak > 1 ? '（连续软限流 ' + streak + ' 次，冷却按 2 倍递增）' : ''),
+                 until: secs > 0 ? fmtCoolAt(now + secs) : ''});
+    }
+    if(a.breakerFor){
+      const secs = Number(a.breakerFor || 0);
+      rows.push({who, realm, scope: '账号', kind: '熔断', detail,
+                 reason: '上游连续失败触发熔断，本窗口内不接单（账号与凭证本身没问题，恢复后可继续用）',
+                 until: secs > 0 ? fmtCoolAt(now + secs) : ''});
+    }
+    if(a.degradeFor){
+      const secs = Number(a.degradeFor || 0);
+      rows.push({who, realm, scope: '账号', kind: '降权', detail,
+                 reason: '连续未知失败进入降权窗口，优先级被压低',
                  until: secs > 0 ? fmtCoolAt(now + secs) : ''});
     }
     (Array.isArray(a.modelCooldowns) ? a.modelCooldowns : []).forEach(c => {
@@ -4806,7 +4833,7 @@ function renderDisabled(){
     box.innerHTML = '<div class="legend" style="margin:0"><span>当前没有禁用的账号或模型。</span></div>';
     return;
   }
-  const badge = k => k === '上游限流' ? 'warn' : (k === '本地停用' ? 'bad' : 's');
+  const badge = k => k === '上游限流' ? 'warn' : (k === '本地停用' || k === '熔断' ? 'bad' : 's');
   box.innerHTML = '<div class="table-wrap"><table class="data-cards"><thead><tr>'
     + '<th style="text-align:left">账号</th>'
     + '<th style="text-align:center;width:76px">版本</th>'

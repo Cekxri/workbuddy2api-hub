@@ -6032,8 +6032,12 @@ def open_upstream(payload, session_key=None, target_realm=None):
             if is_transient(exc):
                 transient_hits += 1
                 account.note_unknown_failure("connection: %s" % type(exc).__name__)
-                log("upstream connection hiccup for '%s' (%s), retrying (degrade=%d)"
-                    % (model, type(exc).__name__, account.degrade_count))
+                # 带上 UID：这一行同时是一次扣分（连续 3 次就把账号熔断 30
+                # 分钟），不写清楚是谁挨的这一下，事后只能看着一串 hiccup 猜
+                # 是哪几个账号被关掉、池子为什么突然空了。
+                log("account %s: upstream connection hiccup for '%s' (%s), "
+                    "retrying (degrade=%d)"
+                    % (account.uid[:8], model, type(exc).__name__, account.degrade_count))
                 last_error = exc
                 time.sleep(min(0.6 * transient_hits, 2.0))
                 continue
@@ -6083,8 +6087,38 @@ def open_upstream(payload, session_key=None, target_realm=None):
                   % (model, wb_settings.model_daily_token_limit(ACCOUNTS_DIR, realm)))
         raise RateLimited(None, reason,
                           wait=seconds_until_local_midnight(), message=reason)
-    raise RuntimeError(f"no usable account for realm '{realm}': all are disabled, "
-                       f"cooling down, expired or parked by the daily token limit")
+    raise RuntimeError("no usable account for realm '%s': all are disabled, cooling down, "
+                       "expired or parked by the daily token limit%s"
+                       % (realm, pool_unavailable_detail(realm, model)))
+
+def pool_unavailable_detail(realm, model=None):
+    """把该区域每个账号不可用的原因拼成一句，附在「没有可用账号」后面。
+
+    这句话以前只列了四种可能（停用 / 冷却 / 过期 / 日限额），而 v1.6.16 之后
+    账号还会被熔断与降权窗口挡住——恰好这两种一个字都没提。于是生产上出现过
+    一场很难解释的报错：上游成片丢连接，几个账号各连踩 3 次触发 30 分钟熔断，
+    池子瞬间空掉、请求 11ms 就回 503，而看板上那些账号仍然显示「可用」，
+    排查的人只能对着「明明有 9 个账号」的池子猜。
+
+    这里不改变判定，只把判定结果说出来：每个不可用账号「八位 UID + 原因」。
+    """
+    if POOL is None:
+        return ""
+    accounts = [a for a in POOL.accounts if a.realm == realm]
+    if not accounts:
+        return "；该区域没有任何账号"
+    reasons = []
+    for account in accounts:
+        try:
+            reason = account.unavailable_reason(model=model)
+        except Exception:
+            reason = ""
+        if reason:
+            reasons.append("%s %s" % ((account.uid or "?")[:8], reason))
+    if not reasons:
+        return ""
+    return "；各账号：%s" % "，".join(reasons)
+
 def extract_session_key(headers, payload):
     key = (
         headers.get("X-Conversation-Id") or
