@@ -1160,80 +1160,425 @@ def _fold_cost(bucket, cost, model):
         missing[mid] = missing.get(mid, 0) + 1
 
 
+# ---------------------------------------------------------------------------
+# Incremental all-time aggregates
+#
+# The dashboard's all-time panels used to re-read the whole usage.jsonl on
+# every cache miss, and the log grows by thousands of rows a day. Those totals
+# only change when a row is appended, so each aggregate keeps the byte offset
+# it has already folded and a refresh reads just the rows past it - the shape
+# daily_usage_stats() already uses for today's counters, truncation guard
+# included. A windowed query still walks the file, but the pre-filter above
+# drops out-of-window lines before the parse, so it pays only for the rows it
+# keeps.
+#
+# A carried-over total is only valid while everything the fold read is
+# unchanged, so a state also carries a fingerprint of its other inputs: the
+# price tables (a new policy can re-price a row that has no reference of its
+# own) and the realm a row without a realm field is attributed to. When one of
+# those moves, the fold starts over - an offset alone would happily keep
+# yesterday's prices forever.
+#
+# One state per realm and per aggregate: each holds a few models and a few
+# accounts, so keeping one around costs nothing next to the scan it replaces.
+# ---------------------------------------------------------------------------
+
+# What wb_pricing hands back while its file is missing. Without these, every
+# call would get a fresh empty dict, the identity test below would never
+# match, and a deployment with no price files would rescan on every refresh.
+_EMPTY_POLICIES = {}
+_EMPTY_TIMELINE = []
+
+
+def _usage_log_key():
+    """(size, device, inode) of the usage log, or a zero key when it is gone.
+
+    One stat answers both questions an incremental fold has to ask. The size
+    says whether the bytes the cached offset counted are still there: a
+    shorter file was truncated, or replaced by a shorter one. The device and
+    inode say whether it is still the same file at all - a log copied over in
+    place keeps its inode and is caught by the size test, while one moved into
+    position is a different file and a stale offset would point into the
+    middle of unrelated rows.
+    """
+    try:
+        info = os.stat(USAGE_LOG)
+        return (info.st_size, info.st_dev, info.st_ino)
+    except OSError:
+        return (0, 0, 0)
+
+
+def _log_offset_holds(previous, current, offset):
+    """True when `offset` still sits inside the file `previous` described.
+
+    False means the cached fold counted bytes that are gone or belong to a
+    different file now, so it has to start over.
+    """
+    return (previous is not None
+            and previous[1] == current[1] and previous[2] == current[2]
+            and current[0] >= offset)
+
+
+# How many bytes of the already-counted prefix are read back on every
+# refresh to prove that prefix still holds the same bytes. Long enough
+# that a rewrite cannot match it by accident, short enough to cost
+# nothing on the poll path.
+_TAIL_SIGNATURE = 64
+
+
+def _log_tail_signature(offset):
+    """The last bytes before `offset`, or None when they cannot be read.
+
+    An incremental fold assumes the bytes it has already counted are still
+    there. Size and inode catch a log that was replaced or cut short, but
+    not one that was emptied in place and has since grown past the old
+    offset: same file, only longer, which is what truncating the log - or
+    a log rotation with copytruncate - leaves behind. Reading the seam back
+    is what tells those apart, because an append leaves it alone and a
+    rewrite does not.
+    """
+    if offset <= 0:
+        return b""
+    try:
+        with open(USAGE_LOG, "rb") as fh:
+            start = max(0, offset - _TAIL_SIGNATURE)
+            fh.seek(start)
+            return fh.read(offset - start)
+    except OSError:
+        return None
+
+
+def _log_resume_ok(state, log_key):
+    """True when the cached offset still sits on the log's current prefix.
+
+    False means the fold cannot be carried over: the file shrank, it is a
+    different file, or the bytes it counted were rewritten under it.
+    """
+    if not _log_offset_holds(state["key"], log_key, state["offset"]):
+        return False
+    return _log_tail_signature(state["offset"]) == state["tail"]
+
+
+def _pricing_inputs():
+    """Everything cost_for_row() reads besides the row itself.
+
+    Identity, not equality: wb_pricing caches each of these behind its own
+    file key, so an edited file hands back a different object, and comparing
+    identities keeps the check off the refresh path - walking the whole price
+    table to notice a change would cost more than the change does. Holding the
+    objects here is also what makes the test sound: a live object cannot have
+    its id handed to a replacement.
+
+    With the master switch off cost_for_row() never opens a table at all, so
+    the flag is the whole input. It is read through the same no-argument
+    call cost_for_row() makes - passing a directory here would answer from
+    a different settings file whenever the two disagree, and the fingerprint
+    would then watch an input the fold never read.
+    """
+    try:
+        if not wb_pricing.pricing_enabled():
+            return (False, None, None, None)
+        return (True,
+                wb_pricing.load_policies() or _EMPTY_POLICIES,
+                wb_pricing.load_timeline() or _EMPTY_TIMELINE,
+                wb_pricing.load_pricing())
+    except Exception as exc:
+        log("pricing inputs unreadable: %s" % exc)
+        return None
+
+
+def _pricing_unchanged(previous, current):
+    """True when two _pricing_inputs() tuples describe the same prices."""
+    if previous is None or current is None:
+        return False
+    return (previous[0] == current[0] and previous[1] is current[1]
+            and previous[2] is current[2] and previous[3] is current[3])
+
+
+def _realm_inputs():
+    """What row_realm() consults for a row that carries no realm field.
+
+    Rows written before the field existed - an error row with no account - are
+    attributed to the account that served them, or to the model's home realm.
+    Importing or dropping an account can therefore move such a row from one
+    exit to the other, and a cached aggregate must not outlive that.
+    """
+    if POOL is None:
+        return (CURRENT_REALM, ())
+    try:
+        return (CURRENT_REALM, tuple(sorted((a.uid, a.realm) for a in POOL.accounts)))
+    except Exception as exc:
+        log("realm inputs unreadable: %s" % exc)
+        return None
+
+
+def _scan_usage_from(offset, fold, stop_at=None, skip=None):
+    """Fold every row past `offset` into `fold(row)`; returns (offset, error).
+
+    The offset handed back is the end of the last row the pass got through.
+    Rows are appended whole, so a line without its trailing newline is left
+    for the next pass rather than half-parsed - the rule _scan_daily_usage()
+    follows.
+
+    `skip(line)` drops a line before the parse; the windowed readers pass
+    _line_outside_window() here, so a line the range excludes costs a substring
+    search instead of a json.loads.
+
+    `stop_at` caps the read at the offset an all-time fold has already covered,
+    so a windowed payload built on top of that fold describes exactly the same
+    bytes as its all-time half.
+
+    The log is read in binary and the offset advances by the length of each
+    line: a tell() per line costs more than the parse it would be tracking,
+    and an offset only has to be a byte count. Each line is decoded to text
+    before it is looked at, which is the order the text-mode readers read in
+    and the one the pre-filter expects.
+
+    `error` is the exception that stopped the read, or None. A row the fold
+    cannot swallow ends the pass exactly where it used to - the readers have
+    always kept what they had folded so far - and the caller reports it with
+    its own label. The offset handed back with an error is the end of that
+    row: the fold may have half applied it before it raised, so the caller
+    starts its own fold over instead of resuming after it, while a windowed
+    pass built on the state still sees the row - and stops there - so the
+    two halves keep describing the same bytes.
+    """
+    if stop_at is not None and offset >= stop_at:
+        return offset, None
+    try:
+        with open(USAGE_LOG, "rb") as fh:
+            fh.seek(offset)
+            while True:
+                if stop_at is not None and offset >= stop_at:
+                    break
+                raw = fh.readline()
+                if not raw:
+                    break
+                if not raw.endswith(b"\n"):
+                    break
+                end = offset + len(raw)
+                if stop_at is not None and end > stop_at:
+                    # The line straddles the covered bytes, so the all-time
+                    # fold never saw it either: leave it out of this pass too.
+                    break
+                try:
+                    # Decoded before anything else, exactly as the text-mode
+                    # readers do: a line no reader can decode stops them where
+                    # it stands, so it stops this pass too rather than letting
+                    # it count rows the full scan never reached. Stripping the
+                    # text (not the bytes) keeps the two agreeing on what
+                    # counts as an empty line.
+                    line = raw.decode("utf-8").strip()
+                except UnicodeDecodeError as exc:
+                    return end, exc
+                if not line:
+                    offset = end
+                    continue
+                if skip is not None and skip(line):
+                    offset = end
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    offset = end
+                    continue
+                try:
+                    fold(row)
+                except Exception as exc:
+                    return end, exc
+                offset = end
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        return offset, exc
+    return offset, None
+
+
+def _copy_usage_bucket(bucket):
+    """Copy one by_model* bucket, its accounts dict included."""
+    out = dict(bucket)
+    out["accounts"] = dict(bucket["accounts"])
+    return out
+
+
+def _copy_usage_snapshot(snap):
+    """A snapshot copy the caller may decorate and hand out.
+
+    The fold is cached and shared, so what leaves this module is a copy - the
+    same reason _daily_state_copy() exists for the daily counters. Only the
+    three per-model views nest; every other value is a scalar.
+    """
+    out = dict(snap)
+    out["cost_missing"] = dict(snap["cost_missing"])
+    out["by_model"] = {m: _copy_usage_bucket(b) for m, b in snap["by_model"].items()}
+    out["by_model_realm"] = {m: {rr: _copy_usage_bucket(b) for rr, b in realms.items()}
+                             for m, realms in snap["by_model_realm"].items()}
+    out["by_model_acct"] = {
+        m: {rr: {acct: _copy_usage_bucket(b) for acct, b in accts.items()}
+            for rr, accts in realms.items()}
+        for m, realms in snap["by_model_acct"].items()}
+    return out
+
+
+def _fold_usage_snapshot(row, snap, r, since, until):
+    """Fold one parsed row into a usage snapshot.
+
+    One definition for both callers: the all-time fold (fed only the rows past
+    its offset) and the windowed one (fed the whole file, out-of-window lines
+    dropped before the parse). The realm and window tests come first, so every
+    total below - requests, tokens, per-model and per-account breakdowns -
+    describes the same slice of the log.
+    """
+    if r and not row_matches_realm(row, r):
+        return
+    at = row.get("at") or 0
+    if since and at < since:
+        return
+    if until and at > until:
+        return
+    outcome = row_outcome(row)
+    # Each row is priced against the version that was in force when it
+    # happened, so a later price change cannot rewrite yesterday's totals.
+    cost = wb_pricing.cost_for_row(row)
+    model = row.get("model")
+    if outcome != "completed":
+        snap["errors"] += 1
+        # Credit is money already spent: a request that failed after the
+        # upstream had billed for it still consumed credit, so it is summed
+        # here exactly like the analytics page sums it. Token totals keep the
+        # completed-only rule this page has always used, and a client abort is
+        # skipped because its usage block is incomplete.
+        if outcome != "client_aborted":
+            snap["credit"] += (row.get("credit") or 0)
+            _fold_cost(snap, cost, model)
+        return
+    snap["requests"] += 1
+    # Read each tracked field once: the row lands in four buckets below and
+    # every one of them walks the same fields.
+    present = [(k, row[k] or 0) for k in USAGE_FIELDS if k in row]
+    for k, value in present:
+        snap[k] += value
+    _fold_cost(snap, cost, model)
+    m = model or "unknown"
+    rr = row_realm(row)
+    acct_id = row.get("account")
+    acct_key = acct_id or "(unattributed)"
+    per = snap["by_model"].setdefault(m, {"requests": 0, "accounts": {}, "cost_cny": 0.0, **{k: 0 for k in USAGE_FIELDS}})
+    per_realm = snap["by_model_realm"].setdefault(m, {}).setdefault(
+        rr, {"requests": 0, "accounts": {}, "cost_cny": 0.0, **{k: 0 for k in USAGE_FIELDS}})
+    per_acct = (snap["by_model_acct"].setdefault(m, {})
+                .setdefault(rr, {})
+                .setdefault(acct_key, {"requests": 0, "accounts": {},
+                                       "cost_cny": 0.0,
+                                       **{k: 0 for k in USAGE_FIELDS}}))
+    known = cost["known"]
+    cny = cost["cny"] if known else 0.0
+    for bucket in (per, per_realm, per_acct):
+        bucket["requests"] += 1
+        for k, value in present:
+            bucket[k] += value
+        if known:
+            bucket["cost_cny"] += cny
+        if acct_id:
+            accounts = bucket["accounts"]
+            accounts[acct_id] = accounts.get(acct_id, 0) + 1
+
+
+_usage_snap_state = {}
+_usage_snap_state_lock = threading.Lock()
+
+
+def _usage_alltime_snapshot(r):
+    """A private copy of the cached all-time fold for realm filter `r`
+    (None = every realm).
+
+    One state per realm: the filter decides which rows the fold ever sees, so
+    `intl` and `cn` are two folds and neither may inherit the other's rows.
+    The state holds the raw fold only - `started`, `since`, `accounts_map` and
+    the rest are re-derived on every call, exactly as the full scan re-derived
+    them.
+    """
+    with _usage_snap_state_lock:
+        state = _usage_snap_state.get(r)
+        if state is None:
+            state = _usage_snap_state[r] = {"snap": None, "offset": 0, "key": None,
+                                            "pricing": None, "realm": None,
+                                            "tail": b""}
+        pricing = _pricing_inputs()
+        realm = _realm_inputs()
+        log_key = _usage_log_key()
+        if state["snap"] is None:
+            # 全新状态（进程刚起来）：先问 checkpoint，问不到才从零折起。
+            if not _usage_cache_adopt_snapshot(r, state, log_key, pricing, realm):
+                state.update({"snap": _empty_stats(), "offset": 0, "tail": b""})
+        elif (not _pricing_unchanged(state["pricing"], pricing)
+                or state["realm"] != realm
+                or not _log_resume_ok(state, log_key)):
+            state.update({"snap": _empty_stats(), "offset": 0, "tail": b""})
+        state.update({"pricing": pricing, "realm": realm, "key": log_key})
+        offset, error = _scan_usage_from(
+            state["offset"],
+            lambda row: _fold_usage_snapshot(row, state["snap"], r, None, None))
+        if error is None:
+            state["offset"] = offset
+            state["tail"] = _log_tail_signature(offset)
+            # Copied while the lock is held: the caller decorates what it
+            # gets, and a concurrent refresh must never be seen half-applied.
+            snap = _copy_usage_snapshot(state["snap"])
+        else:
+            # A row the fold could not swallow may have half applied itself,
+            # so the carried-over totals cannot be resumed from there: this
+            # call answers what was folded - the full scan reports the same
+            # partial totals - and the next refresh starts over, which is
+            # what the full scan does on every call.
+            log(f"usage snapshot read failed: {error}")
+            snap = state["snap"]
+            state.update({"snap": None, "offset": 0, "tail": b""})
+    # 落盘决定在锁外做（见 checkpoint 一节）：写盘要逐把读三份状态，在状态
+    # 锁里再取别的状态锁会构成锁序环。折叠失败的那次不写——它的 offset 已经
+    # 归零，落盘函数也会跳过。
+    if error is None:
+        _usage_cache_maybe_save("snapshot", offset)
+    return snap
+
+
+def _scan_usage_snapshot_window(r, since, until):
+    """One pass over the log, keeping only the rows inside the window.
+
+    Nothing is carried over here - a window moves with the clock - but the
+    pre-filter drops the parse for every line it can prove is outside it,
+    which is what keeps a cold day or week view cheap on a multi-day log.
+
+    The bounds reach the pre-filter through `or None` because that is the
+    test the fold itself applies (`if since and at < since`): a bound of 0
+    is a bound the fold ignores, and the pre-filter must not read it as
+    "keep nothing after the epoch" and drop rows the fold would have
+    counted.
+    """
+    snap = _empty_stats()
+    _, error = _scan_usage_from(
+        0,
+        lambda row: _fold_usage_snapshot(row, snap, r, since, until),
+        skip=lambda line: _line_outside_window(line, since or None,
+                                                 until or None))
+    if error is not None:
+        log(f"usage snapshot read failed: {error}")
+    return snap
+
+
 def _usage_snapshot_uncached(realm=None, since=None, until=None):
     # None means every realm; usage_snapshot() has already mapped "all"
     # onto it, so the filter below is simply skipped.
     r = realm
     rep = POOL.representative(realm=r) if POOL else current_account()
-    snap = _empty_stats()
+    if since is None and until is None:
+        # An open window covers every row, and the rows only ever arrive at
+        # the end of the log, so the all-time totals are carried over from the
+        # last fold and only the rows appended since then are read.
+        snap = _usage_alltime_snapshot(r)
+    else:
+        snap = _scan_usage_snapshot_window(r, since, until)
     snap["started"] = _usage.get("started", time.time())
-    try:
-        with open(USAGE_LOG, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except Exception:
-                    continue
-                if r and not row_matches_realm(row, r):
-                    continue
-                # The window is applied before the request is counted, so every
-                # total below - requests, tokens, per-model and per-account
-                # breakdowns - describes the same slice of the log.
-                at = row.get("at") or 0
-                if since and at < since:
-                    continue
-                if until and at > until:
-                    continue
-                outcome = row_outcome(row)
-                # Each row is priced against the version that was in force
-                # when it happened, so a later price change cannot rewrite
-                # yesterday's totals.
-                cost = wb_pricing.cost_for_row(row)
-                if outcome != "completed":
-                    snap["errors"] += 1
-                    # Credit is money already spent: a request that failed
-                    # after the upstream had billed for it still consumed
-                    # credit, so it is summed here exactly like the analytics
-                    # page sums it. Token totals keep the completed-only rule
-                    # this page has always used, and a client abort is skipped
-                    # because its usage block is incomplete.
-                    if outcome != "client_aborted":
-                        snap["credit"] += (row.get("credit") or 0)
-                        _fold_cost(snap, cost, row.get("model"))
-                else:
-                    snap["requests"] += 1
-                    for k in USAGE_FIELDS:
-                        if k in row:
-                            snap[k] += (row[k] or 0)
-                    _fold_cost(snap, cost, row.get("model"))
-                    m = row.get("model") or "unknown"
-                    rr = row_realm(row)
-                    per = snap["by_model"].setdefault(m, {"requests": 0, "accounts": {}, "cost_cny": 0.0, **{k: 0 for k in USAGE_FIELDS}})
-                    per_realm = snap["by_model_realm"].setdefault(m, {}).setdefault(
-                        rr, {"requests": 0, "accounts": {}, "cost_cny": 0.0, **{k: 0 for k in USAGE_FIELDS}})
-                    acct_id = row.get("account")
-                    acct_key = acct_id or "(unattributed)"
-                    per_acct = (snap["by_model_acct"].setdefault(m, {})
-                                .setdefault(rr, {})
-                                .setdefault(acct_key, {"requests": 0, "accounts": {},
-                                                       "cost_cny": 0.0,
-                                                       **{k: 0 for k in USAGE_FIELDS}}))
-                    for bucket in (per, per_realm, per_acct):
-                        bucket["requests"] += 1
-                        for k in USAGE_FIELDS:
-                            if k in row:
-                                bucket[k] += (row[k] or 0)
-                        if cost["known"]:
-                            bucket["cost_cny"] += cost["cny"]
-                        if acct_id:
-                            bucket["accounts"][acct_id] = bucket["accounts"].get(acct_id, 0) + 1
-    except FileNotFoundError:
-        pass
-    except Exception as exc:
-        log(f"usage snapshot read failed: {exc}")
     snap["since"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(snap.get("started", time.time())))
     snap["log_file"] = USAGE_LOG
     snap["realm"] = r or "all"
@@ -1367,6 +1712,10 @@ _AT_PREFIX = '{"at": '
 def _line_outside_window(line, lo, hi):
     """True when this log line's `at` is provably outside [lo, hi].
 
+    Either bound may be None, which means "unbounded on that side": the
+    ranges the dashboard asks for ("today", "this week") only pin a start,
+    and an open side must never drop a row.
+
     The scan uses it to drop out-of-window lines without paying for
     json.loads, which is what made a cold pass over the log expensive. False
     means "parse it as before" - both for lines that match the shape and fall
@@ -1396,7 +1745,7 @@ def _line_outside_window(line, lo, hi):
         at = float(token)
     except ValueError:
         return False
-    if not (at < lo or at > hi):
+    if not ((lo is not None and at < lo) or (hi is not None and at > hi)):
         return False
     return line.find('"at"', end) < 0
 
@@ -1855,37 +2204,85 @@ def usage_by_account(ttl=None):
     return data
 
 
+_byacct_state = {"buckets": None, "offset": 0, "key": None, "tail": b""}
+# The wrapper above holds _byacct_lock while it rebuilds and then calls in
+# here, and _usage_by_account_uncached() is also called straight from the
+# bench and the tests; a lock of its own keeps the refresh from re-entering
+# the wrapper's - that one is not reentrant, so sharing it hung the process
+# on the first cache miss.
+_byacct_state_lock = threading.Lock()
+
+
+def _fold_usage_by_account(row, buckets):
+    """Fold one row into the per-account buckets.
+
+    No window and no realm filter here - this view has always described the
+    whole log - so the fold only skips the rows the original skipped.
+    """
+    if row.get("error"):
+        return
+    key = row.get("account") or "(unattributed)"
+    bucket = buckets.get(key)
+    if bucket is None:
+        bucket = buckets[key] = {
+            "account": key, "requests": 0, "prompt_tokens": 0,
+            "completion_tokens": 0, "reasoning_tokens": 0,
+            "cached_tokens": 0, "total_tokens": 0, "models": {},
+        }
+    bucket["requests"] += 1
+    bucket["prompt_tokens"] += row.get("prompt_tokens") or 0
+    bucket["completion_tokens"] += row.get("completion_tokens") or 0
+    bucket["reasoning_tokens"] += row.get("reasoning_tokens") or 0
+    bucket["cached_tokens"] += row.get("cached_tokens") or 0
+    bucket["total_tokens"] += row.get("total_tokens") or 0
+    model = row.get("model") or "?"
+    models = bucket["models"]
+    models[model] = models.get(model, 0) + 1
+
+
+def _usage_by_account_buckets():
+    """The cached per-account fold, refreshed and copied for the caller.
+
+    The copy matters: _usage_by_account_uncached() replaces each bucket's
+    `models` dict with a sorted list, and the next refresh must still find the
+    counts dict where it left it.
+    """
+    with _byacct_state_lock:
+        log_key = _usage_log_key()
+        if _byacct_state["buckets"] is None:
+            # 全新状态（进程刚起来）：先问 checkpoint，问不到才从零折起。
+            if not _usage_cache_adopt_by_account(_byacct_state, log_key):
+                _byacct_state.update({"buckets": {}, "offset": 0, "tail": b""})
+        elif not _log_resume_ok(_byacct_state, log_key):
+            _byacct_state.update({"buckets": {}, "offset": 0, "tail": b""})
+        _byacct_state["key"] = log_key
+        offset, error = _scan_usage_from(
+            _byacct_state["offset"],
+            lambda row: _fold_usage_by_account(row, _byacct_state["buckets"]))
+        buckets = _byacct_state["buckets"]
+        if error is None:
+            _byacct_state["offset"] = offset
+            _byacct_state["tail"] = _log_tail_signature(offset)
+        else:
+            # The row that stopped the fold may have half applied
+            # itself, so this view starts over next call - the full
+            # scan it replaces does the same on every call.
+            log("usage_by_account failed: %s" % error)
+            _byacct_state.update({"buckets": {}, "offset": 0, "tail": b""})
+        out = {k: dict(v) for k, v in buckets.items()}
+    if error is None:
+        _usage_cache_maybe_save("by_account", offset)
+    return out
+
+
 def _usage_by_account_uncached():
-    """Aggregate the JSONL log per account id."""
-    buckets = {}
-    try:
-        with open(USAGE_LOG, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except Exception:
-                    continue
-                if row.get("error"):
-                    continue
-                key = row.get("account") or "(unattributed)"
-                bucket = buckets.setdefault(key, {
-                    "account": key, "requests": 0, "prompt_tokens": 0,
-                    "completion_tokens": 0, "reasoning_tokens": 0,
-                    "cached_tokens": 0, "total_tokens": 0, "models": {},
-                })
-                bucket["requests"] += 1
-                for field in ("prompt_tokens", "completion_tokens",
-                              "reasoning_tokens", "cached_tokens", "total_tokens"):
-                    bucket[field] += row.get(field) or 0
-                model = row.get("model") or "?"
-                bucket["models"][model] = bucket["models"].get(model, 0) + 1
-    except FileNotFoundError:
-        pass
-    except Exception as exc:
-        log("usage_by_account failed: %s" % exc)
+    """Aggregate the JSONL log per account id.
+
+    Incremental: the fold is carried over and refreshed with the rows appended
+    since the last call, so this costs what the new traffic costs instead of
+    what the whole log costs.
+    """
+    buckets = _usage_by_account_buckets()
     out = sorted(buckets.values(), key=lambda b: -b["total_tokens"])
     for item in out:
         item["models"] = sorted(item["models"].items(), key=lambda kv: -kv[1])[:5]
@@ -1948,152 +2345,351 @@ KEY_BUCKET_UNKNOWN = "__unknown_key__"
 KEY_MODEL_TOP_N = 5
 
 
-def _scan_usage_log(all_summary, window_summary, acct_map, model_map, since=None, until=None,
-                    realm=None, key_map=None):
-    """Walk the usage JSONL once, folding every row into the maps.
+# One half of the analytics payload folds into four maps: the window summary,
+# the per-account entries, the per-model entries and the per-key entries. The
+# all-time half and the windowed half hold the same maps and differ only in
+# which stat on each entry they own, so the row fold below is written once and
+# told which half it is feeding.
+_ANALYTICS_ALL = ("all_time", "all_models")
+_ANALYTICS_WINDOW = ("window", "window_models")
 
-    `all_summary` always covers the whole log (it is the stable reference the
-    page shows next to the selection); `window_summary` and the per-account /
-    per-model "window" buckets cover only the selected range, which is what
-    every figure on the first column of the page describes.
 
-    `key_map` (optional) folds the same rows by the API key that called the
-    gateway. It is a separate axis from `acct_map` on purpose: one key can be
+def _new_analytics_maps():
+    """The four maps one half of the payload folds into."""
+    return {"summary": _new_analytics_stat(), "accts": {}, "models": {}, "keys": {}}
+
+
+def _analytics_row_values(row):
+    """The per-row numbers the folds below need, read once per row.
+
+    feed()/bump_models() used to call row.get() for each of them on every
+    invocation - eight stat objects per row, all walking the same handful of
+    fields - which was the single biggest cost of a cold analytics pass.
+    """
+    return (row.get("prompt_tokens") or 0,
+            row.get("completion_tokens") or 0,
+            row.get("reasoning_tokens") or 0,
+            row.get("cached_tokens") or 0,
+            row.get("total_tokens") or 0,
+            row.get("credit") or 0,
+            row.get("ttft_ms"),
+            row.get("tokens_per_sec"),
+            row.get("elapsed_ms"))
+
+
+def _feed_analytics(stat_obj, vals, is_err, cost_cny):
+    """Fold one row's numbers into one analytics stat object.
+
+    Token totals follow actual consumption, so a request that failed after the
+    upstream had already billed for tokens still shows them; only the
+    request/error counters depend on the outcome. An unpriced model passes
+    cost_cny = 0.0, which adds nothing: the accumulator starts as a float in
+    _new_analytics_stat(), so the sum is exactly what the guarded
+    `if cost["known"]` used to leave behind.
+    """
+    if is_err:
+        stat_obj["errors"] += 1
+    else:
+        stat_obj["requests"] += 1
+    stat_obj["prompt_tokens"] += vals[0]
+    stat_obj["completion_tokens"] += vals[1]
+    stat_obj["reasoning_tokens"] += vals[2]
+    stat_obj["cached_tokens"] += vals[3]
+    stat_obj["total_tokens"] += vals[4]
+    stat_obj["credit"] += vals[5]
+    stat_obj["cost_cny"] += cost_cny
+    if vals[6]:
+        stat_obj["ttft_sum"] += vals[6]
+        stat_obj["ttft_n"] += 1
+    if vals[7]:
+        stat_obj["speed_sum"] += vals[7]
+        stat_obj["speed_n"] += 1
+    if vals[8]:
+        stat_obj["elapsed_sum"] += vals[8]
+        stat_obj["elapsed_n"] += 1
+
+
+def _bump_analytics_models(tgt, m_id, vals, is_err, cost_cny):
+    """Fold one row into one {model: {...}} bucket.
+
+    Model distribution counts successful requests only: a failed call
+    attributed to a model would show up as demand for it when the caller got
+    nothing.
+    """
+    if is_err:
+        return
+    tm = tgt.get(m_id)
+    if tm is None:
+        tm = tgt[m_id] = {"requests": 0, "tokens": 0, "reasoning": 0, "cost_cny": 0.0}
+    tm["requests"] += 1
+    tm["tokens"] += vals[4]
+    tm["reasoning"] += vals[2]
+    tm["cost_cny"] += cost_cny
+
+
+def _fold_usage_analytics(row, realm, maps, half):
+    """Fold one parsed row into one half of the analytics payload.
+
+    `maps` holds the four maps that half folds into and `half` names the stat
+    each entry of that half owns, so the incremental all-time fold (every
+    entry's all_time stat) and the windowed pass (the same entries' window
+    stat) share one definition of what a row contributes.
+
+    The key axis is separate from the account axis on purpose: one key can be
     served by many upstream accounts, and one account can serve many keys, so
     the two tables are views of the same spend, not a decomposition of it.
     """
-    if os.path.exists(USAGE_LOG):
-        try:
-            with open(USAGE_LOG, encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        r = json.loads(line)
-                    except Exception:
-                        continue
-                    if realm and not row_matches_realm(r, realm):
-                        continue
-                    # Only a genuine gateway/upstream failure is an error.
-                    # A client cancellation is not: its token counts are
-                    # incomplete, and folding them into the ratios this page
-                    # reports would understate cache hit and speed. It is
-                    # counted in perf_stats instead.
-                    outcome = row_outcome(r)
-                    if outcome == "client_aborted":
-                        continue
-                    is_err = outcome != "completed"
-                    cost = wb_pricing.cost_for_row(r)
-                    at = r.get("at", 0)
-                    # Same bounds as /usage and /usage/perf, so the three
-                    # readers agree on what the selected range contains.
-                    in_window = ((since is None or at >= since)
-                                 and (until is None or at <= until))
-                    acct_uid = r.get("account") or "(unattributed)"
-                    m_id = r.get("model") or "(unknown)"
-                    def feed(stat_obj, is_error):
-                        if is_error:
-                            stat_obj["errors"] += 1
-                        else:
-                            stat_obj["requests"] += 1
-                        # Token totals follow actual consumption, so a request
-                        # that failed after the upstream had already billed for
-                        # tokens still shows them. Only the request/error
-                        # counters depend on the outcome.
-                        stat_obj["prompt_tokens"] += (r.get("prompt_tokens") or 0)
-                        stat_obj["completion_tokens"] += (r.get("completion_tokens") or 0)
-                        stat_obj["reasoning_tokens"] += (r.get("reasoning_tokens") or 0)
-                        stat_obj["cached_tokens"] += (r.get("cached_tokens") or 0)
-                        stat_obj["total_tokens"] += (r.get("total_tokens") or 0)
-                        stat_obj["credit"] += (r.get("credit") or 0)
-                        if cost["known"]:
-                            stat_obj["cost_cny"] += cost["cny"]
-                        if r.get("ttft_ms"):
-                            stat_obj["ttft_sum"] += r["ttft_ms"]
-                            stat_obj["ttft_n"] += 1
-                        if r.get("tokens_per_sec"):
-                            stat_obj["speed_sum"] += r["tokens_per_sec"]
-                            stat_obj["speed_n"] += 1
-                        if r.get("elapsed_ms"):
-                            stat_obj["elapsed_sum"] += r["elapsed_ms"]
-                            stat_obj["elapsed_n"] += 1
-                    def bump_models(tgt_all, tgt_window, is_error):
-                        # Model distribution counts successful requests only:
-                        # a failed call attributed to a model would show up as
-                        # demand for it when the caller got nothing.
-                        if is_error:
-                            return
-                        tm = tgt_all.setdefault(m_id, {"requests": 0, "tokens": 0, "reasoning": 0, "cost_cny": 0.0})
-                        tm["requests"] += 1
-                        tm["tokens"] += (r.get("total_tokens") or 0)
-                        tm["reasoning"] += (r.get("reasoning_tokens") or 0)
-                        if cost["known"]:
-                            tm["cost_cny"] += cost["cny"]
-                        if in_window:
-                            tdm = tgt_window.setdefault(m_id, {"requests": 0, "tokens": 0, "reasoning": 0, "cost_cny": 0.0})
-                            tdm["requests"] += 1
-                            tdm["tokens"] += (r.get("total_tokens") or 0)
-                            tdm["reasoning"] += (r.get("reasoning_tokens") or 0)
-                            if cost["known"]:
-                                tdm["cost_cny"] += cost["cny"]
-                    feed(all_summary, is_err)
-                    if in_window:
-                        feed(window_summary, is_err)
-                    if acct_uid not in acct_map:
-                        acct_map[acct_uid] = {
-                            "uid": acct_uid,
-                            "nickname": acct_uid,
-                            "realm": r.get("realm", ""),
-                            "domain": "",
-                            "window": _new_analytics_stat(),
-                            "all_time": _new_analytics_stat(),
-                            "window_models": {},
-                            "all_models": {},
-                        }
-                    feed(acct_map[acct_uid]["all_time"], is_err)
-                    if in_window:
-                        feed(acct_map[acct_uid]["window"], is_err)
-                    bump_models(acct_map[acct_uid]["all_models"], acct_map[acct_uid]["window_models"], is_err)
-                    if m_id not in model_map:
-                        model_map[m_id] = {"model": m_id, "window": _new_analytics_stat(), "all_time": _new_analytics_stat()}
-                    feed(model_map[m_id]["all_time"], is_err)
-                    if in_window:
-                        feed(model_map[m_id]["window"], is_err)
-                    if key_map is not None:
-                        # A row written before this feature existed has no
-                        # `key` field at all; a row from a deployment that
-                        # never configured a key has one, and it is empty.
-                        if "key" in r:
-                            k_id = r.get("key") or KEY_BUCKET_ANON
-                        else:
-                            k_id = KEY_BUCKET_BEFORE
-                        km = key_map.get(k_id)
-                        if km is None:
-                            km = key_map[k_id] = {
-                                "key": k_id,
-                                "window": _new_analytics_stat(),
-                                "all_time": _new_analytics_stat(),
-                                "window_models": {},
-                                "all_models": {},
-                                # realm -> row count. A key bound to one
-                                # exit only ever sees that exit; a key with no
-                                # binding follows the model, and its credit
-                                # column then adds up two different products.
-                                # Kept as a dict because this ends up in JSON.
-                                "realms": {},
-                                "last_at": 0,
-                            }
-                        k_realm = row_realm(r) or ""
-                        km["realms"][k_realm] = km["realms"].get(k_realm, 0) + 1
-                        if at and at > km["last_at"]:
-                            km["last_at"] = at
-                        feed(km["all_time"], is_err)
-                        if in_window:
-                            feed(km["window"], is_err)
-                        bump_models(km["all_models"], km["window_models"], is_err)
-        except Exception as exc:
-            log("compute_usage_analytics failed: %s" % exc)
+    if realm and not row_matches_realm(row, realm):
+        return
+    # Only a genuine gateway/upstream failure is an error. A client
+    # cancellation is not: its token counts are incomplete, and folding them
+    # into the ratios this page reports would understate cache hit and speed.
+    # It is counted in perf_stats instead.
+    outcome = row_outcome(row)
+    if outcome == "client_aborted":
+        return
+    is_err = outcome != "completed"
+    cost = wb_pricing.cost_for_row(row)
+    cost_cny = cost["cny"] if cost["known"] else 0.0
+    vals = _analytics_row_values(row)
+    stat_key, models_key = half
+    acct_uid = row.get("account") or "(unattributed)"
+    m_id = row.get("model") or "(unknown)"
+
+    _feed_analytics(maps["summary"], vals, is_err, cost_cny)
+
+    entry = maps["accts"].get(acct_uid)
+    if entry is None:
+        entry = maps["accts"][acct_uid] = {
+            "uid": acct_uid,
+            "nickname": acct_uid,
+            "realm": row.get("realm", ""),
+            "domain": "",
+            stat_key: _new_analytics_stat(),
+            models_key: {},
+        }
+    _feed_analytics(entry[stat_key], vals, is_err, cost_cny)
+    _bump_analytics_models(entry[models_key], m_id, vals, is_err, cost_cny)
+
+    model = maps["models"].get(m_id)
+    if model is None:
+        model = maps["models"][m_id] = {"model": m_id, stat_key: _new_analytics_stat()}
+    _feed_analytics(model[stat_key], vals, is_err, cost_cny)
+
+    # A row written before this feature existed has no `key` field at all; a
+    # row from a deployment that never configured a key has one, and it is
+    # empty.
+    if "key" in row:
+        k_id = row.get("key") or KEY_BUCKET_ANON
+    else:
+        k_id = KEY_BUCKET_BEFORE
+    km = maps["keys"].get(k_id)
+    if km is None:
+        km = maps["keys"][k_id] = {
+            "key": k_id,
+            stat_key: _new_analytics_stat(),
+            models_key: {},
+            # realm -> row count. A key bound to one exit only ever sees that
+            # exit; a key with no binding follows the model, and its credit
+            # column then adds up two different products. Kept as a dict
+            # because this ends up in JSON.
+            "realms": {},
+            "last_at": 0,
+        }
+    k_realm = row_realm(row) or ""
+    km["realms"][k_realm] = km["realms"].get(k_realm, 0) + 1
+    at = row.get("at") or 0
+    if at and at > km["last_at"]:
+        km["last_at"] = at
+    _feed_analytics(km[stat_key], vals, is_err, cost_cny)
+    _bump_analytics_models(km[models_key], m_id, vals, is_err, cost_cny)
+
+
+_analytics_state = {}
+_analytics_state_lock = threading.Lock()
+
+
+def _analytics_all_time(realm):
+    """The cached all-time fold for one realm filter; returns (maps, offset).
+
+    One state per realm: the filter decides which rows the fold ever sees, so
+    two realms are two folds and neither may inherit the other's rows. Only
+    the all-time half is cached - the windowed half moves with the clock - and
+    the offset comes back with it so a windowed pass can stop where the fold
+    stopped.
+    """
+    with _analytics_state_lock:
+        state = _analytics_state.get(realm)
+        if state is None:
+            state = _analytics_state[realm] = {"maps": _new_analytics_maps(),
+                                               "offset": 0, "key": None,
+                                               "pricing": None, "realm": None,
+                                               "tail": b""}
+        pricing = _pricing_inputs()
+        realm_inputs = _realm_inputs()
+        log_key = _usage_log_key()
+        if state["key"] is None:
+            # 全新状态（进程刚起来）：先问 checkpoint，问不到才从零折起。
+            if not _usage_cache_adopt_analytics(realm, state, log_key, pricing, realm_inputs):
+                state.update({"maps": _new_analytics_maps(), "offset": 0, "tail": b""})
+        elif (not _pricing_unchanged(state["pricing"], pricing)
+                or state["realm"] != realm_inputs
+                or not _log_resume_ok(state, log_key)):
+            state.update({"maps": _new_analytics_maps(), "offset": 0, "tail": b""})
+        state.update({"pricing": pricing, "realm": realm_inputs, "key": log_key})
+        offset, error = _scan_usage_from(
+            state["offset"],
+            lambda row: _fold_usage_analytics(row, realm, state["maps"], _ANALYTICS_ALL))
+        if error is None:
+            state["offset"] = offset
+            state["tail"] = _log_tail_signature(offset)
+            # Copied under the lock, same rule as the snapshot state: what
+            # the caller decorates must not be the live fold.
+            maps = _copy_analytics_all_time(state["maps"])
+        else:
+            # Same rule as the snapshot state: the row that stopped the
+            # fold may have half applied itself, so the state starts
+            # over next call. The offset still goes back - it is the
+            # end of that row - because the windowed half has to see
+            # it, and stop there, to describe the same bytes the
+            # all-time half already folded.
+            log("compute_usage_analytics failed: %s" % error)
+            maps = state["maps"]
+            state.update({"maps": _new_analytics_maps(), "offset": 0, "tail": b""})
+    if error is None:
+        _usage_cache_maybe_save("analytics", offset)
+    return maps, offset
+
+
+def _scan_usage_analytics_window(realm, since, until, stop_at=None):
+    """One pass over the log, folding only the rows inside the window.
+
+    The all-time half is not rebuilt here - it comes from the incremental fold
+    - and the read stops where that fold stopped, so both halves of the
+    payload describe the same bytes even when a row lands mid-rebuild.
+    """
+    maps = _new_analytics_maps()
+
+    def fold(row):
+        # Same bounds as /usage and /usage/perf, so the three readers agree on
+        # what the selected range contains.
+        at = row.get("at", 0)
+        if since is not None and at < since:
+            return
+        if until is not None and at > until:
+            return
+        _fold_usage_analytics(row, realm, maps, _ANALYTICS_WINDOW)
+
+    _, error = _scan_usage_from(
+        0, fold, stop_at=stop_at,
+        skip=lambda line: _line_outside_window(line, since, until))
+    if error is not None:
+        log("compute_usage_analytics failed: %s" % error)
+    return maps
+
+
+def _copy_analytics_models(models):
+    """Copy one {model: {...}} bucket; its inner dicts are only ever read."""
+    return {mid: dict(entry) for mid, entry in models.items()}
+
+
+def _copy_analytics_all_time(maps):
+    """A private copy of the cached all-time maps.
+
+    The payload build decorates what it is given (finalize writes the
+    derived ratios into the stat dicts) and the cached fold keeps growing
+    under a concurrent refresh, so the caller gets a copy taken while the
+    state lock is held rather than a live view of it.
+    """
+    out = {"summary": dict(maps["summary"]), "accts": {}, "models": {}, "keys": {}}
+    for uid, entry in maps["accts"].items():
+        copy = dict(entry)
+        copy["all_time"] = dict(entry["all_time"])
+        copy["all_models"] = _copy_analytics_models(entry["all_models"])
+        out["accts"][uid] = copy
+    for m_id, entry in maps["models"].items():
+        out["models"][m_id] = {"model": m_id, "all_time": dict(entry["all_time"])}
+    for k_id, km in maps["keys"].items():
+        copy = dict(km)
+        copy["all_time"] = dict(km["all_time"])
+        copy["all_models"] = _copy_analytics_models(km["all_models"])
+        out["keys"][k_id] = copy
+    return out
+
+
+def _merge_analytics_halves(all_maps, win_maps):
+    """Combine the cached all-time fold with the windowed one.
+
+    `win_maps` is `all_maps` itself when no range was selected - every row is
+    inside an open window, so the windowed half is the all-time fold over
+    again. The halves are copied apart in that case, which is what a second
+    pass would have produced without the second pass, and it keeps a caller
+    that mutates one half out of the other (and out of the cache).
+
+    An entry only the windowed half knows cannot exist: the windowed pass
+    stops where the all-time fold stopped, so every row it saw is already in
+    there.
+    """
+    shared = win_maps is all_maps
+    acct_map = {}
+    for uid, entry in all_maps["accts"].items():
+        win = win_maps["accts"].get(uid)
+        if shared:
+            window_stat = dict(entry["all_time"])
+            window_models = _copy_analytics_models(entry["all_models"])
+        elif win is None:
+            window_stat = _new_analytics_stat()
+            window_models = {}
+        else:
+            window_stat = win["window"]
+            window_models = win["window_models"]
+        acct_map[uid] = {
+            "uid": uid,
+            "nickname": uid,
+            "realm": entry["realm"],
+            "domain": "",
+            "window": window_stat,
+            "all_time": dict(entry["all_time"]),
+            "window_models": window_models,
+            "all_models": _copy_analytics_models(entry["all_models"]),
+        }
+    model_map = {}
+    for m_id, entry in all_maps["models"].items():
+        stat = entry["all_time"]
+        win = win_maps["models"].get(m_id)
+        if shared:
+            window_stat = dict(stat)
+        elif win is None:
+            window_stat = _new_analytics_stat()
+        else:
+            window_stat = win["window"]
+        model_map[m_id] = {"model": m_id, "window": window_stat,
+                           "all_time": dict(stat)}
+    key_map = {}
+    for k_id, km in all_maps["keys"].items():
+        win = win_maps["keys"].get(k_id)
+        if shared:
+            window_stat = dict(km["all_time"])
+            window_models = _copy_analytics_models(km["all_models"])
+        elif win is None:
+            window_stat = _new_analytics_stat()
+            window_models = {}
+        else:
+            window_stat = win["window"]
+            window_models = win["window_models"]
+        key_map[k_id] = {
+            "key": k_id,
+            "window": window_stat,
+            "all_time": dict(km["all_time"]),
+            "window_models": window_models,
+            "all_models": _copy_analytics_models(km["all_models"]),
+            "realms": dict(km["realms"]),
+            "last_at": km["last_at"],
+        }
+    return {"summary": dict(all_maps["summary"]),
+            "window_summary": (dict(all_maps["summary"]) if shared
+                               else win_maps["summary"]),
+            "accts": acct_map, "models": model_map, "keys": key_map}
 
 
 def _add_analytics_stat(dst, src):
@@ -2265,14 +2861,22 @@ def _finalize_analytics_stat(stat_obj):
 
 def _compute_usage_analytics_uncached(realm=None, since=None, until=None):
     """Detailed analytics for Token, Cache, and Reasoning metrics page."""
-    all_summary = _new_analytics_stat()
-    window_summary = _new_analytics_stat()
-    acct_map = {}
-    model_map = {}
-    key_map = {}
-    _scan_usage_log(all_summary, window_summary, acct_map, model_map,
-                    since=since, until=until, realm=realm, key_map=key_map)
+    all_maps, offset = _analytics_all_time(realm)
+    if since is None and until is None:
+        # An open window covers every row, so the windowed half is the
+        # all-time fold over again; the merge copies the two apart.
+        win_maps = all_maps
+    else:
+        # The all-time half is not re-folded: the windowed pass stops where
+        # the incremental fold stopped, so one page never mixes two reads.
+        win_maps = _scan_usage_analytics_window(realm, since, until, stop_at=offset)
+    parts = _merge_analytics_halves(all_maps, win_maps)
+    acct_map = parts["accts"]
+    model_map = parts["models"]
+    key_map = parts["keys"]
     _enrich_accounts_from_pool(acct_map, realm=realm)
+    all_summary = parts["summary"]
+    window_summary = parts["window_summary"]
     _finalize_analytics_stat(all_summary)
     _finalize_analytics_stat(window_summary)
     for a in acct_map.values():
@@ -2301,6 +2905,673 @@ def _compute_usage_analytics_uncached(realm=None, since=None, until=None):
         # is a second view of the same spend, not a breakdown of it.
         "keys": keys_list,
     }
+
+
+# ---------------------------------------------------------------------------
+# 聚合状态落盘（重启后免冷扫）
+#
+# 上面的三份增量聚合（_usage_alltime_snapshot / _usage_by_account_buckets /
+# _analytics_all_time）把状态放在模块级字典里，进程一重启就全丢：第一次刷新
+# 仍是全量扫一遍日志。日志每天涨一万多行，冷扫描成本跟着线性上升——路由器
+# 上 2.7 万行的一次冷启动要 6~8 秒，一个月后接近两分钟。这里把三份状态连同
+# 它们的位置信息写进数据目录下的一个 JSON 文件，重启后第一次刷新只读文件
+# 尾部的新增字节。
+#
+# 文件放在数据目录里是刻意的：它和日志同生命周期，跟着 sysupgrade 一起走，
+# 也和日志一起被搬走、清掉。读写失败（只读文件系统、磁盘满、权限不足）一律
+# 静默降级——checkpoint 只是加速，丢的是一次加速，绝不能影响服务本身。
+#
+# 加载校验复用 #189 已有的原语，不另造一套：offset 必须仍落在同一个文件的
+# 现有字节里（_log_offset_holds），offset 前的最后 64 字节必须与写下时一致
+# （_log_tail_signature），再加上价格/realm 指纹和 schema 版本。任何一项对不
+# 上就当没有缓存、走全量——宁可多扫一次，也不能给出错的数字。
+# ---------------------------------------------------------------------------
+
+# 数据目录下的文件名。usage/*.json 已被 .gitignore 覆盖。
+_USAGE_CACHE_NAME = "usage-aggregate-cache.json"
+# 状态结构或折叠口径一变就 +1，旧文件整体作废。这是唯一挡在「旧结构喂进新
+# 代码」前面的东西，改动状态形状时别忘了它。
+# v2：写盘不再排序（v1 用 sort_keys 写，加载回来所有 dict 变字母序，响应
+# 与冷启动逐字节不同）。键顺序算状态结构的一部分，所以旧文件必须整体作废
+# ——否则那份字母序会一直粘在内存里，直到日志尾部被重写才会被清掉。
+_USAGE_CACHE_SCHEMA = 2
+
+
+def _usage_cache_enabled():
+    """落盘总开关，默认开；WB_USAGE_CACHE=0 关。
+
+    每次调用都读环境变量而不是在导入时定死：现场用它紧急关掉，测试用它在一
+    个进程里来回切，而一次 os.environ.get 的开销在刷新路径上可以忽略。
+    """
+    return os.environ.get("WB_USAGE_CACHE", "1").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def _usage_cache_path():
+    """checkpoint 的路径。
+
+    每次调用重算，而不是在导入时算成常量：--usage-dir、测试和探针脚本都会
+    在导入之后改 USAGE_DIR，常量会写到旧目录去。
+    """
+    return os.path.join(USAGE_DIR, _USAGE_CACHE_NAME)
+
+
+def _usage_cache_min_bytes():
+    """写盘节流：折叠推进不足这么多字节就不写。默认 1MB。
+
+    1MB 是「重启后最多回放多少」的上限——路由器上扫描约 0.5s/MB，回放 1MB
+    等于冷启动成本多半秒；而日志每天涨 6MB 上下，正常流量下一天也未必触发
+    一次。写小了是写放大（路由器 flash 写入慢且费寿命），写大了重启变慢。
+    """
+    try:
+        return max(0, int(os.environ.get("WB_USAGE_CACHE_MIN_BYTES", 1024 * 1024)))
+    except (TypeError, ValueError):
+        return 1024 * 1024
+
+
+def _usage_cache_min_seconds():
+    """写盘节流：距上次尝试不足这么多秒就不写。默认 900s（15 分钟）。
+
+    这条兜住「字节阈值还没到、但偏移已经推进了一点」的情况：不设它，一段
+    短流量之后停下的日志要等到下次凑满 1MB 才会落盘。15 分钟让面板开着时
+    一天最多约百次写盘（每次几十 KB），对 flash 友好；重启回放的上限则是
+    min(1MB, 15 分钟流量)。
+    """
+    try:
+        return max(0.0, float(os.environ.get("WB_USAGE_CACHE_MIN_SECONDS", 900)))
+    except (TypeError, ValueError):
+        return 900.0
+
+
+_usage_cache_lock = threading.Lock()
+# 写盘串行锁：只被 _usage_cache_maybe_save() 拿一次、且永远是最外层（拿它
+# 之后才拿状态锁/节流锁），所以它不参与任何锁序环。
+_usage_cache_write_lock = threading.Lock()
+# 进程启动后只读一次 checkpoint：读到就记下来（按 realm 逐份取用），读不到
+# 也记 None——坏文件、只读文件系统都不该让每次刷新都去解析一遍。
+_usage_cache_loaded = False
+_usage_cache_read_result = None
+# 写盘节流状态，全部由 _usage_cache_lock 保护：
+#   progress[kind]     —— 本进程见过该类状态折叠到的最远 offset；
+#   checkpointed[kind] —— 该类状态上次「尝试」落盘时的 offset（失败也记，
+#                         只读文件系统上不能每次刷新都去试写一遍）；
+#   last_attempt       —— 上次尝试写盘的时刻，时间阈值与失败退避都靠它。
+# 按「类」记账而不是记一个总数：某类状态第一次折叠（或中途重扫）时 offset
+# 从 0 跳到文件尾，这一类要尽快落盘，而刚采用过 checkpoint 的类不能被别的
+# 类的推进带着白写一遍。
+_usage_cache_progress = {}
+_usage_cache_checkpointed = {}
+_usage_cache_last_attempt = time.time()
+
+
+def _usage_cache_data():
+    """checkpoint 的解析结果，或 None。
+
+    调用点可能在状态锁内（采用阶段），所以本函数会取 _usage_cache_lock；
+    反向的锁序不存在——写盘路径取状态锁之前一定先放开本锁，见
+    _usage_cache_maybe_save。
+    """
+    global _usage_cache_loaded, _usage_cache_read_result
+    if not _usage_cache_enabled():
+        return None
+    if _usage_cache_loaded:
+        return _usage_cache_read_result
+    with _usage_cache_lock:
+        if not _usage_cache_loaded:
+            _usage_cache_read_result = _usage_cache_read()
+            _usage_cache_loaded = True
+        return _usage_cache_read_result
+
+
+def _usage_cache_read():
+    """读 checkpoint 文件并做顶层校验；任何一步不成立都返回 None。
+
+    None 和「文件不存在」同义：调用方按没有缓存处理，绝不因此报错。
+    """
+    try:
+        with open(_usage_cache_path(), "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    # 先看类型再看值：JSON 的 true 在 Python 里等于 1，schema: true 不能算
+    # 「版本 1」。
+    if not _usage_cache_int(data.get("schema")):
+        return None
+    if data["schema"] != _USAGE_CACHE_SCHEMA:
+        return None
+    return data
+
+
+_usage_cache_digest_memo = {}
+
+
+def _object_digest(obj):
+    """一段 JSON 内容摘要，按对象身份记忆；算不出来返回 None。
+
+    记忆表的值强引用对象本身，所以 id() 不会被回收复用；超过几条就整体清空
+    ——正常进程里价表对象只在价格变化时换代，这里只是给长期运行兜底。
+    """
+    hit = _usage_cache_digest_memo.get(id(obj))
+    if hit is not None and hit[0] is obj:
+        return hit[1]
+    try:
+        payload = json.dumps(obj, sort_keys=True, ensure_ascii=False,
+                             separators=(",", ":")).encode("utf-8")
+        digest = hashlib.sha1(payload).hexdigest()
+    except Exception:
+        return None
+    if len(_usage_cache_digest_memo) > 8:
+        _usage_cache_digest_memo.clear()
+    _usage_cache_digest_memo[id(obj)] = (obj, digest)
+    return digest
+
+
+def _pricing_inputs_key(inputs):
+    """把 _pricing_inputs() 的元组压成一段跨进程可比的价格指纹。
+
+    进程内那套靠对象身份（_pricing_unchanged），身份活不过重启，所以这里存
+    内容摘要。摘要取的是取价函数真正返回的对象而不是价表文件：文件损坏时会
+    回退到内联表，折叠读到的也是内联表，指纹必须描述折叠真正读的东西；文件
+    不在时内联表有没有变过，也只有摘要看得出来。
+    """
+    if inputs is None:
+        return None
+    if not inputs[0]:
+        # 总开关关着：取价路径一个价表都不读，开关本身就是全部输入。
+        return ["off"]
+    digests = []
+    for obj in inputs[1:]:
+        digest = _object_digest(obj)
+        if digest is None:
+            return None
+        digests.append(digest)
+    return ["on"] + digests
+
+
+def _realm_inputs_key(inputs):
+    """realm 指纹本来就是值比较（不是身份），JSON 化后原样可比。"""
+    if inputs is None:
+        return None
+    realm, accounts = inputs
+    return [realm, [[uid, r] for uid, r in accounts]]
+
+
+# 折叠会就地累加/读取的字段集合直接从构造函数推导：上游往 _empty_stats() 或
+# _new_analytics_stat() 里加字段时这里自动跟着收——漏一个，放行的缓存就会在
+# 折叠半路抛 KeyError，那次刷新报出半份数字（折叠的错误路径只保留已折的
+# 部分）。
+_USAGE_CACHE_SNAPSHOT_NUMBERS = tuple(
+    k for k, v in _empty_stats().items()
+    if isinstance(v, (int, float)) and not isinstance(v, bool))
+_USAGE_CACHE_SNAPSHOT_MAPS = ("cost_missing", "by_model", "by_model_realm", "by_model_acct")
+_USAGE_CACHE_ANALYTICS_NUMBERS = tuple(_new_analytics_stat().keys())
+_USAGE_CACHE_BUCKET_NUMBERS = ("requests", "cost_cny") + USAGE_FIELDS
+
+
+def _usage_cache_number(value):
+    """折叠累加的数字。bool 是 int 的子类，必须挡掉。"""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _usage_cache_int(value):
+    """严格整数：JSON 里写成 12345.0 的不算。"""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _usage_cache_counts_ok(counts):
+    """{str: 数字} 形状的计数表（cost_missing / models / realms）。"""
+    if not isinstance(counts, dict):
+        return False
+    for key, value in counts.items():
+        if not isinstance(key, str) or not _usage_cache_number(value):
+            return False
+    return True
+
+
+def _usage_cache_bucket_ok(bucket):
+    """一个 by_model* 桶：折叠会就地累加这些键。"""
+    if not isinstance(bucket, dict):
+        return False
+    for field in _USAGE_CACHE_BUCKET_NUMBERS:
+        if not _usage_cache_number(bucket.get(field)):
+            return False
+    return _usage_cache_counts_ok(bucket.get("accounts"))
+
+
+def _usage_cache_snapshot_ok(snap):
+    """snapshot 折叠的形状。
+
+    少一个键，折叠或 _copy_usage_snapshot() 就会半路抛错，那次刷新报出半份
+    数字——校验必须挡在采用之前。
+    """
+    if not isinstance(snap, dict):
+        return False
+    for field in _USAGE_CACHE_SNAPSHOT_NUMBERS:
+        if not _usage_cache_number(snap.get(field)):
+            return False
+    for field in _USAGE_CACHE_SNAPSHOT_MAPS:
+        if not isinstance(snap.get(field), dict):
+            return False
+    if not _usage_cache_counts_ok(snap["cost_missing"]):
+        return False
+    for _, bucket in snap["by_model"].items():
+        if not _usage_cache_bucket_ok(bucket):
+            return False
+    for _, realms in snap["by_model_realm"].items():
+        if not isinstance(realms, dict):
+            return False
+        for _, bucket in realms.items():
+            if not _usage_cache_bucket_ok(bucket):
+                return False
+    for _, realms in snap["by_model_acct"].items():
+        if not isinstance(realms, dict):
+            return False
+        for _, accts in realms.items():
+            if not isinstance(accts, dict):
+                return False
+            for _, bucket in accts.items():
+                if not _usage_cache_bucket_ok(bucket):
+                    return False
+    return True
+
+
+def _usage_cache_stat_ok(stat):
+    """一个 analytics 统计桶：折叠会就地累加它的每一个字段。"""
+    if not isinstance(stat, dict):
+        return False
+    for field in _USAGE_CACHE_ANALYTICS_NUMBERS:
+        if not _usage_cache_number(stat.get(field)):
+            return False
+    return True
+
+
+def _usage_cache_models_ok(models):
+    """analytics 的 {model: {requests, tokens, reasoning, cost_cny}} 表。"""
+    if not isinstance(models, dict):
+        return False
+    for mid, stat in models.items():
+        if not isinstance(mid, str) or not isinstance(stat, dict):
+            return False
+        for field in ("requests", "tokens", "reasoning", "cost_cny"):
+            if not _usage_cache_number(stat.get(field)):
+                return False
+    return True
+
+
+def _usage_cache_analytics_ok(maps):
+    """analytics all-time maps：summary/accts/models/keys 四张表。"""
+    if not isinstance(maps, dict):
+        return False
+    if not _usage_cache_stat_ok(maps.get("summary")):
+        return False
+    accts, models, keys = maps.get("accts"), maps.get("models"), maps.get("keys")
+    if not isinstance(accts, dict) or not isinstance(models, dict) or not isinstance(keys, dict):
+        return False
+    for uid, entry in accts.items():
+        if not isinstance(uid, str) or not isinstance(entry, dict):
+            return False
+        for field in ("nickname", "realm", "domain"):
+            if not isinstance(entry.get(field), str):
+                return False
+        if not _usage_cache_stat_ok(entry.get("all_time")):
+            return False
+        if not _usage_cache_models_ok(entry.get("all_models")):
+            return False
+    for mid, entry in models.items():
+        if not isinstance(mid, str) or not isinstance(entry, dict):
+            return False
+        if not isinstance(entry.get("model"), str):
+            return False
+        if not _usage_cache_stat_ok(entry.get("all_time")):
+            return False
+    for kid, entry in keys.items():
+        if not isinstance(kid, str) or not isinstance(entry, dict):
+            return False
+        if not isinstance(entry.get("key"), str):
+            return False
+        if not _usage_cache_stat_ok(entry.get("all_time")):
+            return False
+        if not _usage_cache_models_ok(entry.get("all_models")):
+            return False
+        if not _usage_cache_counts_ok(entry.get("realms")):
+            return False
+        if not _usage_cache_number(entry.get("last_at")):
+            return False
+    return True
+
+
+def _usage_cache_buckets_ok(buckets):
+    """by_account 的 {account: 桶}：折叠会就地累加每个桶。"""
+    if not isinstance(buckets, dict):
+        return False
+    for key, bucket in buckets.items():
+        if not isinstance(key, str) or not isinstance(bucket, dict):
+            return False
+        if not isinstance(bucket.get("account"), str):
+            return False
+        for field in ("requests", "prompt_tokens", "completion_tokens",
+                      "reasoning_tokens", "cached_tokens", "total_tokens"):
+            if not _usage_cache_number(bucket.get(field)):
+                return False
+        if not _usage_cache_counts_ok(bucket.get("models")):
+            return False
+    return True
+
+
+def _usage_cache_take(kind, realm=None):
+    """从 checkpoint 数据里取出一份状态（取过即删），没有合适的返回 None。
+
+    snapshot/analytics 按 realm 匹配（JSON 的 null 表示不限 realm），
+    by_account 只有一份。逐份取用：同一份不会被第二次采用，也就不存在
+    「先取走、校验失败、下个 realm 又拿到一份脏状态」的路径。
+    """
+    data = _usage_cache_data()
+    if not data:
+        return None
+    entries = data.get(kind)
+    if not isinstance(entries, list):
+        return None
+    # 取走这一步也要在锁里：两个 realm 的首次刷新可能同时到这里，一个
+    # 边遍历边 pop、另一个也在 pop，遍历就会跳过条目。跳过的后果只是这次
+    # 不采用（安全方向），但少一次竞争就少一个要解释的路径。
+    with _usage_cache_lock:
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            if kind != "by_account":
+                # realm 字段必须显式存在且类型正确：realm=None 的折叠（全部
+                # realm）和某个具体 realm 的折叠是两份不同的状态，缺字段的
+                # 条目一旦被 None 匹配走，就会把「只折了一个 realm」的数字
+                # 当成「全部 realm」报出去。
+                entry_realm = entry.get("realm")
+                if "realm" not in entry or not (entry_realm is None
+                                                or isinstance(entry_realm, str)):
+                    continue
+                if entry_realm != realm:
+                    continue
+            entries.pop(index)
+            return entry
+    return None
+
+
+def _usage_cache_position_ok(entry, log_key):
+    """校验一份状态的 (offset, key, tail)；不合格返回 None。
+
+    复用 #189 的两个原语而不是另造一套：offset 必须仍落在同一个文件的现有
+    字节里（dev/ino 相同、当前 size >= offset），并且 offset 前的最后 64 字节
+    与写下时一致——文件被替换、截短、copytruncate 后重写都会被这两条挡住。
+    """
+    offset = entry.get("offset")
+    key = entry.get("key")
+    tail_hex = entry.get("tail")
+    if not _usage_cache_int(offset) or offset <= 0:
+        return None
+    if not isinstance(key, list) or len(key) != 3 or not all(
+            _usage_cache_int(v) for v in key):
+        return None
+    if not isinstance(tail_hex, str):
+        return None
+    try:
+        tail = bytes.fromhex(tail_hex)
+    except ValueError:
+        return None
+    if not _log_offset_holds(tuple(key), log_key, offset):
+        return None
+    if _log_tail_signature(offset) != tail:
+        return None
+    return offset, tail
+
+
+def _usage_cache_fingerprints_ok(entry, pricing_key, realm_key):
+    """价格与 realm 指纹必须和当前进程读到的一致。
+
+    任一侧取不到（None）都算不一致：取不到就意味着「折叠当时读了什么」已经
+    无法确认，缓存不能当有效用。
+    """
+    if pricing_key is None or realm_key is None:
+        return False
+    return entry.get("pricing") == pricing_key and entry.get("realm_inputs") == realm_key
+
+
+def _usage_cache_note_adopted(kind, offset):
+    """采用成功后的节流初始化：刚加载的 offset 不算「有新字节要写」。
+
+    不初始化的话，重启后第一次刷新会把「offset 从 0 涨到文件尾」当成一次大
+    推进，白白重写一份内容相同的文件。
+    """
+    global _usage_cache_last_attempt
+    with _usage_cache_lock:
+        if offset > _usage_cache_progress.get(kind, 0):
+            _usage_cache_progress[kind] = offset
+        if offset > _usage_cache_checkpointed.get(kind, 0):
+            _usage_cache_checkpointed[kind] = offset
+        _usage_cache_last_attempt = time.time()
+
+
+def _usage_cache_adopt_snapshot(r, state, log_key, pricing, realm):
+    """把 checkpoint 里对应 realm 的 snapshot 折叠装进 state；成功返回 True。
+
+    调用方持有 _usage_snap_state_lock，并且只在 state 全新时调用：采用只把
+    offset/tail 往前挪，折叠逻辑一行不动。
+    """
+    entry = _usage_cache_take("snapshot", r)
+    if entry is None:
+        return False
+    position = _usage_cache_position_ok(entry, log_key)
+    if position is None:
+        return False
+    if not _usage_cache_fingerprints_ok(entry, _pricing_inputs_key(pricing),
+                                        _realm_inputs_key(realm)):
+        return False
+    snap = entry.get("snap")
+    if not _usage_cache_snapshot_ok(snap):
+        return False
+    offset, tail = position
+    state.update({"snap": snap, "offset": offset, "tail": tail})
+    _usage_cache_note_adopted("snapshot", offset)
+    return True
+
+
+def _usage_cache_adopt_by_account(state, log_key):
+    """by_account 折叠的采用；这一份没有价格/realm 指纹（折叠不读它们）。"""
+    entry = _usage_cache_take("by_account")
+    if entry is None:
+        return False
+    position = _usage_cache_position_ok(entry, log_key)
+    if position is None:
+        return False
+    buckets = entry.get("buckets")
+    if not _usage_cache_buckets_ok(buckets):
+        return False
+    offset, tail = position
+    state.update({"buckets": buckets, "offset": offset, "tail": tail})
+    _usage_cache_note_adopted("by_account", offset)
+    return True
+
+
+def _usage_cache_adopt_analytics(realm, state, log_key, pricing, realm_inputs):
+    """analytics all-time 折叠的采用。"""
+    entry = _usage_cache_take("analytics", realm)
+    if entry is None:
+        return False
+    position = _usage_cache_position_ok(entry, log_key)
+    if position is None:
+        return False
+    if not _usage_cache_fingerprints_ok(entry, _pricing_inputs_key(pricing),
+                                        _realm_inputs_key(realm_inputs)):
+        return False
+    maps = entry.get("maps")
+    if not _usage_cache_analytics_ok(maps):
+        return False
+    offset, tail = position
+    state.update({"maps": maps, "offset": offset, "tail": tail})
+    _usage_cache_note_adopted("analytics", offset)
+    return True
+
+
+def _usage_cache_snapshot_entry(realm, state):
+    """一份 snapshot 状态的 JSON 形态；不适合落盘时返回 None。
+
+    只写「折叠成功过」的状态：错误路径会把 offset 归零，这里直接跳过——
+    offset 为 0 的缓存没有任何加速作用，写进去只会让加载端白校验一遍。
+    """
+    offset = state.get("offset") or 0
+    tail = state.get("tail")
+    if offset <= 0 or not isinstance(tail, bytes) or state.get("snap") is None:
+        return None
+    pricing_key = _pricing_inputs_key(state.get("pricing"))
+    realm_key = _realm_inputs_key(state.get("realm"))
+    if pricing_key is None or realm_key is None:
+        return None
+    return {"realm": realm, "offset": offset,
+            "key": list(state["key"] or (0, 0, 0)), "tail": tail.hex(),
+            "pricing": pricing_key, "realm_inputs": realm_key,
+            # 深拷贝在锁内做，序列化在锁外做（见 _usage_cache_collect）。
+            "snap": _copy_usage_snapshot(state["snap"])}
+
+
+def _usage_cache_by_account_entry(state):
+    """by_account 折叠的 JSON 形态；同上，只写折叠成功过的。"""
+    offset = state.get("offset") or 0
+    tail = state.get("tail")
+    buckets = state.get("buckets")
+    if offset <= 0 or not isinstance(tail, bytes) or not isinstance(buckets, dict):
+        return None
+    return {"offset": offset, "key": list(state["key"] or (0, 0, 0)),
+            "tail": tail.hex(),
+            # 深拷贝：序列化在锁外做，桶里的 models 必须和活状态脱钩。
+            "buckets": {k: dict(v, models=dict(v.get("models") or {}))
+                        for k, v in buckets.items()}}
+
+
+def _usage_cache_analytics_entry(realm, state):
+    """analytics all-time 折叠的 JSON 形态；同上。"""
+    offset = state.get("offset") or 0
+    tail = state.get("tail")
+    if offset <= 0 or not isinstance(tail, bytes):
+        return None
+    pricing_key = _pricing_inputs_key(state.get("pricing"))
+    realm_key = _realm_inputs_key(state.get("realm"))
+    if pricing_key is None or realm_key is None:
+        return None
+    return {"realm": realm, "offset": offset,
+            "key": list(state["key"] or (0, 0, 0)), "tail": tail.hex(),
+            "pricing": pricing_key, "realm_inputs": realm_key,
+            "maps": _copy_analytics_all_time(state["maps"])}
+
+
+def _usage_cache_collect():
+    """逐把取三份状态，做锁外可序列化的深拷贝；返回 (payload, offsets) 或 None。
+
+    每份状态单独加锁、单独拷贝，三份之间不强求同一个瞬间：加载端对每份分别
+    校验 offset/tail/指纹，一份新一份旧也各自成立。锁是逐把拿、随即放开的，
+    不存在嵌套——写盘路径不能制造「snapshot -> analytics」这样的锁序边。
+    """
+    snapshot_entries = []
+    by_account_entries = []
+    analytics_entries = []
+    offsets = {}
+    with _usage_snap_state_lock:
+        for realm, state in _usage_snap_state.items():
+            entry = _usage_cache_snapshot_entry(realm, state)
+            if entry is not None:
+                snapshot_entries.append(entry)
+                offsets["snapshot"] = max(offsets.get("snapshot", 0), state["offset"])
+    with _byacct_state_lock:
+        entry = _usage_cache_by_account_entry(_byacct_state)
+        if entry is not None:
+            by_account_entries.append(entry)
+            offsets["by_account"] = _byacct_state["offset"]
+    with _analytics_state_lock:
+        for realm, state in _analytics_state.items():
+            entry = _usage_cache_analytics_entry(realm, state)
+            if entry is not None:
+                analytics_entries.append(entry)
+                offsets["analytics"] = max(offsets.get("analytics", 0), state["offset"])
+    if not (snapshot_entries or by_account_entries or analytics_entries):
+        return None
+    payload = {"schema": _USAGE_CACHE_SCHEMA, "written_at": time.time(),
+               "snapshot": snapshot_entries, "by_account": by_account_entries,
+               "analytics": analytics_entries}
+    return payload, offsets
+
+
+def _usage_cache_write(payload):
+    """原子写：同目录临时文件 + os.replace。
+
+    直接在目标文件上写，崩在中间会留下半份 JSON；加载端虽然能识别（解析失败
+    按没有缓存处理），但一份完整的旧文件更省事。不 fsync：这是一份加速件，
+    掉电后写坏或丢掉的，加载端一律当没有缓存，不值得为它多刷一次盘。
+
+    不排序键：checkpoint 里 dict 的键顺序就是折叠时的插入顺序（先出现的先
+    排），加载回来必须与冷启动逐字节一致——响应的 JSON 字节里键序是可见的，
+    而冷启动折叠出的顺序正是这份插入顺序。排序只留给 _object_digest() 那种
+    「只要内容一样就算一样」的指纹。
+    """
+    path = _usage_cache_path()
+    tmp = path + ".tmp"
+    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _usage_cache_maybe_save(kind, offset):
+    """一次折叠成功后，按节流阈值决定要不要把三份状态落盘。
+
+    调用点必须在状态锁之外：这里要逐把取三份状态，在状态锁里再取别的状态锁
+    会构成锁序环（snapshot -> analytics 与反向同时存在）。任何异常都吞掉——
+    落盘失败只损失一次加速，不能影响这次刷新。
+    """
+    global _usage_cache_last_attempt
+    if not _usage_cache_enabled():
+        return
+    try:
+        # 串行化整段写盘：两个请求线程可能同时判定「该写」，而临时文件名是
+        # 固定的（path + ".tmp"，和 save_runtime_override 一致），两个写者
+        # 同时打开同一个临时文件会互相截断。等锁的一方在锁里会重新判定一遍，
+        # 第一个写者已经把 checkpointed 推上去，于是它多半直接返回。
+        with _usage_cache_write_lock:
+            now = time.time()
+            with _usage_cache_lock:
+                if offset > _usage_cache_progress.get(kind, 0):
+                    _usage_cache_progress[kind] = offset
+                min_bytes = _usage_cache_min_bytes()
+                min_seconds = _usage_cache_min_seconds()
+                due = any(_usage_cache_progress.get(k, 0)
+                          - _usage_cache_checkpointed.get(k, 0) >= min_bytes
+                          for k in _usage_cache_progress)
+                if not due and (now - _usage_cache_last_attempt) < min_seconds:
+                    return
+                # 记「尝试」而不是「成功」：只读文件系统上失败会一直成立，
+                # 不退避的话每次刷新都去试写一遍。
+                _usage_cache_last_attempt = now
+            collected = _usage_cache_collect()
+            if collected is None:
+                return
+            payload, offsets = collected
+            _usage_cache_write(payload)
+            with _usage_cache_lock:
+                for k, value in offsets.items():
+                    if value > _usage_cache_checkpointed.get(k, 0):
+                        _usage_cache_checkpointed[k] = value
+    except Exception as exc:
+        log("usage aggregate cache write failed: %s" % exc)
+
+
 def runtime_settings_view():
     """Current panel-visible settings (never returns the password or the key)."""
     key = API_KEY or ""
