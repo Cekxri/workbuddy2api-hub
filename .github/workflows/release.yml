@@ -541,12 +541,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TITLE="WorkBuddy2API-Hub $TAG"
+          # 标题就是 tag 本身（与 v1.4.5 ~ v1.6.18 那批历史 release 一致）；
+          # 演练版本在标题上标一下，资产里没有别的痕迹。
+          TITLE="$TAG"
           FLAGS=""
           if [ "${{ needs.version.outputs.rehearsal }}" = "true" ]; then
             # A rehearsal draft is marked prerelease as well, so even a mistaken
             # publish cannot be picked up by #29's updater.
-            TITLE="$TITLE（演练）"
+            TITLE="$TAG（演练）"
             FLAGS="--prerelease"
           fi
           if gh release view "$TAG" >/dev/null 2>&1; then
