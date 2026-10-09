@@ -379,8 +379,16 @@ def next_local_4am(now=None):
 # credential that keeps failing hard trips a breaker; unknown failures degrade
 # it for a while. The counters live on Account, these helpers only turn a
 # count into seconds (panel project's pool semantics).
-SOFT_RATE_BASE = 600.0          # first account-level 429: 10 minutes
+SOFT_RATE_BASE = 600.0          # first verified account-level 429: 10 minutes
 SOFT_RATE_MAX = 7200.0          # ... doubling up to 2 hours
+# An *unscoped* 429 - the body names no reset clock, so nothing in it says
+# whether the limit is on the credential or on one model - buys a window on that
+# one model instead, shorter and capped at the credential ladder's first tier.
+# The bare "usage exceeds frequency limit" body is the most common 429 the
+# upstream sends (229 of the 263 in the incident environment), so it must not be
+# able to park a credential for two hours.
+SOFT_RATE_UNVERIFIED_BASE = 60.0
+SOFT_RATE_UNVERIFIED_MAX = 600.0
 BREAKER_THRESHOLD = 3           # consecutive hard failures before the breaker
 BREAKER_COOLDOWN = 1800.0       # first breaker window: 30 minutes
 BREAKER_COOLDOWN_MAX = 21600.0  # ... doubling up to 6 hours
@@ -398,6 +406,16 @@ def _exponential_backoff(count, base, cap, offset):
 def soft_backoff(streak):
     """Cooldown seconds for `streak` consecutive account-level soft limits."""
     return _exponential_backoff(streak, SOFT_RATE_BASE, SOFT_RATE_MAX, 1)
+
+
+def unverified_soft_backoff(streak):
+    """Cooldown for `streak` consecutive *unscoped* soft limits, on one model.
+
+    Repetition still escalates, but from 60s and only up to the credential
+    ladder's first tier (600s) - see SOFT_RATE_UNVERIFIED_MAX.
+    """
+    return _exponential_backoff(streak, SOFT_RATE_UNVERIFIED_BASE,
+                                SOFT_RATE_UNVERIFIED_MAX, 1)
 
 
 def breaker_backoff(fails):
@@ -484,6 +502,9 @@ class Account(object):
         # All runtime-only, like the other throttle windows: a restart clears
         # them and the account gets a clean slate.
         self.soft_streak = 0
+        # Unscoped soft 429s keep their own counter: the two ladders must not
+        # feed each other (see note_unscoped_rate).
+        self.unscoped_streak = 0
         self.fails = 0
         self.degrade_count = 0
         self.breaker_until = 0.0
@@ -618,6 +639,7 @@ class Account(object):
             "cooldownFor": round(max(0.0, deadline - now)) or None,
             "modelCooldowns": models,
             "softStreak": int(self.soft_streak),
+            "unscopedStreak": int(self.unscoped_streak),
             "breakerFor": round(max(0.0, self.breaker_until - now)) or None,
             "degradeFor": round(max(0.0, self.degrade_until - now)) or None,
             "addedAt": self.added_at,
@@ -1789,6 +1811,20 @@ class Account(object):
             self.cooldown_until = max(self.cooldown_until, time.time() + wait)
         return wait
 
+    def note_unscoped_rate(self, model):
+        """An unscoped soft 429: grow its own streak, return this model's window.
+
+        Counting is deliberately separate from soft_streak. Sharing one counter
+        let the ladders feed each other: four unscoped 429s pushed the first
+        genuinely credential-scoped one straight to the 7200s ceiling instead of
+        starting at 600s, and a credential streak made the next unscoped window
+        start high as well. Each scope now has its own count, and a served
+        request clears both through note_success().
+        """
+        with self._throttle_lock:
+            self.unscoped_streak += 1
+            return unverified_soft_backoff(self.unscoped_streak)
+
     def note_failure(self, message):
         """5xx / transport failure: feed the breaker counter."""
         with self._throttle_lock:
@@ -1820,6 +1856,7 @@ class Account(object):
             if model:
                 self.model_cooldowns.pop(model, None)
             self.soft_streak = 0
+            self.unscoped_streak = 0
             self.fails = 0
             self.degrade_count = 0
             self.breaker_until = 0.0

@@ -6846,33 +6846,94 @@ def is_transient(exc):
     return any(m in t for m in markers)
 
 
-# Wording that scopes a 429 to the credential rather than to one model. Only an
-# explicit marker counts as evidence: neither realm's model-scoped wording (code
-# 6004, "usage exceeds frequency limit" / "使用量已超出频率限制") carries one, so
-# an unrecognised body falls back to the narrow model park.
-ACCOUNT_SCOPE_MARKERS = ("account", "credential", "账号", "账户", "凭证")
+# The shapes the upstream uses for a rate limit. A body naming one is a soft
+# limit; it still says nothing about scope, so the caller decides that from the
+# reset clock (one model), from credential wording (the account), or - when
+# neither is present - from repetition, and then only on one model.
+SOFT_LIMIT_MARKERS = ("usage exceeds frequency limit", "too many requests",
+                      "请求过于频繁")
+SOFT_LIMIT_CODES = (14003,)     # intl, observed on a real 429
+
+# Wording that scopes a 429 to the credential itself. These are matched as whole
+# words or explicit phrases, never as bare substrings: a 429 body carries
+# metadata such as "accountId", "account_id" or "credentialId", and a substring
+# test reads those field names as a scope statement and hands the credential the
+# 10m -> 2h ladder. Provisional: no captured body has shown yet what a genuine
+# account-level 429 says, so the list stays short and fails towards the narrow
+# model window.
+ACCOUNT_SCOPE_PHRASES = (
+    "account-level", "account level", "account-wide", "account scope",
+    "account quota", "account rate limit", "account limit",
+    "per account", "per-account", "this account", "your account",
+    "the account", "an account",
+    "credential-level", "credential level", "credential scope",
+    "credential limit", "per credential", "this credential",
+    "the credential", "your credential",
+    "账号级", "账户级", "该账号", "此账号", "该账户", "此账户",
+    "账号限流", "账户限流", "凭证级", "该凭证",
+)
+
+
+def credential_scope_phrase(detail):
+    """The scope phrase the body uses, or None when it names no scope.
+
+    ASCII phrases are anchored on word boundaries, so an identifier like
+    `accountId` cannot satisfy one. The Chinese phrases are plain substrings:
+    they have no word boundary to anchor to and cannot occur inside an
+    identifier.
+    """
+    lowered = (detail or "").lower()
+    for phrase in ACCOUNT_SCOPE_PHRASES:
+        if phrase.isascii():
+            if re.search(r"\b%s\b" % re.escape(phrase), lowered):
+                return phrase
+        elif phrase in lowered:
+            return phrase
+    return None
+
+
+def rate_limit_code(detail):
+    """The `code` field of a JSON 429 body, or None when it is not JSON."""
+    try:
+        obj = json.loads(detail)
+    except Exception:
+        return None
+    return obj.get("code") if isinstance(obj, dict) else None
+
+
+def rate_limit_is_soft_shape(detail):
+    """True when a 429 body names a rate limit, whatever its scope.
+
+    Both shapes the incident environment produced are covered: the bare "usage
+    exceeds frequency limit" body (229 of the 263 recorded 429s) and the intl
+    code 14003 body ("too many requests"). Recognising them is what lets the
+    caller answer with a window on one model rather than on the credential.
+    """
+    text = (detail or "").lower()
+    if any(marker in text for marker in SOFT_LIMIT_MARKERS):
+        return True
+    return rate_limit_code(detail) in SOFT_LIMIT_CODES
 
 
 def rate_limit_is_account_level(detail, reset_at):
     """True only with positive evidence that the 429 is credential-scoped.
 
     The model-scoped form names a reset wall clock (code 6004). Treating the
-    *absence* of one as account scope made every parser miss - an unexpected
-    wording, a truncated or empty body - buy the whole credential a 600s
-    cooldown that doubles up to 7200s (note_soft_rate), so a handful of misses
-    left every account of a realm cooling at once while a panel test kept
-    reporting the credential healthy. A parser miss is evidence of nothing, so
-    the credential is parked only when the body says the limit is on the
-    credential itself; anything else parks the one model for 60s.
+    *absence* of one as account scope made every 429 without a timestamp - which
+    includes the most common body the upstream sends - buy the whole credential
+    a 600s cooldown doubling to 7200s, so a handful of them left every account of
+    a realm cooling at once while a panel test kept reporting the credential
+    healthy. Absence is evidence of nothing: the credential is parked only when
+    the body itself says the limit is on the credential; everything else gets a
+    window on one model, decided by the caller.
 
-    The marker list is deliberately short and provisional: the captured intl
-    account-level body was not in hand when this was written, so it is meant to
-    be re-checked against that payload rather than grown speculatively.
+    Provisional: the phrase list is short because no captured body has shown yet
+    what a genuine account-level 429 looks like, so it is meant to be re-checked
+    against one rather than grown speculatively.
     """
     if reset_at is not None:
         return False
-    text = (detail or "").lower()
-    return any(marker in text for marker in ACCOUNT_SCOPE_MARKERS)
+    return credential_scope_phrase(detail) is not None
 
 
 def parse_rate_limit_reset(detail):
@@ -7041,22 +7102,27 @@ def open_upstream(payload, session_key=None, target_realm=None):
                 reset_at = parse_rate_limit_reset(detail)
                 if rate_limit_is_account_level(detail, reset_at):
                     wait = account.note_soft_rate("HTTP 429 (account soft rate)")
-                    log("account %s soft-rate limited, cooling %.0fs (streak %d)"
-                        % (account.uid[:8], wait, account.soft_streak))
+                    log("account %s soft-rate limited (%r), cooling %.0fs (streak %d)"
+                        % (account.uid[:8], credential_scope_phrase(detail), wait,
+                           account.soft_streak))
                     if session_key and POOL:
                         POOL.affinity.unbind(session_key)
                     last_error = exc
                     last_429 = exc
                     last_429_detail = detail
                     continue
-                # Narrow park: one model, and only for as long as the reset clock
-                # says. No clock and no credential wording means the body is not
-                # understood, which is not a reason to cool the whole account -
-                # a short fixed window keeps the credential serviceable.
+                # No reset clock, so nothing here says whether the limit is on
+                # the credential or on one model. For a recognised soft-limit
+                # shape the repetition is the evidence: the window goes on this
+                # model and grows on the short ladder (60s up to 10m) instead of
+                # the credential's 600s -> 2h one. An unrecognised body gets the
+                # same 60s on one model, with no streak at all.
                 wait = max(1.0, reset_at - time.time()) if reset_at else 60.0
-                if not reset_at:
-                    log("account %s: unparsed 429 body, parking '%s' for %.0fs only"
-                        % (account.uid[:8], model, wait))
+                if reset_at is None and rate_limit_is_soft_shape(detail):
+                    wait = account.note_unscoped_rate(model)
+                    log("account %s: unscoped 429, parking '%s' for %.0fs "
+                        "(unscoped streak %d)"
+                        % (account.uid[:8], model, wait, account.unscoped_streak))
                 # Model-scoped: only this model is throttled for this account,
                 # so sibling models stay serviceable on the same credential.
                 account.note_error("HTTP 429 (model throttled)", model=model, until=reset_at,
