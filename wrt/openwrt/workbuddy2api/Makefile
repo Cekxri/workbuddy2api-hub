@@ -95,7 +95,8 @@ define Package/workbuddy2api/conffiles
 endef
 
 # 安装后置脚本：准备数据目录、加入 sysupgrade 保留列表、收紧配置权限、
-# 装自动更新的 cron。与 powerfee 同样的约定——首次安装不自动启用/启动服务
+# 装面板缓存预热的 cron（workbuddy2api-warm，包内不含任何自更新逻辑）。
+# 与 powerfee 同样的约定——首次安装不自动启用/启动服务
 # （25.12 的 default_postinst 会先 enable+start，这里显式撤销），升级时不动现状。
 define Package/workbuddy2api/postinst
 #!/bin/sh
