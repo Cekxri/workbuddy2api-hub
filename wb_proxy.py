@@ -4482,13 +4482,19 @@ def rate_limit_is_account_level(detail, reset_at):
 def parse_rate_limit_reset(detail):
     """Pull the reset time out of an upstream 429 body, if it names one.
 
-    Upstream answers code 6004 with "... your usage will reset at
-    2026-09-19 18:29:03 UTC+8 ...". Returns an epoch or None. Kept tolerant on
-    purpose: an unparseable body must not break the request path.
+    Upstream answers code 6004 with a reset wall clock, but the wording is
+    per-realm: the intl form is "... your usage will reset at
+    2026-09-19 18:29:03 UTC+8 ...", the cn form is "... 将在
+    2026-10-09 14:44:59 UTC+8 重置 ...". Matching only the English form left
+    every cn 429 without a reset time, so it read as an account-level soft
+    limit and cooled the whole credential instead of parking just the
+    throttled model. Returns an epoch or None. Kept tolerant on purpose: an
+    unparseable body must not break the request path.
     """
     if not detail:
         return None
-    m = re.search(r"reset at\s+(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})", detail)
+    m = re.search(r"(?:reset at|将在)\s*"
+                  r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})", detail)
     if not m:
         return None
     stamp = m.group(1).replace("T", " ")
