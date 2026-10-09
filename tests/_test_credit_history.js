@@ -78,15 +78,145 @@ check('积分扣减历史表头仍是 5 列',
 check('表头列名没变',
       thead && ['时间', '模型', '账号', '积分', 'Token']
         .every(name => thead[0].includes('<th>' + name + '</th>')));
-const sticky = html.match(/#creditHistoryTable thead th\{[^}]*\}/);
+// 页面里的 CSS 规则，按出现顺序。只解析到本套件需要的程度：不模拟层叠、
+// 继承与 @media 的生效条件，选择器取 `{` 之前的最后一段，声明按 `;` 拆开。
+const cssRules = [...html.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+  .map(m => ({
+    selector: m[1].split(/[\n;]/).pop().replace(/\s+/g, ' ').trim(),
+    body: m[2],
+  }))
+  .filter(rule => rule.selector && !rule.selector.startsWith('@'));
+const decls = text => {
+  const out = {};
+  text.split(';').forEach(part => {
+    const at = part.indexOf(':');
+    if (at > 0) out[part.slice(0, at).trim().toLowerCase()] = part.slice(at + 1).trim();
+  });
+  return out;
+};
+
+// 本表自己的身份（id 与 class）从标记里读，而不是写死。
+const tableTag = (html.match(/<table([^>]*id="creditHistoryTable"[^>]*)>/) || [])[1] || '';
+const tableId = (tableTag.match(/id="([^"]*)"/) || [])[1] || '';
+const tableClasses = ((tableTag.match(/class="([^"]*)"/) || [])[1] || '')
+  .split(/\s+/).filter(Boolean);
+// 「命中本表表头」= 选择器（逗号分隔，任一部分成立即可）确实能把声明作用到
+// 本表的表头：末尾落在 th / thead 上，路径上没有 tbody / tfoot 这类把范围排除
+// 在表头之外的分组，且限定词只认本表自己的 id / class。于是 `thead th`、
+// `#creditHistoryTable thead th`、`thead > tr > th` 都算，而
+// `#creditHistoryTable tbody th` 与别的表的规则不算。
+const targetsHeader = selector =>
+  selector.split(',').some(part => {
+    const compounds = part.trim().split(/\s*[>+~]\s*|\s+/).filter(Boolean);
+    if (!compounds.length) return false;
+    if (compounds.some(token => /^(tbody|tfoot)\b/.test(token))) return false;
+    if (!/^th(e?ad)?\b/.test(compounds[compounds.length - 1])) return false;
+    return (part.match(/[#.][\w-]+/g) || [])
+      .every(token => token === '#' + tableId || tableClasses.includes(token.slice(1)));
+  });
+// 反例守卫：把 thead 换成 tbody 之后，规则再也作用不到表头，分类器必须拒绝它 ——
+// 否则「表头 sticky」会在浏览器行为已经坏掉时继续全绿。
+check('作用不到表头的选择器不算表头规则',
+      !targetsHeader('#creditHistoryTable tbody th')
+      && !targetsHeader('#creditHistoryTable tbody > tr > th')
+      && targetsHeader('#creditHistoryTable thead > tr > th'),
+      'tbody th -> ' + targetsHeader('#creditHistoryTable tbody th'));
+
+const headerRules = cssRules
+  .filter(rule => targetsHeader(rule.selector))
+  .map(rule => ({selector: rule.selector, decl: decls(rule.body)}));
+const stickyRule = headerRules
+  .filter(rule => /^(?:-webkit-)?sticky$/.test(rule.decl.position || ''))
+  .pop();
+const zeroOffset = value => /^0(?:\.0+)?[a-z%]*$/.test(value || '');
 check('表头 th 声明了 sticky 定位',
-      sticky && /position:sticky/.test(sticky[0]),
-      sticky ? sticky[0].replace(/\s+/g, ' ') : 'rule not found');
+      !!stickyRule,
+      headerRules.map(rule => rule.selector + '{' + (rule.decl.position || '-') + '}')
+        .join(' | ') || 'no header rule found');
 check('sticky 表头钉在容器顶部',
-      sticky && /top:0/.test(sticky[0]),
-      sticky ? sticky[0].replace(/\s+/g, ' ') : 'rule not found');
+      !!stickyRule && zeroOffset(stickyRule.decl.top),
+      stickyRule ? stickyRule.selector + '{top:' + stickyRule.decl.top + '}' : 'no sticky rule');
+
+// 容器：包住本表的那个元素**自己**的声明（行内样式，或作用在它自己身上的
+// class 规则），而不是"页面上某处出现过这段字符串"。有高度上限、且至少一个轴
+// 在滚动，表头才有可粘的上下文 —— overflow 的计算规则保证另一轴会按 auto 处理。
+const wrapperMatch = html.match(/<([a-zA-Z][\w-]*)([^>]*)>\s*<table[^>]*id="creditHistoryTable"/) || [];
+const wrapper = wrapperMatch[2] || '';
+// 容器元素自己的身份，全部从标记里读：标签、class token、id、属性名 → 值。
+// 属性名先把带引号的值中和掉再找，免得把值里出现的 `x=` 当成属性。
+const wrapperAttrs = {};
+[...wrapper.replace(/"[^"]*"/g, '""').matchAll(/([\w-]+)\s*=/g)].forEach(m => {
+  const value = wrapper.match(new RegExp('(?:^|\\s)' + m[1] + '\\s*=\\s*"([^"]*)"', 'i'));
+  wrapperAttrs[m[1].toLowerCase()] = value ? value[1] : '';
+});
+const wrapperElement = {
+  tag: (wrapperMatch[1] || '').toLowerCase(),
+  classes: ((wrapper.match(/class="([^"]*)"/) || [])[1] || '').split(/\s+/).filter(Boolean),
+  ids: [...wrapper.matchAll(/(?:^|\s)id="([^"]*)"/g)].map(m => m[1]),
+  attrs: wrapperAttrs,
+};
+// [属性] 限定词：属性必须真的在这个元素上；写了 `=` 值还要相等（其余运算符一律
+// 判为不满足 —— 宁可判"选不中"，也不把没校验的限定词当成满足）。
+const attrSatisfied = (qualifier, element) => {
+  const m = qualifier.match(/^\s*([\w-]+)\s*(?:([~^$*|]?=)\s*(.*?)\s*)?$/);
+  if (!m) return false;
+  const name = m[1].toLowerCase();
+  if (!(name in element.attrs)) return false;
+  if (!m[2]) return true;
+  if (m[2] !== '=') return false;
+  return element.attrs[name] === (m[3] || '').replace(/^["']|["']$/g, '');
+};
+// 一条规则要算在容器**元素自身**头上：选择器（逗号分隔，任一部分成立即可）
+// 某个部分的**末尾组合**（组合器右侧才是被选中的元素）必须带上容器自己的
+// class，且该组合里出现的**每一个**限定词 —— 元素名、其它 class、id、[属性]
+// —— 都要由这个元素真的满足：class 按 token **整名**相等（`creditHistoryWrapX`
+// 不算命中），多出来的限定词缺一个就拒绝。`.creditHistoryWrap table` /
+// `.creditHistoryWrap td` 这类后代选择器打在别的元素上，同样不算。
+const selectorTargetsElement = (selector, element) =>
+  selector.split(',').some(part => {
+    const compounds = part.trim().split(/\s*[>+~]\s*|\s+/).filter(Boolean);
+    const last = compounds[compounds.length - 1] || '';
+    const classes = [...last.matchAll(/\.([\w-]+)/g)].map(m => m[1]);
+    const elementName = (last.match(/^([a-zA-Z][\w-]*)/) || [])[1];
+    return classes.length > 0
+      && classes.every(cls => element.classes.includes(cls))
+      && [...last.matchAll(/#([\w-]+)/g)].every(m => element.ids.includes(m[1]))
+      && [...last.matchAll(/\[([^\]]+)\]/g)].every(m => attrSatisfied(m[1], element))
+      && (!elementName || elementName.toLowerCase() === element.tag);
+  });
+const WRAP = {tag: 'div', classes: ['creditHistoryWrap'], ids: [], attrs: {class: 'creditHistoryWrap'}};
+// 反例守卫：后代选择器不能向容器自己的声明里贡献 max-height / overflow。
+check('后代选择器不算作用在容器元素自身',
+      !selectorTargetsElement('.creditHistoryWrap table', WRAP)
+      && !selectorTargetsElement('.creditHistoryWrap td', WRAP)
+      && !selectorTargetsElement('table.creditHistoryWrap', WRAP)
+      && selectorTargetsElement('.creditHistoryWrap', WRAP)
+      && selectorTargetsElement('div.creditHistoryWrap', WRAP),
+      '.creditHistoryWrap table -> ' + selectorTargetsElement('.creditHistoryWrap table', WRAP));
+// 反例守卫：class 按 token 整名相等，前缀/超集写法不算命中。
+check('class 判定按 token 整名相等，不是子串',
+      !selectorTargetsElement('.creditHistoryWrapX', WRAP)
+      && !selectorTargetsElement('xcreditHistoryWrap', WRAP)
+      && !selectorTargetsElement('.foo.creditHistoryWrapbar', WRAP),
+      '.creditHistoryWrapX -> ' + selectorTargetsElement('.creditHistoryWrapX', WRAP));
+// 反例守卫：同一组合里多出来的限定词必须真的能被容器满足。
+check('组合里的额外限定词必须由容器真的满足',
+      !selectorTargetsElement('div.other.creditHistoryWrap', WRAP)
+      && !selectorTargetsElement('#other.creditHistoryWrap', WRAP)
+      && !selectorTargetsElement('[data-x].creditHistoryWrap', WRAP)
+      && !selectorTargetsElement('[class="other"].creditHistoryWrap', WRAP)
+      && selectorTargetsElement('[class].creditHistoryWrap', WRAP),
+      'div.other.creditHistoryWrap -> '
+      + selectorTargetsElement('div.other.creditHistoryWrap', WRAP));
+const wrapperDecl = decls(
+  ((wrapper.match(/\bstyle="([^"]*)"/) || [])[1] || '') + ';'
+  + cssRules.filter(rule => selectorTargetsElement(rule.selector, wrapperElement))
+    .map(rule => rule.body).join(';'));
+const scrolls = ['overflow', 'overflow-x', 'overflow-y']
+  .some(key => /^(auto|scroll|overlay)$/.test(wrapperDecl[key] || ''));
 check('外层容器确实会纵向滚动（否则 sticky 无意义）',
-      /overflow-x:auto;max-height:260px/.test(html));
+      !!(wrapperDecl['max-height'] || wrapperDecl['height']) && scrolls,
+      JSON.stringify(wrapperDecl));
 
 // ---- ② 账号列带昵称 ------------------------------------------------------
 // 断言按「行」读渲染结果：一行就是一次扣减记录，账号单元格取表头里「账号」
