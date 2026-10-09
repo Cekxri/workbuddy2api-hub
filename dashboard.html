@@ -2818,9 +2818,19 @@ function updateUI(){
   if(elCnAcct) elCnAcct.innerHTML = '<b style="color:var(--accent)">' + cnActive + '</b>/' + cnAccts.length + ' 可用';
 };
 
+// 切换视图的唯一入口：改完 VIEW_REALM 立刻用**已经加载好的**全量 window.ACCOUNTS
+// 重画一次「当前禁用账号与模型」，不等后面的异步账号重载 —— 否则在重载返回之前那
+// 段间隙里，DOM 里还留着上一个 realm 的停用行，重载失败时它们会一直留着（issue
+// #31 要求切换立即生效、不留旧行）。启动时的赋值不走这里：那时还没有任何行被画
+// 出来，第一次 loadAccounts() 会画。
+function setViewRealm(r){
+  window.VIEW_REALM = r;
+  renderDisabled();
+}
+
 async function switchViewRealm(r){
   if(window.VIEW_REALM === r) return;
-  window.VIEW_REALM = r;
+  setViewRealm(r);
   RECENT_PAGE = 1;
   window.updateUI();
   // 并行发起，不要逐个 await：国内版的成长任务一次要约 2 秒（上游两个接口），
@@ -2835,7 +2845,7 @@ async function toggleActiveGatewayRealm(){
     const res = await postJSON("/realm", {realm: next});
     window.ACTIVE_GATEWAY_REALM = res.current || next;
     toast("网关默认上游已切换并永久保存为: " + (window.ACTIVE_GATEWAY_REALM === "intl" ? "国际版" : "国内版"));
-    window.VIEW_REALM = window.ACTIVE_GATEWAY_REALM;
+    setViewRealm(window.ACTIVE_GATEWAY_REALM);
     window.updateUI();
     await Promise.all([loadAccounts(), loadModels(), loadGrowthTasks(),
                        loadSchedulerStatus(), loadAnalytics(), refresh()]);
