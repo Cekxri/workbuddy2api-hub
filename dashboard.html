@@ -172,6 +172,8 @@ body.pricing-off #kpiCostCard{display:none}
 .legend{display:flex;gap:16px;color:var(--dim);font-size:11px;margin-top:12px;flex-wrap:wrap}
 .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+/* 工具栏按用途分组：组与组之间一条浅色竖线（窄屏换行时它跟着按钮走，不会掉队） */
+.toolbar-sep{width:1px;align-self:stretch;min-height:20px;background:var(--line);margin:0 2px;border-radius:1px}
 button{cursor:pointer;font:inherit;font-size:12px;font-weight:500;padding:6px 14px;border-radius:8px;
   border:1px solid var(--accent);background:var(--accent);color:#fff;box-shadow:var(--shadow-sm);transition:all .15s ease}
 button:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
@@ -2690,8 +2692,10 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <button class="sec" id="btnScanDesktop" onclick="scanDesktop(this)">扫描桌面客户端账号</button>
     <button class="sec" onclick="openImport()">导入账号</button>
     <button class="sec" onclick="exportAccounts(this)">导出账号</button>
+    <span class="toolbar-sep" aria-hidden="true"></span>
     <button class="sec" onclick="fetchCredits(this)">刷新积分</button>
     <button class="sec" onclick="refreshAccounts(this)" title="逐个刷新所有账号的上游访问凭证（相当于对每个账号点一次「刷新凭证」）">一键刷新凭证</button>
+    <span class="toolbar-sep" aria-hidden="true"></span>
     <button class="sec" id="btnCheckin" onclick="doCheckin(this)" style="display:none">每日签到 (国内版)</button>
     <button class="sec" id="btnDailyChat" onclick="doDailyChat(this)" style="display:none">每日活跃打卡 (国际版)</button>
     <!-- 网页通道打卡按钮不再上屏（2026-10-10 起）：网页通道那一步已经由设置里的
@@ -2699,6 +2703,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
          /accounts/daily-chat-web 即可。要放回面板：去掉下面的 display:none，
          并在 updateUI() 里恢复它按视图显隐。 -->
     <button class="sec" id="btnDailyChatWeb" onclick="doDailyChatWeb(this)" style="display:none">网页通道打卡 (国际版)</button>
+    <span class="toolbar-sep" aria-hidden="true"></span>
     <button class="sec" onclick="autoAssignSlots()" title="把尚未绑定出口的已启用账号依次分配到已启用的代理槽；已有绑定的账号不受影响">分配代理出口给未绑定账号</button>
     <button class="sec" onclick="setAll(true, this)">全部启用</button>
     <button class="sec" onclick="setAll(false, this)">全部停用</button>
