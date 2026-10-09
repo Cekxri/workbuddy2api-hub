@@ -33,7 +33,9 @@ class StubAccount(object):
         self.enabled = True
         self.checkins = 0
 
-    def checkin(self):
+    # 与 wb_accounts.Account.checkin 同形：调用方会带 trigger（手动/定时），
+    # 桩只关心调用发生了没有。
+    def checkin(self, trigger="unknown"):
         self.checkins += 1
         return {"ok": True, "code": 0, "msg": "ok"}
 
