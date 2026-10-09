@@ -433,11 +433,11 @@ class Account(object):
         if not self.domain:
             self.domain = get_realm_config(self.realm)["domain"]
         self.platform = str(data.get("platform") or "CLI")
-        # 出站身分讀回憑證檔裡保存的值：面板手動切換與 429 自動切換都會經由
-        # save() 寫進憑證檔（to_dict() 序列化的是當下身分），所以重啟後接著用
-        # 上次實際生效的那條通道，而不是每次都回到預設。
-        # 憑證檔沒有這個欄位、或值不合法時 normalize_product() 會回退到
-        # WorkBuddy 獨立桌面端 (workbuddy)，升級前就已存在的帳號行為不變。
+        # 出站身分读回凭证档里保存的值：面板手动切换与 429 自动切换都会经由
+        # save() 写进凭证档（to_dict() 序列化的是当下身分），所以重启后接着用
+        # 上次实际生效的那条通道，而不是每次都回到预设。
+        # 凭证档没有这个栏位、或值不合法时 normalize_product() 会回退到
+        # WorkBuddy 独立桌面端 (workbuddy)，升级前就已存在的帐号行为不变。
         self.product = wb_identity.normalize_product(data.get("product"))
         self.enterprise_id = str(data.get("enterpriseId") or "")
         self.access_token = token
@@ -892,10 +892,10 @@ class Account(object):
         return self.refresh()
 
     def headers(self, purpose="chat"):
-        """組出這一輪的出站標頭。
+        """组出这一轮的出站标头。
 
-        chat 用途走 wb_identity（CLI 頭 / WorkBuddy 頭，可切換）；
-        billing 用途維持原本的輕量標頭，計費端點不吃那套身分。
+        chat 用途走 wb_identity（CLI 头 / WorkBuddy 头，可切换）；
+        billing 用途维持原本的轻量标头，计费端点不吃那套身分。
         """
         cfg = get_realm_config(self.realm)
 
@@ -978,9 +978,9 @@ class Account(object):
         return nickname
 
     def set_product(self, value):
-        """切換出站身分（cli <-> workbuddy）。回傳 True 表示真的換了。
+        """切换出站身分（cli <-> workbuddy）。回传 True 表示真的换了。
 
-        身分會寫回憑證檔，重啟後仍然有效。save() 需要目錄參數。
+        身分会写回凭证档，重启后仍然有效。save() 需要目录参数。
         """
         new = wb_identity.normalize_product(value)
         if new == self.product:
@@ -993,7 +993,7 @@ class Account(object):
         return True
 
     def chat_base_url(self):
-        """這個帳號目前身分該打的端點。"""
+        """这个帐号目前身分该打的端点。"""
         return wb_identity.endpoint_for(self.realm, self.product)[0]
 
     def refresh(self):
