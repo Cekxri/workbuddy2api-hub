@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Vibe_Coding-100%25-ff69b4?style=flat-square" alt="Vibe Coding">
 </p>
 
-把腾讯 **[www.workbuddy.ai](https://www.workbuddy.ai)**（国际版）与 **[codebuddy.cn](https://www.codebuddy.cn)**（国内版）的原生服务封装成标准 OpenAI 兼容接口（Chat Completions / Responses / 原生 Anthropic Messages），并补齐多账号调度与运维能力：
+把腾讯 **[www.workbuddy.ai](https://www.workbuddy.ai)**（国际版）与 **[codebuddy.cn](https://www.codebuddy.cn)**（国内版）的原生服务封装成标准 OpenAI 兼容接口（Chat Completions / Responses）与原生 Anthropic Messages 接口，并补齐多账号调度与运维能力：
 
 - **开箱即用**：绿色包自带精简 Python，双击脚本即启；
 - **双区域独立路由**：国际版 / 国内版各自配置与调度，看板一键切换，状态落盘；
@@ -344,4 +344,3 @@ PR 贡献者（v1.4.5 之前的改动未进上方更新记录，这里一并列�
 
 1. 本项目为非官方自托管网关，仅供技术研究、逆向协议学习与个人合法授权账号在私有环境测试使用。
 2. 本项目不提供任何账号及额度。请严格遵守官方服务条款，禁止用于任何商业转售、恶意并发或违规滥用。
-
