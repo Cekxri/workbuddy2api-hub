@@ -93,6 +93,19 @@ def first_diff(a, b, span=60):
     return "长度 %d vs %d" % (len(a), len(b))
 
 
+# _usage_snapshot_uncached 在窗口聚合之外补的描述性字段：每份快照各自的
+# started、日志路径、汇率、账号目录映射等。内部扫描（_scan_*_window）的
+# 结果里没有这些，拿两者比窗口数字之前必须剥掉——否则比的是"有没有被
+# 公开路径装饰过"，而不是"日桶切片与整段扫描是否一致"。
+SNAP_DECORATIONS = ("started", "since", "log_file", "realm", "usd_cny",
+                    "accounts_map", "account")
+
+
+def snap_fold(snap):
+    """窗口聚合部分（剥掉公开路径补的描述性字段）的规范文本。"""
+    return canon({k: v for k, v in snap.items() if k not in SNAP_DECORATIONS})
+
+
 def float_diffs(a, b, path="", out=None, tol=1e-9):
     """收集超出相对误差的浮点差异；整数字段与结构必须完全相同。"""
     if out is None:
@@ -758,10 +771,17 @@ if hasattr(time, "tzset"):
             got = canon(P.usage_timeseries(realm="all", range=name, ttl=0))
             check("夏令时时区（Europe/Berlin）timeseries %s 与扫描一致" % name,
                   got == scan, first_diff(scan, got))
-            scan_snap = canon(P._scan_usage_snapshot_window(None, lo, None))
-            got_snap = canon(P._usage_snapshot_uncached(since=lo, until=None))
+            scan_snap = snap_fold(P._scan_usage_snapshot_window(None, lo, None))
+            got_snap = snap_fold(P._usage_snapshot_uncached(since=lo, until=None))
             check("夏令时时区 snapshot %s 与扫描一致" % name,
                   got_snap == scan_snap, first_diff(scan_snap, got_snap))
+        # 上面那三条不是空过：确认窗口确实由日桶服务——退回整段扫描同样
+        # 会让比较通过，但那样就没验到切片在夏令时下的行为。
+        today_lo, _ = P.range_window("today")
+        sliced = P._usage_snapshot_window_from_days(
+            None, P._window_day_key(today_lo), True)
+        check("夏令时窗口（today）确实走日桶切片（不是退回扫描）",
+              sliced is not None)
         # month 的日桶里有一个（10-27）的本地午夜被夏令时挪过 3600 秒，
         # 切片必须放弃。
         month_lo, _hi = P.range_window("month")
