@@ -93,19 +93,6 @@ def first_diff(a, b, span=60):
     return "长度 %d vs %d" % (len(a), len(b))
 
 
-# _usage_snapshot_uncached 在窗口聚合之外补的描述性字段：每份快照各自的
-# started、日志路径、汇率、账号目录映射等。内部扫描（_scan_*_window）的
-# 结果里没有这些，拿两者比窗口数字之前必须剥掉——否则比的是"有没有被
-# 公开路径装饰过"，而不是"日桶切片与整段扫描是否一致"。
-SNAP_DECORATIONS = ("started", "since", "log_file", "realm", "usd_cny",
-                    "accounts_map", "account")
-
-
-def snap_fold(snap):
-    """窗口聚合部分（剥掉公开路径补的描述性字段）的规范文本。"""
-    return canon({k: v for k, v in snap.items() if k not in SNAP_DECORATIONS})
-
-
 def float_diffs(a, b, path="", out=None, tol=1e-9):
     """收集超出相对误差的浮点差异；整数字段与结构必须完全相同。"""
     if out is None:
@@ -276,14 +263,46 @@ def restart():
     P._usage_cache_digest_memo.clear()
 
 
+def window_start(name, now=None):
+    """按 range_window 的规则取窗口起点，但锚在给定时刻（默认冻结时钟）。
+
+    range_window 的 week/month 读的是**系统时钟**：`time.localtime()` 不带参数
+    走的是 C 的 time()，补 time.time 改不到它，week 于是等于「冻结日期减真实
+    星期几」、month 等于「当前真实月份」。套件把时间冻在 2026-10-08、真实日期
+    却是跑的那天，直接调 range_window 会让窗口随真实日期漂移（跑到 11 月、
+    或恰好在周一导致 week 与 today 重合），断言就会时灵时不灵。这里按同一套
+    规则、用冻结时钟现算，窗口因此是确定的。
+    """
+    if now is None:
+        now = FROZEN
+    if name == "today":
+        return P._local_midnight(now)
+    lt = time.localtime(now)
+    if name == "week":
+        return P._local_midnight(now, days_back=lt.tm_wday)
+    return time.mktime((lt.tm_year, lt.tm_mon, 1, 0, 0, 0, 0, 0, -1))
+
+
+def window_series(name, now=None, **kwargs):
+    """窗口序列：走公开入口，窗口由 window_start() 现算后显式传入。
+
+    usage_timeseries 的 range 别名同样依赖系统时钟，所以这里用 range="custom"
+    + since（until 缺省）——与别名等价（起点是本地午夜），但确定。
+    """
+    lo = window_start(name, now)
+    return P.usage_timeseries(realm="all", range="custom", since=lo, until=None,
+                              ttl=0, **kwargs)
+
+
 def live():
     """公开入口的窗口结果（三个窗口的 snapshot/analytics/timeseries + all）。"""
     out = {}
     for name in ("today", "week", "month"):
-        lo, hi = P.range_window(name)
-        out["snap_" + name] = P._usage_snapshot_uncached(since=lo, until=hi)
-        out["an_" + name] = P._compute_usage_analytics_uncached(since=lo, until=hi)
-        out["ts_" + name] = P.usage_timeseries(realm="all", range=name, ttl=0)
+        lo = window_start(name)
+        out["snap_" + name] = P._usage_snapshot_uncached(since=lo, until=None)
+        out["an_" + name] = P._compute_usage_analytics_uncached(since=lo,
+                                                               until=None)
+        out["ts_" + name] = window_series(name)
     out["snap_all"] = P._usage_snapshot_uncached()
     out["an_all"] = P._compute_usage_analytics_uncached()
     out["byacct"] = P._usage_by_account_uncached()
@@ -305,12 +324,26 @@ import wb_proxy as P
 import wb_pricing
 wb_pricing.set_data_dir(P.USAGE_DIR)
 wb_pricing.set_settings_dir(P.ACCOUNTS_DIR)
+
+
+def window_start(name):
+    """与父进程同一套窗口算法（range_window 的 week/month 读系统时钟，
+    子进程里也一样漂；这里锚在冻结时钟上）。"""
+    if name == "today":
+        return P._local_midnight(FROZEN)
+    lt = _t.localtime(FROZEN)
+    if name == "week":
+        return P._local_midnight(FROZEN, days_back=lt.tm_wday)
+    return _t.mktime((lt.tm_year, lt.tm_mon, 1, 0, 0, 0, 0, 0, -1))
+
+
 out = {}
 for name in ("today", "week", "month"):
-    lo, hi = P.range_window(name)
-    out["snap_" + name] = P._usage_snapshot_uncached(since=lo, until=hi)
-    out["an_" + name] = P._compute_usage_analytics_uncached(since=lo, until=hi)
-    out["ts_" + name] = P.usage_timeseries(realm="all", range=name, ttl=0)
+    lo = window_start(name)
+    out["snap_" + name] = P._usage_snapshot_uncached(since=lo, until=None)
+    out["an_" + name] = P._compute_usage_analytics_uncached(since=lo, until=None)
+    out["ts_" + name] = P.usage_timeseries(realm="all", range="custom", since=lo,
+                                           until=None, ttl=0)
 out["snap_all"] = P._usage_snapshot_uncached()
 out["an_all"] = P._compute_usage_analytics_uncached()
 out["byacct"] = P._usage_by_account_uncached()
@@ -383,11 +416,16 @@ restart()
 GOLDEN_RAW = live()
 GOLDEN = canon(GOLDEN_RAW)
 GOLDEN_OBJ = json.loads(GOLDEN)
-check("基线：三个窗口都有内容，窗口越宽数越大",
+# 用 >= 而不是 >：三个窗口都由 window_start() 锚在冻结时钟上现算，而冻结那天
+# 本身可能是周一——那时 week 与 today 天然重合，不该让用例在这一天挂。
+check("基线：三个窗口都有内容，窗口越宽覆盖的行只多不少",
       GOLDEN_OBJ["snap_today"]["requests"] > 0
-      and GOLDEN_OBJ["snap_week"]["requests"] > GOLDEN_OBJ["snap_today"]["requests"]
-      and GOLDEN_OBJ["an_month"]["summary"]["window"]["total_tokens"] > 0,
-      (GOLDEN_OBJ["snap_today"]["requests"], GOLDEN_OBJ["snap_week"]["requests"]))
+      and GOLDEN_OBJ["snap_week"]["requests"] >= GOLDEN_OBJ["snap_today"]["requests"]
+      and GOLDEN_OBJ["an_month"]["summary"]["window"]["total_tokens"]
+      >= GOLDEN_OBJ["an_week"]["summary"]["window"]["total_tokens"] > 0,
+      (GOLDEN_OBJ["snap_today"]["requests"], GOLDEN_OBJ["snap_week"]["requests"],
+       GOLDEN_OBJ["an_month"]["summary"]["window"]["total_tokens"],
+       GOLDEN_OBJ["an_week"]["summary"]["window"]["total_tokens"]))
 check("基线（关掉日桶）：状态里一个日桶都没有",
       not P._usage_snap_state[None]["days"]
       and not P._analytics_state[None]["days"]
@@ -452,7 +490,6 @@ print()
 print("[2] 等价：窗口 = 日桶之和，与改动前的逐行口径逐字段一致")
 # 测试数据的价是二进制精确值，所以多天窗口也逐字节相同。
 for name in ("today", "week", "month"):
-    lo, _hi = P.range_window(name)
     cache_env_off()
     restart()
     ref = canon(live())
@@ -463,7 +500,7 @@ for name in ("today", "week", "month"):
           first_diff(ref, got))
 # 日桶状态不可用时现折的那份（_scan_*_window_days）也必须与有日桶时一致：
 # 清掉状态后先只调一次窗口，再把结果与有日桶时的窗口比。
-lo, _hi = P.range_window("week")
+lo = window_start("week")
 day_key = time.strftime("%Y-%m-%d", time.localtime(lo))
 cache_env_nowrite()
 restart()
@@ -665,7 +702,7 @@ check("剪枝线以外的迟到行被丢掉（不建桶、不改 days_floor）",
       == [DAY2_KEY, DAY1_KEY, TODAY_KEY],
       sorted(P._usage_snap_state[None]["days"]))
 write_log(ROWS)
-lo, _hi = P.range_window("month")
+lo = window_start("month")
 got_month = canon(P._usage_snapshot_uncached(since=lo, until=None))
 cache_env_off()
 restart()
@@ -674,7 +711,7 @@ check("剪枝线以外的窗口退回扫描，结果与关掉日桶时一致",
       got_month == want_month, first_diff(want_month, got_month))
 cache_env(enabled=1, min_bytes=10 ** 9, min_seconds=10 ** 9, keep=2)
 restart()
-today = P._usage_snapshot_uncached(since=P.range_window("today")[0], until=None)
+today = P._usage_snapshot_uncached(since=window_start("today"), until=None)
 check("剪枝线以内的窗口仍由日桶服务（今天）",
       today["requests"] == GOLDEN_OBJ["snap_today"]["requests"],
       (today["requests"], GOLDEN_OBJ["snap_today"]["requests"]))
@@ -692,14 +729,14 @@ SCAN = {}
 for name in ("today", "week", "month"):
     cache_env_off()
     restart()
-    SCAN[name] = canon(P.usage_timeseries(realm="all", range=name, ttl=0))
+    SCAN[name] = canon(window_series(name))
 cache_env_nowrite()
 restart()
 for name in ("today", "week", "month"):
-    got = canon(P.usage_timeseries(realm="all", range=name, ttl=0))
+    got = canon(window_series(name))
     check("timeseries %s：切片 == 整段扫描（逐字节）" % name,
           got == SCAN[name], first_diff(SCAN[name], got))
-got = P.usage_timeseries(realm="all", range="week", ttl=0)
+got = window_series("week")
 check("credits 恰好 50 条（缓冲裁过）", len(got["credits"]) == 50,
       len(got["credits"]))
 check("credits 与扫描的前 50 条逐条相同（含 at 相同的稳定顺序）",
@@ -711,7 +748,8 @@ check("credits 与扫描的前 50 条逐条相同（含 at 相同的稳定顺序
 for label, kwargs in (("自定义窗口（起点非午夜）",
                        dict(range="custom", since=TODAY0 + 100, until=FROZEN)),
                       ("显式桶宽（120s）",
-                       dict(range="today", bucket_seconds=120))):
+                       dict(range="custom", since=window_start("today"),
+                            bucket_seconds=120))):
     cache_env_off()
     restart()
     ref = canon(P.usage_timeseries(realm="all", ttl=0, **kwargs))
@@ -722,20 +760,20 @@ for label, kwargs in (("自定义窗口（起点非午夜）",
 append_log([row(FROZEN + 100000, "m-a", "u1", 10, 1)])
 cache_env_off()
 restart()
-FUT = canon(P.usage_timeseries(realm="all", range="today", ttl=0))
+FUT = canon(window_series("today"))
 cache_env_nowrite()
 restart()
 check("有未来行（hi < 折过的最大 at）时退回扫描，结果一致",
-      canon(P.usage_timeseries(realm="all", range="today", ttl=0)) == FUT)
+      canon(window_series("today")) == FUT)
 write_log(ROWS + credit_rows)
 
 print()
 print("[9] 夏令时 / 日边界不规则：切片自己退回去")
 cache_env_nowrite()
 restart()
-P.usage_timeseries(realm="all", range="today", ttl=0)
+window_series("today")
 state = P._series_state[None]
-lo, _hi = P.range_window("today")
+lo = window_start("today")
 check("对齐窗口本来就走切片（不是退回）",
       P._series_slice(state, None, lo, FROZEN, 3600, TODAY_KEY) is not None)
 state["days"][TODAY_KEY]["at"] += 3600        # 假装这一天少了/多了 3600 秒
@@ -752,44 +790,83 @@ check("恢复后切片又能用",
       P._series_slice(state, None, lo, FROZEN, 3600, TODAY_KEY) is not None)
 if hasattr(time, "tzset"):
     # 真实夏令时时区（Europe/Berlin 2026-10-25 结束夏令时，那天 25 小时）：
-    # 冻结时钟挪到切换之后，造一批横跨切换日的行，再跑 today/week/month。
-    # 结果必须与整段扫描一致；包含切换日的宽窗口（month）还必须明确放弃
-    # 切片（日边界被挪过，格点校验挡得住）。
+    # 冻结时钟挪到切换之后（10-28 12:00，晚于最后一行），造一批横跨切换日的
+    # 行，再跑 today/week/month。
+    #
+    # 三条纪律，别把它们混成一条：
+    #   * 与「整段扫描」比的是 timeseries 的**整份载荷**（公开入口给的就是
+    #     这个形状），日桶开/关两条路径必须逐字节一致；
+    #   * snapshot 比的是**同一种东西**——公开入口对公开入口（日桶开 vs 关）。
+    #     拿 `_scan_usage_snapshot_window()` 的原始折叠去比公开入口是错的：
+    #     后者还会补 started/since/log_file/realm/usd_cny/accounts_map/account
+    #     这几个字段，任何时区、任何日期都比不平（Linux 上这段真的会跑，
+    #     Windows 没有 tzset 所以一直没暴露）。
+    #   * 先确认「本机真的被切到了柏林」再断言：有 zoneinfo 的系统认 IANA 名，
+    #     只有 POSIX TZ 支持的系统（musl/OpenWrt 路由器这类没装 zoneinfo 的
+    #     镜像）会把它悄悄降级成 UTC——那时日边界不再被挪动，断言就会以
+    #     「切片竟然成立」这种误导性的方式失败。用 10-25 那天是不是 25 小时
+    #     来验证，两个 TZ 值都做不到就跳过这段。
+    ZONES = ("Europe/Berlin", "CET-1CEST,M3.5.0,M10.5.0/3")
     old_tz = os.environ.get("TZ")
-    try:
-        os.environ["TZ"] = "Europe/Berlin"
+    chosen = None
+    for zone in ZONES:
+        os.environ["TZ"] = zone
         time.tzset()
-        _time.time = lambda: time.mktime((2026, 10, 27, 12, 0, 0, 0, 0, -1))
-        base = time.mktime((2026, 10, 22, 12, 0, 0, 0, 0, -1))
-        dst_rows = [row(base + d * 86400 + h * 3600, "m-a", "u1", 100, 10)
-                    for d in range(6) for h in (0, 6, 12, 18)]
-        write_log(dst_rows)
-        for name in ("today", "week", "month"):
-            lo, _hi = P.range_window(name)
-            step = 86400 if name == "month" else 3600
-            scan = canon(P._usage_timeseries_scan(None, lo, time.time(), step))
-            got = canon(P.usage_timeseries(realm="all", range=name, ttl=0))
-            check("夏令时时区（Europe/Berlin）timeseries %s 与扫描一致" % name,
-                  got == scan, first_diff(scan, got))
-            scan_snap = snap_fold(P._scan_usage_snapshot_window(None, lo, None))
-            got_snap = snap_fold(P._usage_snapshot_uncached(since=lo, until=None))
-            check("夏令时时区 snapshot %s 与扫描一致" % name,
-                  got_snap == scan_snap, first_diff(scan_snap, got_snap))
-        # 上面那三条不是空过：确认窗口确实由日桶服务——退回整段扫描同样
-        # 会让比较通过，但那样就没验到切片在夏令时下的行为。
-        today_lo, _ = P.range_window("today")
-        sliced = P._usage_snapshot_window_from_days(
-            None, P._window_day_key(today_lo), True)
-        check("夏令时窗口（today）确实走日桶切片（不是退回扫描）",
-              sliced is not None)
-        # month 的日桶里有一个（10-27）的本地午夜被夏令时挪过 3600 秒，
-        # 切片必须放弃。
-        month_lo, _hi = P.range_window("month")
-        month_key = time.strftime("%Y-%m-%d", time.localtime(month_lo))
-        sliced = P._series_slice(P._series_state[None], None, month_lo,
-                                 time.time(), 86400, month_key)
-        check("夏令时窗口（month 含切换日）：切片放弃，退回扫描",
-              sliced is None, None if sliced is None else "切片竟然成立了")
+        if (time.mktime((2026, 10, 26, 0, 0, 0, 0, 0, -1))
+                - time.mktime((2026, 10, 25, 0, 0, 0, 0, 0, -1))) == 90000:
+            chosen = zone
+            break
+    try:
+        if chosen is None:
+            print("  [SKIP] 本机无法把进程切到柏林夏令时（%s 都不生效）"
+                  % (", ".join(ZONES)))
+        else:
+            print("  [INFO] 夏令时用例使用 TZ=%s" % chosen)
+            _time.time = lambda: time.mktime((2026, 10, 28, 12, 0, 0, 0, 0, -1))
+            base = time.mktime((2026, 10, 22, 12, 0, 0, 0, 0, -1))
+            dst_rows = [row(base + d * 86400 + h * 3600, "m-a", "u1", 100, 10)
+                        for d in range(6) for h in (0, 6, 12, 18)]
+            write_log(dst_rows)
+            for name in ("today", "week", "month"):
+                lo = window_start(name, time.time())
+                step = 86400 if name == "month" else 3600
+                scan = canon(P._usage_timeseries_scan(None, lo, time.time(), step))
+                got = canon(window_series(name, time.time()))
+                check("夏令时时区（%s）timeseries %s 与扫描一致" % (chosen, name),
+                      got == scan, first_diff(scan, got))
+                cache_env(enabled=1, min_bytes=10 ** 9, min_seconds=10 ** 9,
+                          days=0)
+                restart()
+                ref = canon(P._usage_snapshot_uncached(since=lo, until=None))
+                cache_env(enabled=1, min_bytes=10 ** 9, min_seconds=10 ** 9)
+                restart()
+                got_snap = canon(P._usage_snapshot_uncached(since=lo, until=None))
+                check("夏令时时区 snapshot %s：日桶路径 == 逐行口径（逐字节）" % name,
+                      got_snap == ref, first_diff(ref, got_snap))
+            # 10-25 是切换日（那天 25 小时）：month（10-01 起）一定含它，
+            # 日边界被挪过 3600 秒，切片必须放弃；today（10-28，切换日之后的
+            # 普通一天）没有这个问题，切片照常可用。
+            #
+            # week 的起点随「这一周从哪天开始」变（见 window_start），所以期望
+            # 值按 lo 现算：周起点落在 10-26 及以后时窗口内全是规则日边界
+            # （切片可用），落在 10-25 及以前就含切换日（切片放弃）。
+            regular_from = time.mktime((2026, 10, 26, 0, 0, 0, 0, 0, -1))
+            week_lo = window_start("week", time.time())
+            for name, expect_taken in (("month", False),
+                                       ("week", week_lo >= regular_from),
+                                       ("today", True)):
+                lo = window_start(name, time.time())
+                step = 86400 if name == "month" else 3600
+                key = time.strftime("%Y-%m-%d", time.localtime(lo))
+                cache_env(enabled=1, min_bytes=10 ** 9, min_seconds=10 ** 9)
+                restart()
+                window_series(name, time.time())
+                sliced = P._series_slice(P._series_state[None], None, lo,
+                                         time.time(), step, key)
+                check("夏令时 %s：切片%s" % (name, "照常可用" if expect_taken
+                                            else "放弃、退回扫描"),
+                      (sliced is not None) == expect_taken,
+                      None if sliced is None else "切片竟然成立了")
     finally:
         _time.time = lambda: FROZEN
         if old_tz is None:
@@ -822,7 +899,7 @@ write_pricing({**PRICING, "models": {
             "flat": {"input_cache_hit": 0.13, "input_cache_miss": 0.29,
                      "output": 0.71}},
 }})
-lo, _hi = P.range_window("week")
+lo = window_start("week")
 cache_env_off()
 restart()
 ref = P._usage_snapshot_uncached(since=lo, until=None)
@@ -834,7 +911,7 @@ check("多天窗口：结构与整数逐字段相同，浮点差异 <=1e-9 相�
       not diffs, diffs[:6])
 check("两种口径算的是同一批行（requests 相同）",
       ref["requests"] == got["requests"], (ref["requests"], got["requests"]))
-lo, _hi = P.range_window("today")
+lo = window_start("today")
 cache_env_off()
 restart()
 ref1 = canon(P._usage_snapshot_uncached(since=lo, until=None))
