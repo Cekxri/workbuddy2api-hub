@@ -1,7 +1,7 @@
 # WorkBuddy2API-Hub — 国际版、国内版多账号网关中枢
 
 <p align="center">
-  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.6.18-2496ED?style=flat-square" alt="Version 1.6.18"></a>
+  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.6.19-2496ED?style=flat-square" alt="Version 1.6.19"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
@@ -385,27 +385,7 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
-- **猫猫旅行不再误判「没有 Buddy」**（[PR #235](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/235)，感谢 [@ayeaaaa](https://github.com/ayeaaaa)）：`travel/status` 的 `buddy_id` 是**当前旅行实例**的 id，猫在家（idle）时恒为 0，之前拿它判断「有没有 Buddy」，于是所有 idle 账号（包括早就领过 Buddy 的）点旅行都会被挡下。现在以 `depart` 返回的 400 `no active buddy` 为准：先直接派，确实缺 Buddy 才完成并领取 `first_buddy`（其奖励就是 Buddy 实例）后重试一次，其余失败原样透出上游提示。
-
-- **页面头部结构统一**：「网关与账号」页补上标题 + 一行说明（原来直接从卡片开始），并给「网关设置」补上同款说明行（原来只有标题）——五个页面现在都是「16px 深色标题 + 12px 灰字说明」。新标题不在 `<section>` 里，所以不会变成侧栏「本页导航」项；英文与正體中文词条同步补上。
-
-- **顶部页签顺序调整**：改成「网关与账号 → 数据看板 → 智能体配置 → 设置 → 运行日志」，把运行日志放最后、设置放倒数第二；`MAIN_TABS` 与启动脚本里那份 `TABS` 同步按新顺序排列（两处注释本来就要求与导航顺序一致）。
-
-- **「账号列表」折叠开关的焦点态改柔和**：原来聚焦时是贴着文字画的 2px 蓝色实线描边（用 Tab 键盘走到它时特别扎眼），现在换成淡蓝底 + 1.5px 细描边的胶囊高亮，圆角也跟面板统一成 8px；按钮 padding 与负 margin 成对，聚焦与否标题文字都不位移。
-
-- **区块标题样式统一**：数据看板的「Token 时序」「积分扣减历史」两个**区块**标题原来写成了 16px 深色（那是页面标题那一档的样式），跟同页其他区块标题（13px、`--dim`、大写 + `.6px` 字距）不一致，现在拉回统一样式。页面标题（网关设置 / 智能体配置 / 网关运行日志 / Token 消耗与推理指标透视）仍保持 16px 深色这一档，两级层次不变。
-
-- **网关页三张用量卡片对齐字号与配色**：`估算价格` 的数值原来写死 18px，比旁边两张卡的 22px 小一号，现在统一到 22px；中间的 `/` 分隔符与「网关调用量」的 `次` 单位统一成 13px、`--dim` 色、左右 4px；价格的红绿改用主题变量（`--bad` / `--accent2`）而不是写死色值，深色主题下跟着变，而且与「请求成功率」的绿是同一个绿。`fmtCostBoth` 的分隔符字号改为随数值字号缩放（22px→13px，数据看板那张 14px 的卡仍是 10px，观感不变）。
-
-- **账号工具栏文案精简，账号行补「出站身份：」标签**：`+ 添加账号 (OAuth) → 添加`、`扫描桌面客户端账号 → 扫描桌面客户端`、`导入账号 → 导入`、`导出账号 → 导出`、`刷新积分 → 一键刷新积分`、`分配代理出口给未绑定账号 → 一键分配代理`（`一键刷新凭证` 不变）；账号行操作列里 WB / VSC / CLI 三个按钮前面加上「出站身份：」，不用再看表格下面那行图例才知道它们是什么。英文与正體中文词条同步补上。
-
-- **账号工具栏按钮按用途重排**：添加账号 → 扫描桌面客户端账号 → 导入账号 → 导出账号 → 刷新积分 → 一键刷新凭证 → 每日签到 / 每日活跃打卡 → 分配代理出口给未绑定账号 → 全部启用 / 全部停用（原来打卡按钮夹在添加账号与扫描之间、导出在导入之前）；四组之间用一条浅色竖线（`.toolbar-sep`）分开，换行时分隔线跟着它后面那组走。
-
-- **面板隐藏「网页通道打卡 (国际版)」按钮**：网页通道那一步已经由设置里的「国际版每日活跃打卡」自动带在「每日活跃打卡」里，单独那个按钮不再上屏（手动补跑走 `/accounts/daily-chat-web`）。按钮元素留在 DOM 里但始终 `display:none`，要放回面板时去掉它并恢复 `updateUI()` 里的按视图显隐即可。
-
-- **tag 触发的发布打包与 Draft Release（issue #28）**：`v*` tag 现在由 `.github/workflows/release.yml` 一条链路走完——校验 tag / `wb_proxy.py` / `wrt` 包 Makefile 三处版本一致，拿到**完整测试矩阵**（Ubuntu 3.9 + Ubuntu 3.12 + Windows 3.12，腿名从 `tests.yml` 读出来逐条核对）后，构建便携 ZIP、OpenWrt `.ipk` 与 `.apk`，按最终资产生成 `SHA256SUMS`，最后创建或更新 **Draft Release**。工作流永不 publish，最后一步还会断言它仍是 draft。便携 ZIP 是**绿色包**：在 `windows-latest` 上按「既有线上包那份运行时的文件集合」裁剪钉死并校验 sha256 的上游 CPython 3.12 运行时（527 个文件），打进 `wb-proxy/python/`，然后用包内解释器**真的启动一次网关并探通 `/health`**，所以资产不是被换了名字的源码包。包内 `release-manifest.json` 记录版本、`root`、`python/` 运行时子树与受保护目录 `accounts/`、`usage/`，作为自更新（#29）的消费契约；`release/portable.txt` 的显式清单同时补上了 `pricing/pricing.json` 这类运行时数据（`wb_pricing._candidate_file()` 优先读它）。OpenWrt 配方来自 #190 引用的 `aodianjun/workbuddy2api-hub/wrt/`，审计后并入：保留 `.ipk`/`.apk` 两个打包脚本、包 Makefile、init.d、uci 配置与面板缓存预热器；去掉 fork 专属的 GitHub 自更新器（`workbuddy2api-update` 及其 cron、`auto_update` 选项——OpenWrt 升级走包管理器）、fork 的工作流激活脚本与上游同步工作流，以及钉死上游 commit 的 `PIN_SHA`/`PIN_VER`（配方进了上游仓库后"从 GitHub 拉另一个 commit 的上游源码"没有意义，版本改为取自当前检出）。`-ci` 演练 tag 走完全相同的打包与 draft 流程，只是额外标成 prerelease。**只有 `v*` tag 推送能写 release**：`workflow_dispatch` 是 packaging-only，写入点单独放在一个 `if:` 为「事件是 push 且 ref 是 `refs/tags/v*`」的 job 里，手动运行的任何输入组合都够不到它（因此手动运行也不再有 `dry_run` 开关）。新增 `tests/_test_release_assets.py`（60 项）：清单覆盖每个 `wb_*.py` 与 `pricing/pricing.json`、清单路径都存在且不含受保护目录、运行时裁剪规则与启动契约（缺 `python.exe`／混进 `Lib/multiprocessing`／残留 `.pdb` 都必须被拒）、ZIP 结构（`wb-proxy/` + `python/` + 标记文件）与"不是源码包"、重建逐字节相同、`SHA256SUMS` 覆盖每个资产且随字节变化、正文重写幂等且保留维护者写在标记之上的说明、矩阵腿名确实来自 `tests.yml`（删一条腿就会少一条要求）、工作流必须 `--draft`、便携资产必须在 Windows 上打包并启动、任何写 release 的路径都必须拿到完整矩阵，以及**「只有 tag 推送能到写入点」这条不变量本身**。后者配了一张命令形态表：`gh release create/edit/upload/delete`、显式 `-X/--method POST|PATCH|PUT|DELETE`、以及**靠 `-f`/`-F`/`--field`/`--raw-field`/`--input` 触发隐式 POST 的 `gh api`** 都算写，显式 `-X GET`/`--method GET` 与 `echo` 出来的命令不算；扫描前先归一化 `\` 续行，并按 `&&`/`||`/`;` 切分，所以被拆开的命令也跑不掉。变异测试常驻：把写入点搬到 dispatch 路径、塞进别的 job、改成单行 `run:`、用隐式 POST 的 `gh api` 建 release、给 `workflow_dispatch` 加一个可能授权写入的输入、或抹掉全部写入点，检查器都必须判红。
-
-已发布版本的完整记录（v1.4.5 ~ v1.6.18，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
+已发布版本的完整记录（v1.4.5 ~ v1.6.19，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
 
 ---
 

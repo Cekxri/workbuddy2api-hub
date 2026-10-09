@@ -4732,7 +4732,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "1.6.18",
+        "version": "1.6.19",
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -9616,7 +9616,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/1.6.18"
+    server_version = "wb-proxy/1.6.19"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
@@ -12682,7 +12682,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, result)
 
 def running_version():
-    """The version this process reports, e.g. "1.6.18".
+    """The version this process reports, e.g. "1.6.19".
 
     tests/_test_release_engineering.py pins the two version literals and asserts
     they agree, so the update checker reads the running one from the handler
