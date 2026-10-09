@@ -2,6 +2,32 @@
 
 已发布版本的完整记录；开发中的改动先记在 [README](../README.md) 的「版本更新记录」段，发版时整理成新版本号移到这里。
 
+## v1.6.18
+
+看板体验与性能版本：侧栏区块导航回归、账号区可折叠、用量聚合全面提速，并新增智能体配置页、账号活跃历史与更新检查：
+
+- **侧栏区块导航回归**：每个主页面左侧恢复「本页导航」——导航项按页面内的 section 现场生成、滚动自动高亮、点击把锚点写进地址栏；新增「回到顶部」与可收起（收起状态存 localStorage，窄屏下自动变横向胶囊行），#169 把首行撑高的布局缺陷一并修掉（页面内容包一层 `.page-nav-body`，区块间距回到 20px）；
+- **账号区可折叠**（[PR #201](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/201)、[PR #226](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/226)，感谢 [@teddyli18000](https://github.com/teddyli18000)，issue #176）：「账号列表」标题旁的小三角把整块账号区收起，选择存在服务端（`accounts_collapsed`），换浏览器、重启服务都记得，账号轮询照常跑；
+- **数据看板 KPI 拆分与双币金额**：六张卡拆成八张——「平均首字延迟」从生成速度卡里独立出来（耗时留在速度卡），「请求数 & 成功率」拆成两张（成功率按有无失败染绿/琥珀）；「API 等价花费」不再挂货币切换按钮，改成与网关页一致的 `￥0.197 / $0.028`（人民币红、美元绿）；去掉「当前为『全部历史』视图，两张卡片口径相同」那句提示；
+- **页签与区块改名**：页签「网关与运维 → 网关与账号」「数据指标看板 → 数据看板」，标题「WorkBuddy 网关看板 → WorkBuddy 网关」；设置页区块「API Key 与出口绑定 → API Key」「代理槽 → 账号代理槽」「限额 → 账号限额」「OpenRouter 价估算 → 模型价格估算」「429 自动切换出站身分 → 自动切换出站身份」「本地网络工具 (web_search / web_fetch) → 本地网络工具」；网关页「账号 → 账号列表」「当前禁用账号与模型 → 当前禁用」「当前版本模型库与能力清单 → 网关模型清单」。导航项由区块 h2 现场生成，侧栏与页内小标题两处同步；
+- **网关页用量卡片标出区域**：`网关调用量` / `估算价格` / `请求成功率` 的数字本来就按当前视图区域取（`/usage` 等接口带 `realm`），标题补上「（国际版）/（国内版）」跟着区域卡片切换；
+- **正體中文（台灣）介面**（[PR #204](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/204)，感谢 [@Cekxri](https://github.com/Cekxri)）：看板語言從「简体中文 ⇄ English」擴充為三態循環「简 → 繁 → English」。正體中文以 OpenCC 台灣用語轉換（軟體、網路、記憶體、預設、登入、帳號…），切回簡中時還原原文。語言偏好採三層優先序：URL `?lang=` > 瀏覽器 `localStorage` 覆蓋 > 實例預設值；网关设置里可保存實例預設語言，右上角按钮只覆蓋当前浏览器。新增 `tests/_test_i18n_traditional.js`（39 项）与 `tests/_test_ui_language.py`（13 项）；
+- **智能体配置页**（[PR #219](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/219)，感谢 [@2xz7vmvpv4-art](https://github.com/2xz7vmvpv4-art)）：探测本机已装的 Claude Code / Codex CLI / OpenCode / DSH / Crush，一键把它们的配置指向本网关（改前自动备份、可字节级还原、外部改动可感知），只碰本机配置文件，不参与请求路径；
+- **账号签到与每日活跃历史**（[PR #206](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/206)，感谢 [@teddyli18000](https://github.com/teddyli18000)）：签到与活跃打卡结果落库，新增 `GET /activity/history` 读接口；
+- **新版本检查**（[PR #207](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/207)，感谢 [@teddyli18000](https://github.com/teddyli18000)）：面板可发现上游新版本，默认关闭，开启后每天最多查一次 GitHub；
+- **OAuth 授权链接一键复制**（[PR #222](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/222)，感谢 [@AstrosQ](https://github.com/AstrosQ)）：添加账号弹窗里的官方授权链接可直接复制；
+- **用量聚合全面提速**（[PR #223](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/223)、[PR #189](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/189)，感谢 [@aodianjun](https://github.com/aodianjun)）：折叠循环重构（一行只读一次字段、不再每行造默认字典）、聚合扫描不再构造悬停明细、总开关整扫只问一次；整表重建改为增量——只折日志尾部新增的行，并把聚合状态连同位置写进数据目录，重启后从 checkpoint 续读，不再冷扫全量日志；
+- **面板静态页 ETag + 304**（[PR #224](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/224)，感谢 [@aodianjun](https://github.com/aodianjun)）：首页从 `no-store` 改成 `no-cache` + `ETag`（文件 mtime/size 与注入语言一起算进校验符），命中条件请求回 304，不再每次重下 400KB；
+- **修复 cn 区 429 中文重置时间被当成账号级冷却**（[PR #221](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/221)，感谢 [@LeoK77S](https://github.com/LeoK77S)）：`reset at …` 之外补上「将在 … 重置」文案，解析不出 reset 时间的 429 不再退化成整账号 2 小时冷却；
+- **账号被熔断 / 降权时，看板与报错都会说清楚是谁、卡在哪一条**（[PR #228](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/228)，感谢 [@shuishuipingan](https://github.com/shuishuipingan)）：账号卡片新增「熔断 Xm」「降权 Xm」徽章（熔断优先于冷却展示），「当前禁用总览」把熔断与降权各列一行；新增 `Account.unavailable_reason()`，把「哪个账号、卡在哪一条」拼到那条 503 后面；上游连接抖动的日志行补上账号 UID。新增 `tests/_test_pool_diagnostics.py`（13 项）与 `tests/_test_account_penalty_badges.js`（18 项）；
+- **修复国内版成长任务全部接取失败与猫猫旅行 400**（[PR #217](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/217)，感谢 [@ayeaaaa](https://github.com/ayeaaaa)）：满足 `first_buddy` 前置链；
+- **修复 web 工具可被重定向到私网**（[PR #212](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/212)，感谢 [@AstrosQ](https://github.com/AstrosQ)）：跳转目标同样过 URL 白名单，环回 / 私网 / 链路本地地址直接拒绝；
+- **修复 `/pricing` 未要求面板会话**（[PR #210](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/210)，感谢 [@teddyli18000](https://github.com/teddyli18000)）：管理面接口的鉴权边界与其它管理路由对齐；
+- **修复「当前禁用」汇总跨区域串台**（[PR #215](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/215)，感谢 [@teddyli18000](https://github.com/teddyli18000)）；
+- **修复输出上限探针默认端口**（[PR #205](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/205)，感谢 [@Cekxri](https://github.com/Cekxri)）：改回 8788；
+- **测试基建与测试质量**（[PR #195](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/195)、[#196](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/196)、[#197](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/197)、[#198](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/198)、[#200](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/200)、[#202](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/202)、[#208](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/208)、[#209](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/209)、[#213](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/213)、[#214](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/214)、[#216](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/216)、[#218](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/218)、[#220](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/220)、[#225](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/225)、[#227](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/227)，感谢 [@teddyli18000](https://github.com/teddyli18000)）：套件弄脏检出时 CI 直接失败、隔离数据目录与进程生命周期统一抽取、页面源码走同一个 helper、把脆弱的文案与列数断言换成行为断言；
+- **文档**：README 的版本历史拆到本文件，README 只留 Unreleased 段与入口（issue #193）。
+
 ## v1.6.17
 
 重磅生态兼容与架构演进版本：正式支持 Claude Code、修复 API Key 误覆盖、引入临期积分优先分派机制，并实现测试基础设施多进程并行加速：

@@ -1,7 +1,7 @@
 # WorkBuddy2API-Hub — 国际版、国内版多账号网关中枢
 
 <p align="center">
-  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.6.17-2496ED?style=flat-square" alt="Version 1.6.17"></a>
+  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.6.18-2496ED?style=flat-square" alt="Version 1.6.18"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
@@ -385,15 +385,7 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
-- **账号被熔断 / 降权时，看板与报错都会说清楚是谁、卡在哪一条**：v1.6.16 引入的账号级治理（连续失败熔断、降权窗口）在界面上一直是隐形的——账号卡片只画 `cooldown` 与 `modelCooldowns`，被熔断的账号照样显示绿色「可用」；而「没有可用账号」那条 503 又只列了停用 / 冷却 / 过期 / 日限额四种原因，恰好没提这两类。生产上撞出过这个组合：上游成片丢连接（`SSL UNEXPECTED_EOF`、连接重置），几个账号各连踩 3 次触发 30 分钟熔断，池子瞬间空掉、请求 11ms 就回 503，而看板上 9 个账号全写着「可用」，排查只能靠猜。
-  - 账号卡片新增「熔断 Xm」「降权 Xm」徽章（熔断优先于冷却展示），冷却徽章的 tooltip 带上连续软限流次数；「当前禁用总览」把熔断与降权各列一行，给出原因与恢复时间。
-  - 新增 `Account.unavailable_reason()`：按 `ready()` 的判定顺序给出一句话原因（熔断 / 降权 / 余额保护 / 软限流冷却 / 模型级冷却，以及保留积分、各类日限额、凭证过期）；`pool_unavailable_detail()` 把它拼到那条 503 报错后面——日志里直接能看出是哪个账号、卡在哪一条。
-  - 上游连接抖动的日志行补上账号 UID：那一行同时是一次扣分（连续 3 次即熔断 30 分钟），不写清是谁挨的这一下，事后没法还原池子是怎么空的。
-  - 新增 `tests/_test_pool_diagnostics.py`（13 项）与 `tests/_test_account_penalty_badges.js`（18 项，含原有几档状态的回归）。
-
-- **正體中文（台灣）介面**：看板語言從「简体中文 ⇄ English」擴充為三態循環「简 → 繁 → English」。正體中文以 OpenCC 台灣用語轉換（軟體、網路、記憶體、預設、登入、帳號…），切回簡中時還原原文。語言偏好採三層優先序：URL `?lang=` > 瀏覽器 `localStorage` 覆蓋 > 實例預設值；网关设置里可保存實例預設語言，右上角按钮只覆蓋当前浏览器，换端口、主机名或清掉站点数据后回退到实例默认值。新增 `tests/_test_i18n_traditional.js`（39 项断言）与 `tests/_test_ui_language.py`（13 项断言）覆盖转换、切换、优先级与实例设置。
-
-已发布版本的完整记录（v1.4.5 ~ v1.6.17，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
+已发布版本的完整记录（v1.4.5 ~ v1.6.18，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
 
 ---
 
