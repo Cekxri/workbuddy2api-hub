@@ -6049,6 +6049,17 @@ async function refreshInner(gen){
   await bootPanel();
 })();
 
+/* 侧栏尽早建：区块是静态标记，现场生成不依赖任何接口。原来只在
+   switchMainTab() 里建，而它排在启动链的末端——/panel/status、/settings、
+   /realm 三趟串行往返，再加 Promise.all 里那批数据加载（含走上游的
+   /v1/models 与国内版成长任务）之后才轮到，所以刷新时左侧要先空一列、
+   过一会儿才补上。这里在 DOMContentLoaded 就建（head 里那段已按 ?tab=
+   与上次选择定好 .active），switchMainTab() 那次会因清单未变直接返回，
+   不会重建、也不会闪。 */
+document.addEventListener('DOMContentLoaded', function(){
+  initPageNav(document.querySelector('.main-page.active'));
+});
+
 let RECENT_LIMIT = parseInt(localStorage.getItem('WB_RECENT_LIMIT') || '20', 10);
 if(![10, 20, 50, 100].includes(RECENT_LIMIT)) RECENT_LIMIT = 20;
 let RECENT_PAGE = 1;
