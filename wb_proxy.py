@@ -57,6 +57,7 @@ import wb_identity
 import wb_prompt
 import wb_modelsdev
 import wb_probes
+import wb_agents
 IS_WINDOWS = os.name == "nt"
 def launcher_hint(port):
     """Platform-appropriate launcher command for starting on another port."""
@@ -7470,6 +7471,8 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if path.startswith("/logs"):
             return True
+        if path.startswith("/agents"):
+            return True
         return False
     def do_OPTIONS(self):
         self.send_response(204)
@@ -7537,6 +7540,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_logs_export()
         if path == "/settings/reveal":
             return self._get_settings_reveal(query)
+        if path == "/agents":
+            return self._get_agents()
         return self._error(404, "not found", "invalid_request_error")
     def _get_dashboard(self):
         return self._dashboard()
@@ -8343,6 +8348,194 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/proxy/discover":
             return self._json(200, {"candidates": discover_proxy_slots()})
         return self._error(404, "not found", "invalid_request_error")
+
+    # ---- one-click agent integration (wb_agents) ----
+
+    def _agents_base_url_hint(self):
+        """Best guess at the URL a local client should point at.
+
+        Derived from the bound socket; a 0.0.0.0 bind is unreachable for a
+        client, so it is reported as 127.0.0.1 instead.
+        """
+        host, port = "", 0
+        try:
+            host, port = self.server.server_address[:2]
+        except Exception:
+            pass
+        host = str(host or "").strip() or "127.0.0.1"
+        if host in ("0.0.0.0", "::", ""):
+            host = "127.0.0.1"
+        return "http://%s:%d/v1" % (host, int(port or 0))
+
+    def _agents_models(self):
+        """Flat model list for the picker; bundled intl+cn catalog, deduped.
+
+        Live sources stay out of this path on purpose: the panel must answer
+        even when the upstream is down, so a failure here is simply a shorter
+        list, never an error.
+        """
+        models = []
+        seen = set()
+        try:
+            try:
+                entries = fetch_models()
+            except Exception:
+                entries = []
+            if entries:
+                sources = ((mid, meta) for mid, meta in entries)
+            else:
+                sources = (
+                    (item.get("id"), item)
+                    for item in (list(getattr(wb_catalog, "STATIC_INTL_MODELS", []))
+                                 + list(getattr(wb_catalog, "STATIC_CN_MODELS", [])))
+                    if isinstance(item, dict)
+                )
+            for mid, meta in sources:
+                mid = str(mid or "").strip()
+                if not mid or mid in seen:
+                    continue
+                seen.add(mid)
+                meta = meta if isinstance(meta, dict) else {}
+                entry = {"id": mid}
+                ctx = meta.get("maxInputTokens")
+                window = meta.get("contextWindow")
+                if isinstance(window, dict) and window.get("defaultLength"):
+                    ctx = window.get("defaultLength")
+                if not ctx and isinstance(window, dict):
+                    lengths = window.get("supportedLengths") or []
+                    ctx = lengths[-1] if lengths else None
+                if ctx:
+                    try:
+                        entry["context_window"] = int(ctx)
+                    except (TypeError, ValueError):
+                        pass
+                out = meta.get("maxOutputTokens")
+                if out:
+                    try:
+                        entry["max_output"] = int(out)
+                    except (TypeError, ValueError):
+                        pass
+                name = meta.get("name")
+                if name:
+                    entry["name"] = name
+                models.append(entry)
+        except Exception:
+            pass
+        return models
+
+    def _get_agents(self):
+        keys = []
+        try:
+            for entry in configured_keys():
+                if entry.get("enabled"):
+                    keys.append({
+                        "id": entry.get("id"),
+                        "name": entry.get("name") or "",
+                        "enabled": True,
+                    })
+        except Exception:
+            keys = []
+        return self._json(200, {
+            "clients": list(wb_agents.overview(ACCOUNTS_DIR).values()),
+            "models": self._agents_models(),
+            "keys": keys,
+            "global_key_set": bool(API_KEY),
+            "auth_required": auth_required(),
+            "gateway": {"base_url": self._agents_base_url_hint()},
+        })
+
+    def _agents_resolve_key(self, payload, warnings):
+        """Pick the gateway key to hand to the client, per the payload.
+
+        Returns the key string, or None when the request should fail. The
+        failure message is appended to `warnings` only for the soft-fallback
+        case; hard failures raise via the caller's 400 mapping.
+        """
+        key_id = str(payload.get("key_id") or "").strip()
+        if key_id == "__global":
+            return API_KEY or None
+        keys = configured_keys()
+        if key_id:
+            for entry in keys:
+                if entry.get("id") == key_id:
+                    return entry.get("key") or None
+            raise wb_agents.AgentConfigError(
+                "no configured key with id %r" % key_id)
+        # Default: the global key when set, else the first enabled panel key.
+        if API_KEY:
+            return API_KEY
+        for entry in keys:
+            if entry.get("enabled"):
+                return entry.get("key") or None
+        return None
+
+    def _handle_agents_apply(self, payload):
+        client_id = str(payload.get("client") or payload.get("client_id") or "").strip()
+        if not client_id:
+            return self._error(400, "client is required", "invalid_request_error")
+        base_url = str(payload.get("base_url") or "").strip()
+        if not re.match(r"^https?://", base_url):
+            return self._error(
+                400, "base_url must start with http:// or https://",
+                "invalid_request_error")
+        model = str(payload.get("model") or "").strip() or None
+        models = payload.get("models")
+        if not models:
+            # Fall back to the gateway's discovered catalog so clients that embed
+            # model definitions (OpenCode, DSH, Crush) receive the full model list
+            # even when the front-end omitted the field.
+            models = self._agents_models()
+        if not isinstance(models, list):
+            return self._error(400, "models must be a list",
+                               "invalid_request_error")
+        # A runaway picker must not turn into a megabyte config file.
+        models = models[:80]
+        cleaned_models = []
+        for item in models:
+            if isinstance(item, dict) and item.get("id"):
+                cleaned_models.append(item)
+            elif isinstance(item, str) and item.strip():
+                cleaned_models.append({"id": item.strip()})
+        warnings = []
+        try:
+            api_key = self._agents_resolve_key(payload, warnings)
+        except wb_agents.AgentConfigError as exc:
+            return self._error(400, str(exc), "invalid_request_error")
+        if not api_key:
+            if auth_required():
+                return self._error(
+                    400, "no gateway key available - 请先配置 API Key",
+                    "invalid_request_error")
+            api_key = "wb-local"
+            warnings.append("gateway has no key configured; wrote placeholder "
+                            "'wb-local' (auth is off, so any value works)")
+        try:
+            result = wb_agents.integrate(
+                ACCOUNTS_DIR, client_id, base_url, api_key,
+                model=model, models=cleaned_models)
+        except wb_agents.AgentConfigError as exc:
+            return self._error(400, str(exc), "invalid_request_error")
+        except Exception as exc:
+            return self._error(500, "agents apply failed: %s" % exc)
+        result["warnings"] = warnings
+        log("agents apply: client=%s base_url=%s model=%s files=%d"
+            % (client_id, base_url, model or "-", len(result.get("files") or [])),
+            tag="agents")
+        return self._json(200, result)
+
+    def _handle_agents_restore(self, payload):
+        client_id = str(payload.get("client") or payload.get("client_id") or "").strip()
+        if not client_id:
+            return self._error(400, "client is required", "invalid_request_error")
+        try:
+            result = wb_agents.restore(ACCOUNTS_DIR, client_id)
+        except wb_agents.AgentConfigError as exc:
+            return self._error(400, str(exc), "invalid_request_error")
+        except Exception as exc:
+            return self._error(500, "agents restore failed: %s" % exc)
+        log("agents restore: client=%s files=%d"
+            % (client_id, len(result.get("restored") or [])), tag="agents")
+        return self._json(200, result)
 
     def _handle_panel(self, path):
         """Panel login, logout and the settings screen (password + API key)."""
@@ -9431,6 +9624,17 @@ class Handler(BaseHTTPRequestHandler):
             if payload is None:
                 return
             return self._handle_proxy_slots(path, payload)
+        if path in ("/agents/apply", "/agents/restore"):
+            if not self._panel_ok():
+                return self._error(
+                    401, "panel password required", "invalid_request_error"
+                )
+            payload = self._payload_or_error()
+            if payload is None:
+                return
+            if path == "/agents/apply":
+                return self._handle_agents_apply(payload)
+            return self._handle_agents_restore(payload)
         if path in ("/panel/login", "/panel/logout", "/panel/password"):
             return self._handle_panel(path)
         if self._is_panel_route(path) and not self._panel_ok():
