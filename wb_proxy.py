@@ -1167,6 +1167,11 @@ def _usage_snapshot_uncached(realm=None, since=None, until=None):
     rep = POOL.representative(realm=r) if POOL else current_account()
     snap = _empty_stats()
     snap["started"] = _usage.get("started", time.time())
+    # 聚合扫描：总开关整扫问一次（原来每行都问，每次都是一次 os.stat），
+    # 悬停明细整扫不构造——这一页只把每行的价折进汇总（known/cny/disabled），
+    # 明细从来不用。代价是设置改动从下一次扫描起生效；逐行展示路径不受
+    # 影响，仍然每行查、改设置当场可见。
+    pricing_on = wb_pricing.pricing_enabled()
     try:
         with open(USAGE_LOG, encoding="utf-8") as fh:
             for line in fh:
@@ -1191,7 +1196,10 @@ def _usage_snapshot_uncached(realm=None, since=None, until=None):
                 # Each row is priced against the version that was in force
                 # when it happened, so a later price change cannot rewrite
                 # yesterday's totals.
-                cost = wb_pricing.cost_for_row(row)
+                # 聚合只读 known/cny（_fold_cost 再读 disabled），悬停明细
+                # 构造出来就被丢掉，这里显式跳过；开关用循环外算好的那份。
+                cost = wb_pricing.cost_for_row(row, details=False,
+                                               enabled=pricing_on)
                 if outcome != "completed":
                     snap["errors"] += 1
                     # Credit is money already spent: a request that failed
@@ -1948,6 +1956,66 @@ KEY_BUCKET_UNKNOWN = "__unknown_key__"
 KEY_MODEL_TOP_N = 5
 
 
+def _fold_stat(stat, is_err, nums):
+    """把一行已取好的数值折进一个统计桶。
+
+    `nums` = (prompt, completion, reasoning, cached, total, credit, cny, known,
+    ttft_ms, tokens_per_sec, elapsed_ms)。一行要折进 6~8 个桶，数值取一次即可
+    ——原来的写法是每个桶各自重读一遍 r.get(...)，每行约 80 次字典查询。
+    """
+    if is_err:
+        stat["errors"] += 1
+    else:
+        stat["requests"] += 1
+    # 令牌与积分按实际消耗累计，与结果无关：上游已经计费的失败请求也算。
+    stat["prompt_tokens"] += nums[0]
+    stat["completion_tokens"] += nums[1]
+    stat["reasoning_tokens"] += nums[2]
+    stat["cached_tokens"] += nums[3]
+    stat["total_tokens"] += nums[4]
+    stat["credit"] += nums[5]
+    if nums[7]:
+        stat["cost_cny"] += nums[6]
+    if nums[8]:
+        stat["ttft_sum"] += nums[8]
+        stat["ttft_n"] += 1
+    if nums[9]:
+        stat["speed_sum"] += nums[9]
+        stat["speed_n"] += 1
+    if nums[10]:
+        stat["elapsed_sum"] += nums[10]
+        stat["elapsed_n"] += 1
+
+
+def _bump_model_row(tgt_all, tgt_window, in_window, is_error, m_id, nums):
+    """模型分布只统计成功请求：失败的调用记成需求会误导。
+
+    get() 命中时不再构造默认字典——setdefault 的默认值是**每次调用都求值**的
+    字典字面量，每行白造 2~4 个。
+    """
+    if is_error:
+        return
+    tm = tgt_all.get(m_id)
+    if tm is None:
+        tm = tgt_all[m_id] = {"requests": 0, "tokens": 0, "reasoning": 0,
+                              "cost_cny": 0.0}
+    tm["requests"] += 1
+    tm["tokens"] += nums[4]
+    tm["reasoning"] += nums[2]
+    if nums[7]:
+        tm["cost_cny"] += nums[6]
+    if in_window:
+        tdm = tgt_window.get(m_id)
+        if tdm is None:
+            tdm = tgt_window[m_id] = {"requests": 0, "tokens": 0, "reasoning": 0,
+                                      "cost_cny": 0.0}
+        tdm["requests"] += 1
+        tdm["tokens"] += nums[4]
+        tdm["reasoning"] += nums[2]
+        if nums[7]:
+            tdm["cost_cny"] += nums[6]
+
+
 def _scan_usage_log(all_summary, window_summary, acct_map, model_map, since=None, until=None,
                     realm=None, key_map=None):
     """Walk the usage JSONL once, folding every row into the maps.
@@ -1963,6 +2031,11 @@ def _scan_usage_log(all_summary, window_summary, acct_map, model_map, since=None
     the two tables are views of the same spend, not a decomposition of it.
     """
     if os.path.exists(USAGE_LOG):
+        # 聚合扫描：总开关整扫问一次（原来每行都问，每次都是一次 os.stat），
+        # 悬停明细整扫不构造——下面只读 known/cny，明细构造出来就被丢掉。
+        # 代价是设置改动从下一次扫描起生效（整表本来就是一次快照）；逐行
+        # 展示路径不受影响，仍然每行查、改设置当场可见。
+        pricing_on = wb_pricing.pricing_enabled()
         try:
             with open(USAGE_LOG, encoding="utf-8") as fh:
                 for line in fh:
@@ -1984,7 +2057,8 @@ def _scan_usage_log(all_summary, window_summary, acct_map, model_map, since=None
                     if outcome == "client_aborted":
                         continue
                     is_err = outcome != "completed"
-                    cost = wb_pricing.cost_for_row(r)
+                    cost = wb_pricing.cost_for_row(r, details=False,
+                                                   enabled=pricing_on)
                     at = r.get("at", 0)
                     # Same bounds as /usage and /usage/perf, so the three
                     # readers agree on what the selected range contains.
@@ -1992,56 +2066,24 @@ def _scan_usage_log(all_summary, window_summary, acct_map, model_map, since=None
                                  and (until is None or at <= until))
                     acct_uid = r.get("account") or "(unattributed)"
                     m_id = r.get("model") or "(unknown)"
-                    def feed(stat_obj, is_error):
-                        if is_error:
-                            stat_obj["errors"] += 1
-                        else:
-                            stat_obj["requests"] += 1
-                        # Token totals follow actual consumption, so a request
-                        # that failed after the upstream had already billed for
-                        # tokens still shows them. Only the request/error
-                        # counters depend on the outcome.
-                        stat_obj["prompt_tokens"] += (r.get("prompt_tokens") or 0)
-                        stat_obj["completion_tokens"] += (r.get("completion_tokens") or 0)
-                        stat_obj["reasoning_tokens"] += (r.get("reasoning_tokens") or 0)
-                        stat_obj["cached_tokens"] += (r.get("cached_tokens") or 0)
-                        stat_obj["total_tokens"] += (r.get("total_tokens") or 0)
-                        stat_obj["credit"] += (r.get("credit") or 0)
-                        if cost["known"]:
-                            stat_obj["cost_cny"] += cost["cny"]
-                        if r.get("ttft_ms"):
-                            stat_obj["ttft_sum"] += r["ttft_ms"]
-                            stat_obj["ttft_n"] += 1
-                        if r.get("tokens_per_sec"):
-                            stat_obj["speed_sum"] += r["tokens_per_sec"]
-                            stat_obj["speed_n"] += 1
-                        if r.get("elapsed_ms"):
-                            stat_obj["elapsed_sum"] += r["elapsed_ms"]
-                            stat_obj["elapsed_n"] += 1
-                    def bump_models(tgt_all, tgt_window, is_error):
-                        # Model distribution counts successful requests only:
-                        # a failed call attributed to a model would show up as
-                        # demand for it when the caller got nothing.
-                        if is_error:
-                            return
-                        tm = tgt_all.setdefault(m_id, {"requests": 0, "tokens": 0, "reasoning": 0, "cost_cny": 0.0})
-                        tm["requests"] += 1
-                        tm["tokens"] += (r.get("total_tokens") or 0)
-                        tm["reasoning"] += (r.get("reasoning_tokens") or 0)
-                        if cost["known"]:
-                            tm["cost_cny"] += cost["cny"]
-                        if in_window:
-                            tdm = tgt_window.setdefault(m_id, {"requests": 0, "tokens": 0, "reasoning": 0, "cost_cny": 0.0})
-                            tdm["requests"] += 1
-                            tdm["tokens"] += (r.get("total_tokens") or 0)
-                            tdm["reasoning"] += (r.get("reasoning_tokens") or 0)
-                            if cost["known"]:
-                                tdm["cost_cny"] += cost["cny"]
-                    feed(all_summary, is_err)
+                    known = cost["known"]
+                    nums = (r.get("prompt_tokens") or 0,
+                            r.get("completion_tokens") or 0,
+                            r.get("reasoning_tokens") or 0,
+                            r.get("cached_tokens") or 0,
+                            r.get("total_tokens") or 0,
+                            r.get("credit") or 0,
+                            cost["cny"] if known else 0.0,
+                            known,
+                            r.get("ttft_ms"),
+                            r.get("tokens_per_sec"),
+                            r.get("elapsed_ms"))
+                    _fold_stat(all_summary, is_err, nums)
                     if in_window:
-                        feed(window_summary, is_err)
-                    if acct_uid not in acct_map:
-                        acct_map[acct_uid] = {
+                        _fold_stat(window_summary, is_err, nums)
+                    acct = acct_map.get(acct_uid)
+                    if acct is None:
+                        acct = acct_map[acct_uid] = {
                             "uid": acct_uid,
                             "nickname": acct_uid,
                             "realm": r.get("realm", ""),
@@ -2051,15 +2093,19 @@ def _scan_usage_log(all_summary, window_summary, acct_map, model_map, since=None
                             "window_models": {},
                             "all_models": {},
                         }
-                    feed(acct_map[acct_uid]["all_time"], is_err)
+                    _fold_stat(acct["all_time"], is_err, nums)
                     if in_window:
-                        feed(acct_map[acct_uid]["window"], is_err)
-                    bump_models(acct_map[acct_uid]["all_models"], acct_map[acct_uid]["window_models"], is_err)
-                    if m_id not in model_map:
-                        model_map[m_id] = {"model": m_id, "window": _new_analytics_stat(), "all_time": _new_analytics_stat()}
-                    feed(model_map[m_id]["all_time"], is_err)
+                        _fold_stat(acct["window"], is_err, nums)
+                    _bump_model_row(acct["all_models"], acct["window_models"],
+                                    in_window, is_err, m_id, nums)
+                    mrow = model_map.get(m_id)
+                    if mrow is None:
+                        mrow = model_map[m_id] = {"model": m_id,
+                                                  "window": _new_analytics_stat(),
+                                                  "all_time": _new_analytics_stat()}
+                    _fold_stat(mrow["all_time"], is_err, nums)
                     if in_window:
-                        feed(model_map[m_id]["window"], is_err)
+                        _fold_stat(mrow["window"], is_err, nums)
                     if key_map is not None:
                         # A row written before this feature existed has no
                         # `key` field at all; a row from a deployment that
@@ -2088,10 +2134,11 @@ def _scan_usage_log(all_summary, window_summary, acct_map, model_map, since=None
                         km["realms"][k_realm] = km["realms"].get(k_realm, 0) + 1
                         if at and at > km["last_at"]:
                             km["last_at"] = at
-                        feed(km["all_time"], is_err)
+                        _fold_stat(km["all_time"], is_err, nums)
                         if in_window:
-                            feed(km["window"], is_err)
-                        bump_models(km["all_models"], km["window_models"], is_err)
+                            _fold_stat(km["window"], is_err, nums)
+                        _bump_model_row(km["all_models"], km["window_models"],
+                                        in_window, is_err, m_id, nums)
         except Exception as exc:
             log("compute_usage_analytics failed: %s" % exc)
 
