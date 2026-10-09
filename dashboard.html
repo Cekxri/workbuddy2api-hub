@@ -4281,15 +4281,19 @@ function fmtCost(cny){
   return fmtCostVal(n, costSymbol());
 }
 // size 是数值字号（默认 18px，网关页的卡片用）：KPI 卡片窄，调用方可以调小。
+// 中间那个「/」跟网关页「次」的处理保持一致：小一号、dim 色、左右各 4px。
+// 红/绿用主题变量而不是写死的色值：深色主题下要跟着变，而且旁边
+// 「请求成功率」的绿就是 --accent2，两张卡并排时是同一个绿。
 function fmtCostBoth(cny, size){
   if(cny == null || cny === '') return '—';
   const raw = Number(cny) || 0;
   const fs = size || 18;
+  const sep = Math.max(10, Math.round(fs * 0.6));
   const cnyStr = fmtCostVal(raw, '￥');
   const usdStr = fmtCostVal(raw / (costUsdRate || 7.1), '$');
-  return '<span style="color:#ef4444;font-size:' + fs + 'px;font-weight:700">' + cnyStr + '</span> ' +
-         '<span style="color:var(--dim);font-weight:400;font-size:' + (fs - 4) + 'px;margin:0 2px">/</span> ' +
-         '<span style="color:#22c55e;font-size:' + fs + 'px;font-weight:700">' + usdStr + '</span>';
+  return '<span style="color:var(--bad);font-size:' + fs + 'px;font-weight:700">' + cnyStr + '</span> ' +
+         '<span style="color:var(--dim);font-weight:500;font-size:' + sep + 'px;margin:0 4px">/</span> ' +
+         '<span style="color:var(--accent2);font-size:' + fs + 'px;font-weight:700">' + usdStr + '</span>';
 }
 function setCostCurrency(cur){
   costCurrency = (cur === 'USD') ? 'USD' : 'CNY';
@@ -5992,7 +5996,7 @@ async function refreshInner(gen){
   const realmTag = '（' + (window.VIEW_REALM === 'cn' ? '国内版' : '国际版') + '）';
   document.getElementById('cards').innerHTML =
     card('网关调用量' + realmTag, fmt(t.requests) + ' <span style="font-size:13px;font-weight:500;color:var(--dim);margin-left:4px">次</span>', '', '') +
-    card('估算价格' + realmTag, fmtCostBoth(t.cost_cny), '', 'warn') +
+    card('估算价格' + realmTag, fmtCostBoth(t.cost_cny, 22), '', 'warn') +
     card('请求成功率' + realmTag, '<span style="color:' + (perf.errors ? 'var(--warn)' : 'var(--accent2)') + '">' + succStr + '</span>', '', '');
 
   const total = recent.total || 0;
