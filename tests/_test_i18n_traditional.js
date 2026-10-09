@@ -46,8 +46,9 @@ function makeText(data) {
   return {nodeType: 3, data, parentNode: null, __wbSrc: null, __wbOut: null};
 }
 
-function makeHarness(stored) {
+function makeHarness(stored, instanceLang, urlLang) {
   const htmlEl = makeElement('HTML', 'html');
+  if (instanceLang) htmlEl.setAttribute('data-ui-language', instanceLang);
   const text = makeText('网关设置');
   text.parentNode = htmlEl;
   htmlEl.childNodes.push(text);
@@ -62,7 +63,7 @@ function makeHarness(stored) {
     getElementById: (id) => elements[id] || null,
     addEventListener() {},
   };
-  const win = {confirm() { return true; }, alert() {}};
+  const win = {confirm() { return true; }, alert() {}, location: {search: urlLang ? '?lang=' + encodeURIComponent(urlLang) : ''}};
   const storage = {
     getItem: (k) => (store.has(k) ? store.get(k) : null),
     setItem: (k, v) => { store.set(k, String(v)); },
@@ -135,5 +136,21 @@ const boot = makeHarness('zh-Hant');
 check(boot.win.WB_I18N.current() === 'zh-Hant', '已存偏好時啟動應為 zh-Hant');
 check(boot.htmlEl.getAttribute('lang') === 'zh-Hant-TW', '啟動時 html lang 應為 zh-Hant-TW');
 check(boot.text.data === '閘道設定', '啟動時 DOM 應直接轉成正體中文');
+
+// 6. 三層優先序：URL > localStorage > 實例預設。
+const instOnly = makeHarness(null, 'zh-Hant');
+check(instOnly.win.WB_I18N.current() === 'zh-Hant', '沒有本機偏好時應使用實例預設 zh-Hant');
+check(instOnly.text.data === '閘道設定', '實例預設正體時 DOM 應轉換');
+
+const localWins = makeHarness('zh', 'zh-Hant');
+check(localWins.win.WB_I18N.current() === 'zh', '本機偏好 zh 應覆蓋實例預設 zh-Hant');
+check(localWins.text.data === '网关设置', '本機偏好簡中時 DOM 應維持原文');
+
+const urlWins = makeHarness('zh', 'zh-Hant', 'en');
+check(urlWins.win.WB_I18N.current() === 'en', 'URL ?lang=en 應覆蓋本機與實例預設');
+check(urlWins.htmlEl.getAttribute('lang') === 'en', 'URL 覆蓋時 html lang 應為 en');
+
+const instEn = makeHarness(null, 'en');
+check(instEn.win.WB_I18N.current() === 'en', '沒有本機偏好時應使用實例預設 en');
 
 console.log(`traditional chinese i18n assertions passed (${checks} checks)`);
