@@ -23,10 +23,9 @@
 - **限额（保留积分 · 每日 Token · 每日积分 · 按模型 Token）**：四条账号级护栏集中在看板同一张表里，默认按**全局默认**生效、同时管住国际版与国内版；需要时可单独给某一版本设值，留空即继承全局。积分花超只服务免费模型、单模型 token 用满只禁该模型，次日 0 点解封（默认全部关闭）；
 - **OpenRouter 价估算**：把请求 token 按 OpenRouter 公布的模型价折算成等价花费（按条件定价的模型按每条请求的输入长度与时间取档），定价按版本留档、刷新间隔可配，每条请求都标出用的是哪一版，人民币/美元可切，看板多处并列展示；**上游新增模型无需改代码即可自动进入取价**（取价输入 = 内置目录 ∪ 网关实时目录；两次取价之间就被调用就按需补价；带渠道后缀的名字向基准模型继承，命不中就不定价），仍未定价的模型在面板列出原因，可手填 OpenRouter id 收口；
 - **三协议支持**：Chat Completions、Responses API（Codex）与原生 Anthropic Messages API（Claude Code / Anthropic SDK）；
-- **三语界面**：简体中文 / 正體中文（台灣） / English。网关设置里可配置实例默认语言；看板右上角按钮按「简 → 繁 → English → 简」循环并只覆盖当前浏览器，换端口、主机名或清掉站点数据后回退到实例默认值；也支持 `?lang=zh-Hant` / `?lang=en` / `?lang=zh` 单次覆盖。正體中文使用台灣常用詞（軟體、網路、記憶體、預設、登入…），切回簡中會還原原文。
-- **Web 看板**：指标卡片、模型性能与用量大表、按 API Key 的用量归属、实时请求流水一屏可查。
+- 90 个套件：68 个 Python + 22 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - **积分与权益包明细查看**：完整解析账号各套餐包/加量包额度、已用、剩余、生效状态及有效期周期，看板一键弹窗并支持实时刷新；
-- **Web 看板**：指标卡片、模型性能与用量大表、实时请求流水一屏可查。
+- **Web 看板**：指标卡片、模型性能与用量大表、按 API Key 的用量归属、实时请求流水一屏可查。
 
 > ⚡ **Vibe Coding 产物**：本项目为 100% Vibe Coding 协同产物，由人类开发者提出架构与业务意图，AI 助手端到端完成逆向分析、链路调度、WAF 指纹脱敏与界面编写。
 
@@ -172,7 +171,7 @@ python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
 - `tests/_mobile_check.py` 是独立的 Playwright 手机/桌面布局检查器（需自行安装 Playwright），按需手动运行，不在上面的套件集里。
-- 88 个套件：67 个 Python + 21 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 90 个套件：68 个 Python + 22 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - CI（`.github/workflows/tests.yml`）跑同一条命令：Ubuntu 上 python 3.9 与 3.12（3.9 是本项目声称的最低版本），Windows 上 python 3.12。推送 `v*` tag 时额外断言 **tag == 源码版本**（`wb_proxy.py` 里的两处版本串必须先一致，`-ci` 演练 tag 豁免）。
 
 ---
@@ -259,6 +258,31 @@ python tests/run_all.py realm      # 只跑名字里含 realm 的
 - 打开后网关会主动出网抓取模型给出的 URL（只挡字面私网地址），且每轮代跑都会多跑一次上游、多消耗该账号额度；国内网络下 DuckDuckGo 可能连不上，那时模型拿到的是错误文本；
 - 只影响声明了这两个工具的客户端，普通 `/v1/chat/completions` 客户端不经过这条路径。
 
+### 8. 智能体一键配置 (Agent Config)
+
+参照 EasyCLIProxyAPI 的 agents 机制，为本机常用 AI 客户端提供一键检测、配置写入与安全备份还原能力。无需手动翻找各工具繁琐的配置文件或环境变量文档，即可将常用终端 Agent 快速对接到本网关：
+
+- **支持的客户端**：
+  - **Claude Code**：Anthropic 官方 CLI 工具，写入 `~/.claude/settings.json`（原生 Anthropic Messages 协议，自动剥除 `/v1` 后缀）；
+  - **Codex CLI**：OpenAI 官方 Codex 终端，写入 `~/.codex/config.toml` 与 `~/.codex/auth.json`（Responses API 协议）；
+  - **OpenCode**：开源 AI 编码客户端，写入 `~/.config/opencode/opencode.json`（OpenAI 兼容协议 `@ai-sdk/openai-compatible`）；
+  - **DSH (DeepSeek Harness)**：多智能体编排系统，更新 `~/.dsh/settings.yaml` 与 `~/.dsh/.credentials.yaml`（OpenAI 兼容协议）；
+  - **Crush (Charm Crush)**：终端 AI 助手，更新 `~/.config/crush/crush.json`（OpenAI 兼容协议）。
+- **工作原理**：
+  1. **智能探测**：同时探测本机配置目录、配置文件及 PATH 可执行文件（`shutil.which`），在看板呈现安装与配置状态；
+  2. **非侵入式配置写入**：内置纯标准库实现的轻量文本级 YAML / TOML / JSON / .env 编辑器，仅增量插入或更新 `wb-proxy` 提供商配置，绝不重新格式化已有文件，完整保留用户的注释、原有缩进与其他模型配置；
+  3. **两阶段事务与安全备份**：写入前自动备份目标文件。首次介入时永久保留初始原件，多文件修改（如 DSH、Codex）具备事务回滚保护，任意文件写入失败立即自动回退已写文件；
+  4. **一键还原**：在看板一键点击「还原」即可 byte-exact 还原回最初的配置，由网关新建的配置文件会自动安全清理。
+- **使用方法**：
+  - 启动网关并打开 Web 看板 `http://127.0.0.1:8788/`；
+  - 切换至 **「智能体配置」** 页面；
+  - 选择需要配置的 API Key（支持全局默认或已绑定特定出口的多 Key）、默认模型与网关地址；
+  - 在检测到的客户端卡片上点击 **「一键配置」** 即可完成注入；随时点击 **「一键还原」** 撤销配置。
+- **注意事项**：
+  - **备份存储位置**：所有配置文件备份存放在数据目录 `accounts/agent-backups/<客户端ID>/` 下，每个文件保留最新的 10 份快照；
+  - **还原会覆盖外部改动**：网关记录每次写入文件的 SHA-256。若用户之后手动修改过客户端配置文件，看板会提示「检测到外部修改」，此时执行还原仍会安全恢复至首次接入前的原件并覆盖外部修改；
+  - **密钥安全**：API Key 仅写入客户端自身合法的本地配置目录（权限仅限当前系统用户），网关不向公网暴露密钥；单文件超过 8MB 时拒绝编辑以防误篡改。
+
 ---
 
 ## 三、账号添加与管理
@@ -344,6 +368,9 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 | GET | /pricing | 定价状态：当前生效策略、上次/下次取价时间、未定价清单（分类 + 候选） |
 | POST | /pricing/refresh | 立即取一次价（需面板会话） |
 | POST | /pricing/mapping | 手填 / 清除「模型 → OpenRouter id」运行期映射，随后自动取价（需面板会话） |
+| GET | /agents | 客户端探测概览、支持的模型清单及网关连接地址 |
+| POST | /agents/apply | 一键写入客户端配置并备份原件（需面板会话） |
+| POST | /agents/restore | 一键还原客户端至首次配置前的状态（需面板会话） |
 | GET | /tasks | 国内版成长任务、连续打卡与猫猫日常状态 |
 | POST | /tasks/run | 触发国内成长任务全自动点亮与领奖 |
 | POST | /tasks/travel | 触发猫猫日常旅行（派出 / 领奖） |
@@ -393,6 +420,10 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 
 ### 未发布
+
+- **智能体一键配置 (Agent Config)**：参照 EasyCLIProxyAPI 的 agents 机制，支持对本机 Claude Code、Codex CLI、OpenCode、DSH、Crush 客户端的一键检测、配置写入与安全备份还原；内置纯标准库文本级 YAML/TOML/JSON 编辑器与两阶段事务回滚保护。
+- 新增 `tests/_test_agents.py`（26 项 / 97 断言）：覆盖 YAML/TOML/dotenv/JSON 编辑器、客户端注册表、两阶段原子回滚、备份还原与网关 handlers 端到端测试。
+- 新增 `tests/_test_agent_ui.js`（18 项断言）：把看板脚本载入 DOM 桩后直接调用真实的 `applyAgent()` / `restoreAgent()` / `loadAgents()`，断言实际发出的请求体与渲染结果，钉住请求字段名漂移与未声明标识符这两类只在浏览器里暴露的缺陷。
 
 两项与「大请求 + 号池规模」相关的可调限制，默认行为不变：
 
