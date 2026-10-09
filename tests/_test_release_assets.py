@@ -348,9 +348,15 @@ class RuntimeTrimTests(unittest.TestCase):
 
 
 class PortableZipTests(unittest.TestCase):
+    # The version comes from the checkout, not a literal: a release tool that
+    # refused to build after a version bump would be a tool nobody trusts, and
+    # a test pinned to yesterday's number would hide that.
+    VERSION = tools.source_version(ROOT)
+    TAG = "v" + VERSION
+
     def build(self, directory, name="out.zip", runtime=None, **kwargs):
         runtime = runtime or make_runtime(os.path.join(directory, "python"))
-        return tools.build_portable("1.6.17", "v1.6.17",
+        return tools.build_portable(self.VERSION, self.TAG,
                                     os.path.join(directory, name),
                                     source=ROOT, runtime_dir=runtime, **kwargs)
 
@@ -380,11 +386,11 @@ class PortableZipTests(unittest.TestCase):
     def test_a_missing_runtime_is_refused(self):
         with tempfile.TemporaryDirectory(prefix="relzip-") as directory:
             with self.assertRaises(SystemExit):
-                tools.build_portable("1.6.17", "v1.6.17",
+                tools.build_portable(self.VERSION, self.TAG,
                                      os.path.join(directory, "x.zip"), source=ROOT,
                                      runtime_dir=None)
             with self.assertRaises(SystemExit):
-                tools.build_portable("1.6.17", "v1.6.17",
+                tools.build_portable(self.VERSION, self.TAG,
                                      os.path.join(directory, "x.zip"), source=ROOT,
                                      runtime_dir=os.path.join(directory, "nope"))
 
@@ -393,7 +399,7 @@ class PortableZipTests(unittest.TestCase):
             bad = make_runtime(os.path.join(directory, "bad"))
             os.remove(os.path.join(bad, "python.exe"))
             with self.assertRaises(SystemExit):
-                tools.build_portable("1.6.17", "v1.6.17",
+                tools.build_portable(self.VERSION, self.TAG,
                                      os.path.join(directory, "x.zip"), source=ROOT,
                                      runtime_dir=bad)
 
@@ -407,7 +413,7 @@ class PortableZipTests(unittest.TestCase):
             self.assertEqual(manifest["protected"], tools.PROTECTED)
             self.assertEqual(manifest["root"], tools.PACKAGE_ROOT)
             self.assertEqual(manifest["version"], tools.source_version(ROOT))
-            self.assertEqual(manifest["tag"], "v1.6.17")
+            self.assertEqual(manifest["tag"], self.TAG)
             # #29 replaces the runtime as one subtree, so the manifest has to
             # name it instead of leaving it implicit.
             self.assertEqual(manifest["runtime"]["prefix"], "python/")
