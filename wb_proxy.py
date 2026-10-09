@@ -7007,6 +7007,23 @@ def stream_responses_events(upstream, model, holder):
 # ---------------------------------------------------------------------------
 # HTTP layer
 # ---------------------------------------------------------------------------
+def _if_none_match_hit(header_value, etag):
+    """If-None-Match 头是否命中给定的 ETag。
+
+    RFC 7232 §3.2：字段值是一个逗号分隔的 entity-tag 列表，且 If-None-Match
+    用弱比较——W/ 前缀忽略，所以 W/"x" 与 "x" 等同；"*" 匹配任何已存在的表示。
+    """
+    for token in header_value.split(","):
+        token = token.strip()
+        if token == "*":
+            return True
+        if token.startswith("W/"):
+            token = token[2:].strip()
+        if token and token == etag:
+            return True
+    return False
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     # Which configured API key the caller used, set by _key_ok(). Its bound
@@ -7944,10 +7961,54 @@ class Handler(BaseHTTPRequestHandler):
             b'data-ui-language="__WB_UI_LANGUAGE__"',
             ('data-ui-language="%s"' % language).encode("utf-8"),
         )
+        # 面板首页是纯静态资源（服务端逐字节原样发出、不含任何机密），所以可以
+        # 允许浏览器存储副本、每次打开再回源校验：校验命中回 304（无 body），
+        # 省下整页（约 470KB）的重复下载，手机 / Tailscale 远程访问体感最明显。
+        #
+        # 校验符必须覆盖**所有**影响响应体的输入，不只是文件本身：body 还取决于
+        # 上面注入的 ui_language——用户改一次界面语言，文件没动、body 却变了；
+        # 若 tag 只看文件，客户端带旧 tag 回来会拿到 304 + 旧语言的页面。所以 tag
+        # 由 (文件 mtime_ns, size, language) 三者派生：前两个代表文件字节（本文件
+        # 只在应用更新时被整体替换、从不原地修改），第三个就是本次实际注入的值，
+        # 三者组合变化 ⇔ 响应字节变化。mtime 用纳秒精度，同一秒内的两次替换也能
+        # 得到不同 tag。
+        etag = None
+        try:
+            st = os.stat(DASHBOARD_HTML)
+            # 强校验符（不带 W/ 前缀）：响应是「文件字节 + 本次语言」的精确副本，
+            # tag 变 ⇔ 字节变。
+            etag = '"%x-%x-%s"' % (st.st_mtime_ns, st.st_size, language)
+        except Exception:
+            # stat 取不到（或时间戳无法表示）不是致命错误：退化为一律按普通
+            # 200 处理，只是这一次没有条件请求支持，绝不让面板页本身打不开。
+            etag = None
+        # 只认 If-None-Match，不发送、也不理会 If-Modified-Since。Last-Modified
+        # 只能描述文件的 mtime，而响应体还取决于语言：日期无法表达这个输入，
+        # 一旦发布出去，偏好日期的客户端就会拿它校验，语言一变就拿到过期的
+        # 304。ETag 覆盖全部输入、单靠它就足够完备，所以干脆不提供日期——
+        # 不发布它，客户端就没有用它的理由（RFC 7232 §2.2 里 Last-Modified 只是
+        # SHOULD，响应体并非单一文件、没有可一致表达的修改日期，只发 ETag 完备）。
+        if etag is not None:
+            inm = self.headers.get("If-None-Match")
+            if inm is not None and _if_none_match_hit(inm, etag):
+                # 304 不带 body：浏览器手里已有一份，一个字节都不用再传。也不带
+                # Content-Length：304 按 RFC 7230 §3.3.3 在空行处结束，再报全量
+                # 长度反而会诱使客户端 / 代理等待一个永远不会来的 body。校验符和
+                # Cache-Control 必须原样重发（RFC 7232 §4.1），否则缓存会丢掉状态。
+                self.send_response(304)
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("ETag", etag)
+                self.end_headers()
+                return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        # no-cache 而不是 no-store：允许存储，但每次使用前必须回源校验；配合
+        # 上面的校验符，校验命中的代价是一次 304 而不是整页约 470KB。不加
+        # max-age：没有它浏览器每次打开都会校验，应用更新后新版页面立即生效。
+        self.send_header("Cache-Control", "no-cache")
+        if etag is not None:
+            self.send_header("ETag", etag)
         self.end_headers()
         self.wfile.write(body)
     def _read_chunked_body(self, max_bytes=MAX_PAYLOAD_BYTES):
