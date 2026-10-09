@@ -656,7 +656,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   };
 
   // 3. Tab 初始化（与下方主脚本的 MAIN_TABS 保持一致）
-  var TABS = ['gateway','analytics','logs','settings','agents'];
+  var TABS = ['gateway','analytics','agents','settings','logs'];
   var pick = null;
   try {
     var q = new URLSearchParams(location.search).get('tab');
@@ -2539,14 +2539,14 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <button class="main-nav-btn" id="btnNavAnalytics" onclick="switchMainTab('analytics')">
         数据看板
       </button>
-      <button class="main-nav-btn" id="btnNavLogs" onclick="switchMainTab('logs')">
-        运行日志
+      <button class="main-nav-btn" id="btnNavAgents" onclick="switchMainTab('agents')">
+        智能体配置
       </button>
       <button class="main-nav-btn" id="btnNavSettings" onclick="switchMainTab('settings')">
         设置
       </button>
-      <button class="main-nav-btn" id="btnNavAgents" onclick="switchMainTab('agents')">
-        智能体配置
+      <button class="main-nav-btn" id="btnNavLogs" onclick="switchMainTab('logs')">
+        运行日志
       </button>
     </nav>
     <a class="gh-link" href="https://github.com/ardeyouxipianyi/workbuddy2api-hub" target="_blank" rel="noopener noreferrer"
@@ -6154,7 +6154,7 @@ function generatePageList(current, total){
 
 // Tab ids in nav order. One list so the restore path and the nav cannot
 // drift apart.
-const MAIN_TABS = ['gateway', 'analytics', 'logs', 'settings', 'agents'];
+const MAIN_TABS = ['gateway', 'analytics', 'agents', 'settings', 'logs'];
 const MAIN_TAB_STORE = 'wb-proxy-main-tab';
 let currentMainTab = 'gateway';
 let analyticsRange = 'today';
