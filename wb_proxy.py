@@ -58,6 +58,7 @@ import wb_identity
 import wb_prompt
 import wb_modelsdev
 import wb_probes
+import wb_updates
 IS_WINDOWS = os.name == "nt"
 def launcher_hint(port):
     """Platform-appropriate launcher command for starting on another port."""
@@ -1629,6 +1630,8 @@ POOL = None
 SCHEDULER = None
 PRICING = None
 CREDITS_REFRESHER = None
+# Release discovery only - the checker never downloads or installs anything.
+UPDATES = None
 ACCOUNTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'accounts')
 def realm_state_file():
     """Path of the persisted realm switch.
@@ -2352,6 +2355,7 @@ def runtime_settings_view():
         "daily_chat_web": wb_settings.daily_chat_web(ACCOUNTS_DIR),
         "local_web_tools": wb_settings.local_web_tools(ACCOUNTS_DIR),
         "accounts_collapsed": wb_settings.accounts_collapsed(ACCOUNTS_DIR),
+        "update_check_enabled": wb_settings.update_check_enabled(ACCOUNTS_DIR),
         "upstream": wb_settings.upstream_config(ACCOUNTS_DIR),
         "prompt": wb_settings.prompt_config(ACCOUNTS_DIR),
         "accounts_dir": ACCOUNTS_DIR,
@@ -7479,6 +7483,8 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if path.startswith("/settings"):
             return True
+        if path.startswith("/updates"):
+            return True
         if path.startswith("/logs"):
             return True
         # The pricing table is the panel's own view of the estimate, not part
@@ -7544,6 +7550,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_pricing()
         if path == "/settings":
             return self._get_settings()
+        if path == "/updates":
+            return self._get_updates()
         if path == "/proxy/slots":
             if not self._panel_ok():
                 return self._error(
@@ -7854,6 +7862,25 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         return self._json(200, runtime_settings_view())
+
+    def _get_updates(self):
+        """What the running build is, and whether a newer stable release exists.
+
+        Read-only and cheap: it reports the last check's outcome, never runs
+        one. The panel's "check now" is the POST below.
+        """
+        if not self._authorized():
+            return
+        if UPDATES:
+            return self._json(200, UPDATES.status())
+        return self._json(200, {
+            "current_version": running_version(),
+            "latest_version": None, "update_available": False,
+            "enabled": wb_settings.update_check_enabled(ACCOUNTS_DIR),
+            "checking": False, "last_attempt": None, "last_success": None,
+            "last_error": "", "release_url": "", "published_at": "",
+            "msg": "更新检查未运行",
+        })
 
     def _get_logs(self, query):
         if not self._authorized():
@@ -8294,6 +8321,18 @@ class Handler(BaseHTTPRequestHandler):
                                    "invalid_request_error")
             wb_settings.set_accounts_collapsed(ACCOUNTS_DIR, raw)
             reply["accounts_collapsed"] = raw
+        if "update_check_enabled" in payload:
+            # Strictly a JSON boolean, like the switches above: "false" as a
+            # string would be truthy and silently start the daily GitHub call.
+            raw = payload.get("update_check_enabled")
+            if not isinstance(raw, bool):
+                return self._error(400, "update_check_enabled must be true or false",
+                                   "invalid_request_error")
+            wb_settings.set_update_check_enabled(ACCOUNTS_DIR, raw)
+            reply["update_check_enabled"] = raw
+            if UPDATES and raw:
+                # Turning it on should not wait out the rest of the poll sleep.
+                UPDATES.wake()
         if "upstream" in payload:
             raw = payload.get("upstream")
             if not isinstance(raw, dict):
@@ -8691,6 +8730,19 @@ class Handler(BaseHTTPRequestHandler):
             "msg": summary_msg,
             "accounts_count": len(targets)
         })
+
+    def _route_update_check(self):
+        """Run one release check now, on the operator's explicit request.
+
+        Inline rather than "started, poll /updates": it is a single bounded
+        GitHub request, and the answer is what the button is for. `manual=True`
+        ignores both the daily switch and the 24h window.
+        """
+        if not UPDATES:
+            return self._json(200, {"ok": False, "msg": "更新检查未运行"})
+        status = UPDATES.check(manual=True)
+        status["ok"] = True
+        return self._json(200, status)
 
     def _route_scheduler_trigger(self, payload):
         if SCHEDULER:
@@ -9476,6 +9528,13 @@ class Handler(BaseHTTPRequestHandler):
             if not self._panel_ok():
                 return self._error(401, "panel password required", "invalid_request_error")
             return self._handle_settings_save()
+        if path == "/updates/check":
+            # Panel-only management write, like the pricing ones. No body to
+            # read: the action takes no parameters, so a button that posts
+            # nothing must not be answered with "invalid JSON body".
+            if not self._panel_ok():
+                return self._error(401, "panel password required", "invalid_request_error")
+            return self._route_update_check()
         if path in ("/pricing/refresh", "/pricing/mapping"):
             # Panel-only management writes (the pricing table is the panel's
             # own view of the estimate). Registered here because the generic
@@ -9744,6 +9803,15 @@ class Handler(BaseHTTPRequestHandler):
                      fp=fp, account=account.uid, key=self._key_id(), effort=effort)
         return self._json(200, result)
 
+def running_version():
+    """The version this process reports, e.g. "1.6.17".
+
+    tests/_test_release_engineering.py pins the two version literals and asserts
+    they agree, so the update checker reads the running one from the handler
+    instead of becoming a third copy that could drift away from both.
+    """
+    return Handler.server_version.split("/", 1)[-1]
+
 def main():
     args = _parse_cli_args()
     _apply_cli_overrides(args)
@@ -9902,6 +9970,16 @@ def _bootstrap_runtime(args):
     global CREDITS_REFRESHER
     CREDITS_REFRESHER = wb_accounts.CreditsRefresher(POOL)
     CREDITS_REFRESHER.start()
+    global UPDATES
+    # Release discovery only: the checker asks GitHub what the newest stable
+    # release is and reports it. It never downloads, replaces or restarts
+    # anything, and with the daily switch off (the default) it sends nothing.
+    UPDATES = wb_updates.UpdateChecker(
+        current_version=running_version(),
+        settings_dir=ACCOUNTS_DIR,
+        log=lambda msg: add_log_entry("[更新] %s" % msg, tag="update"),
+    )
+    UPDATES.start()
     return api_key_generated
 
 def _report_first_run(args):
