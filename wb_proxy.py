@@ -1305,14 +1305,86 @@ def _realm_inputs():
     attributed to the account that served them, or to the model's home realm.
     Importing or dropping an account can therefore move such a row from one
     exit to the other, and a cached aggregate must not outlive that.
+
+    这两样（当前出口 + uid→realm 归属）从**磁盘**同步读，而不是从活账号池的
+    内存映射读。池是启动时从同一份磁盘加载的快照，但「它什么时候加载完」会让
+    同一个进程在不同时刻算出不同的指纹：重启后第一刻的进程算出的是启动期那
+    一份，于是刚写下的 checkpoint 反而被判无效——而那正是它存在的意义（重启
+    后免冷扫）。从磁盘读，任何时刻、任何进程算出来都一样。
+
+    池仍然要查，但只作为「这次折叠能不能被冷进程复现」的判据（见
+    _realm_fold_reproducible），不再进指纹的值。
+    """
+    disk = _account_realm_map()
+    if disk is None:
+        return None
+    return (CURRENT_REALM, disk)
+
+
+_realm_disk_cache = {"key": None, "map": None}
+_realm_disk_lock = threading.Lock()
+
+
+def _account_files_key(directory):
+    """账号目录的便宜指纹：文件名 + (size, mtime)；读不到返回 None。"""
+    try:
+        names = sorted(n for n in os.listdir(directory) if n.endswith(".json"))
+    except OSError:
+        return None
+    entries = []
+    for name in names:
+        try:
+            info = os.stat(os.path.join(directory, name))
+        except OSError:
+            return None
+        entries.append((name, info.st_size, info.st_mtime_ns))
+    return (directory, tuple(entries))
+
+
+def _account_realm_map(directory=None):
+    """账号文件里的 uid→realm 映射（排序后的元组）；读不到返回 None。
+
+    用账号池自己的加载器推导，而不是在这里复制一份 uid/realm 解析逻辑：复制
+    出来的那份迟早会和 Account 里的逻辑漂移，而漂移意味着指纹描述的东西和
+    折叠读的东西不再是同一个。整份读一次的开销由缓存键挡着——目录下每个
+    *.json 的名字/size/mtime 都没变就直接用上次的结果。
+    """
+    directory = ACCOUNTS_DIR if directory is None else directory
+    key = _account_files_key(directory)
+    if key is None:
+        return None
+    with _realm_disk_lock:
+        cached = _realm_disk_cache
+        if cached["key"] == key:
+            return cached["map"]
+    try:
+        pool = wb_accounts.AccountPool(directory, log=None)
+        pool.load()
+        value = tuple(sorted((a.uid, a.realm) for a in pool.accounts if a.uid))
+    except Exception as exc:
+        log("account realm map unreadable: %s" % exc)
+        return None
+    with _realm_disk_lock:
+        _realm_disk_cache.update({"key": key, "map": value})
+    return value
+
+
+def _realm_fold_reproducible(disk):
+    """这次折叠用的归属，冷启动的进程能不能按同一份磁盘原样复现。
+
+    折叠读的是活账号池，指纹读的是磁盘。两者一致（正常情况：池就是启动时从
+    这份磁盘加载的）时没有疑问；磁盘被改过、池还没重载时两者会短暂不一致，
+    那种折叠写下的 checkpoint 会被冷进程按新归属当成有效，所以不写。池整个
+    不存在时折叠根本不查账号映射——只有磁盘上也没有账号，两边才一致。
     """
     if POOL is None:
-        return (CURRENT_REALM, ())
+        return not disk
     try:
-        return (CURRENT_REALM, tuple(sorted((a.uid, a.realm) for a in POOL.accounts)))
+        pool = tuple(sorted((a.uid, a.realm) for a in POOL.accounts))
     except Exception as exc:
         log("realm inputs unreadable: %s" % exc)
-        return None
+        return False
+    return pool == disk
 
 
 def _scan_usage_from(offset, fold, stop_at=None, skip=None):
@@ -3442,8 +3514,13 @@ def _usage_cache_snapshot_entry(realm, state):
     if offset <= 0 or not isinstance(tail, bytes) or state.get("snap") is None:
         return None
     pricing_key = _pricing_inputs_key(state.get("pricing"))
-    realm_key = _realm_inputs_key(state.get("realm"))
+    realm_inputs = state.get("realm")
+    realm_key = _realm_inputs_key(realm_inputs)
     if pricing_key is None or realm_key is None:
+        return None
+    if not _realm_fold_reproducible(realm_inputs[1]):
+        # 这次折叠的归属冷进程复现不了（见 _realm_fold_reproducible）：写下去
+        # 会被按新归属当成有效。宁可这次不写，等池就绪/重载后再写。
         return None
     return {"realm": realm, "offset": offset,
             "key": list(state["key"] or (0, 0, 0)), "tail": tail.hex(),
@@ -3473,9 +3550,12 @@ def _usage_cache_analytics_entry(realm, state):
     if offset <= 0 or not isinstance(tail, bytes):
         return None
     pricing_key = _pricing_inputs_key(state.get("pricing"))
-    realm_key = _realm_inputs_key(state.get("realm"))
+    realm_inputs = state.get("realm")
+    realm_key = _realm_inputs_key(realm_inputs)
     if pricing_key is None or realm_key is None:
         return None
+    if not _realm_fold_reproducible(realm_inputs[1]):
+        return None          # 同 snapshot：这次折叠的归属冷进程复现不了
     return {"realm": realm, "offset": offset,
             "key": list(state["key"] or (0, 0, 0)), "tail": tail.hex(),
             "pricing": pricing_key, "realm_inputs": realm_key,
