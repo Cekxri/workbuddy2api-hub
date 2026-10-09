@@ -2686,7 +2686,11 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <button onclick="openLoginModal()">+ 添加账号 (OAuth)</button>
     <button class="sec" id="btnCheckin" onclick="doCheckin(this)" style="display:none">每日签到 (国内版)</button>
       <button class="sec" id="btnDailyChat" onclick="doDailyChat(this)" style="display:none">每日活跃打卡 (国际版)</button>
-      <button class="sec" id="btnDailyChatWeb" onclick="doDailyChatWeb(this)" style="display:none">网页通道打卡 (国际版)</button>
+    <!-- 网页通道打卡按钮不再上屏（2026-10-10 起）：网页通道那一步已经由设置里的
+         「国际版每日活跃打卡」自动带在「每日活跃打卡」里，手动补跑走
+         /accounts/daily-chat-web 即可。要放回面板：去掉下面的 display:none，
+         并在 updateUI() 里恢复它按视图显隐。 -->
+    <button class="sec" id="btnDailyChatWeb" onclick="doDailyChatWeb(this)" style="display:none">网页通道打卡 (国际版)</button>
     <!-- 桌面客户端自 2026-09-24 起把 token 改成加密存储（$wbEncrypted 信封）。
          网关现在会从正在运行的桌面端进程内存里回收静态密钥来解密（只读、密钥
          只留在内存里，实现见 wb_atrest.py），所以这个入口重新放出来。 -->
@@ -3768,8 +3772,7 @@ function updateUI(){
   if(btnCheckin) btnCheckin.style.display = (window.VIEW_REALM === "cn" ? "inline-block" : "none");
   const btnDailyChat = document.getElementById("btnDailyChat");
   if(btnDailyChat) btnDailyChat.style.display = (window.VIEW_REALM === "intl" ? "inline-block" : "none");
-  const btnDailyChatWeb = document.getElementById("btnDailyChatWeb");
-  if(btnDailyChatWeb) btnDailyChatWeb.style.display = (window.VIEW_REALM === "intl" ? "inline-block" : "none");
+  // btnDailyChatWeb 不上屏（见按钮上的注释），所以这里不再按视图显隐它。
 
   // 计算当前绑定与生效的 Key 数量
   const keys = (typeof API_KEY_ROWS !== 'undefined' && API_KEY_ROWS.length) ? API_KEY_ROWS : (window.API_KEY_ROWS || []);
