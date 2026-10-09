@@ -186,6 +186,7 @@ button.mini{padding:3px 9px;font-size:11px}
 .id-btn-group{display:inline-flex;gap:2px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:1px}
 .id-btn{background:transparent;border:none;color:var(--dim);padding:2px 6px;border-radius:4px;font-size:11px;font-weight:500;cursor:pointer;transition:all .15s}
 .id-btn:hover{color:var(--fg)}
+.id-btn-label{color:var(--dim);font-size:11px;white-space:nowrap}
 .id-btn.active{background:var(--accent);color:#fff;font-weight:600;box-shadow:var(--shadow-sm)}
 .slot-select{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
   padding:5px 8px;color:var(--fg);font:inherit;font-size:12px;max-width:140px}
@@ -705,6 +706,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '+ 添加 API Key': '+ Add API Key',
     '+ 添加槽位': '+ Add slot',
     '+ 添加账号 (OAuth)': '+ Add account (OAuth)',
+    '添加': 'Add',
     '0 个 Key': '0 keys',
     '0 个 Key 生效': '0 keys active',
     '0 次': '0 calls',
@@ -843,7 +845,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '出口绑定': 'Exit binding',
     '出站身份：WB = WorkBuddy 独立桌面客户端（默认），VSC = 官方 VSCode 插件，CLI = 官方 CodeBuddy CLI；三者对应不同的出站指纹与配额通道。': 'Outbound identity: WB = WorkBuddy standalone desktop client (default), VSC = official VSCode extension, CLI = official CodeBuddy CLI; the three use different outbound fingerprints and quota channels.',
     '出站身份：默认 WorkBuddy 桌面端 (WB) / 官方 VSCode 插件 (VSC) / 官方 CodeBuddy CLI (CLI)': 'Outbound identity: default WorkBuddy desktop (WB) / official VSCode extension (VSC) / official CodeBuddy CLI (CLI)',
+    '出站身份：': 'Outbound identity:',
     '分配代理出口给未绑定账号': 'Assign proxy exits to unbound accounts',
+    '一键分配代理': 'Assign proxy exits',
     '分钟': 'minutes',
     '分钟)': 'min)',
     '分钟取一次价': 'minutes per price fetch',
@@ -872,6 +876,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '刷新完成:': 'Refresh finished:',
     '刷新明细': 'Refresh details',
     '刷新积分': 'Refresh credits',
+    '一键刷新积分': 'Refresh all credits',
     '刷新积分失败:': 'Refreshing credits failed:',
     '刷新间隔（分钟）': 'Fetch interval (minutes)',
     '剥掉的后缀：': 'Stripped suffix:',
@@ -1078,6 +1083,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '扫描中...': 'Scanning...',
     '扫描失败:': 'Scan failed:',
     '扫描桌面客户端账号': 'Scan for desktop client accounts',
+    '扫描桌面客户端': 'Scan desktop client',
     '批量操作失败:': 'Batch operation failed:',
     '把 Key 没有绑定出口，它的积分由国际版与国内版两套价格相加而来，只能当量级看。': 'keys have no exit bound; their credits add the Global and China price sets together, so treat them as a rough magnitude only.',
     '把)': ')',
@@ -1612,6 +1618,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "+ 添加 API Key": "+ 新增 API Key",
     "+ 添加槽位": "+ 新增槽位",
     "+ 添加账号 (OAuth)": "+ 新增帳號 (OAuth)",
+    "添加": "新增",
     "API Key 不能为空": "API Key 不能為空",
     "API Key 与出口绑定": "API Key 與出口繫結",
     "GitHub 项目仓库": "GitHub 專案倉庫",
@@ -1675,7 +1682,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "出口绑定": "出口繫結",
     "出站身份：WB = WorkBuddy 独立桌面客户端（默认），VSC = 官方 VSCode 插件，CLI = 官方 CodeBuddy CLI；三者对应不同的出站指纹与配额通道。": "出站身份：WB = WorkBuddy 獨立桌面客戶端（預設），VSC = 官方 VSCode 外掛，CLI = 官方 CodeBuddy CLI；三者對應不同的出站指紋與配額通道。",
     "出站身份：默认 WorkBuddy 桌面端 (WB) / 官方 VSCode 插件 (VSC) / 官方 CodeBuddy CLI (CLI)": "出站身份：預設 WorkBuddy 桌面端 (WB) / 官方 VSCode 外掛 (VSC) / 官方 CodeBuddy CLI (CLI)",
+    "出站身份：": "出站身份：",
     "分配代理出口给未绑定账号": "分配代理出口給未繫結帳號",
+    "一键分配代理": "一鍵分配代理",
     "分钟": "分鐘",
     "分钟)": "分鐘)",
     "分钟取一次价": "分鐘取一次價",
@@ -1696,6 +1705,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "刷新完成: ": "重新整理完成: ",
     "刷新明细": "重新整理明細",
     "刷新积分": "重新整理積分",
+    "一键刷新积分": "一鍵重新整理積分",
     "刷新积分失败:": "重新整理積分失敗:",
     "刷新积分失败: ": "重新整理積分失敗: ",
     "刷新间隔（分钟）": "重新整理間隔（分鐘）",
@@ -1818,6 +1828,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "所有已启用账号都已绑定代理出口": "所有已啟用帳號都已繫結代理出口",
     "手填的映射存在数据目录的 pricing-overrides.json（不改源码），登记后立即触发一次取价；留空提交即删除该映射。候选只是字面相似度建议，不自动采用。": "手填的對映存在資料目錄的 pricing-overrides.json（不改原始碼），登記後立即觸發一次取價；留空提交即刪除該對映。候選只是字面相似度建議，不自動採用。",
     "扫描桌面客户端账号": "掃描桌面客戶端帳號",
+    "扫描桌面客户端": "掃描桌面客戶端",
     "批量操作失败:": "批次操作失敗:",
     "批量操作失败: ": "批次操作失敗: ",
     "把 Key 没有绑定出口，它的积分由国际版与国内版两套价格相加而来，只能当量级看。": "把 Key 沒有繫結出口，它的積分由國際版與國內版兩套價格相加而來，只能當量級看。",
@@ -2685,15 +2696,15 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <div id="accountsBody" class="collapse">
       <div class="collapse-inner">
     <div class="toolbar">
-    <button onclick="openLoginModal()">+ 添加账号 (OAuth)</button>
+    <button onclick="openLoginModal()">添加</button>
     <!-- 桌面客户端自 2026-09-24 起把 token 改成加密存储（$wbEncrypted 信封）。
          网关现在会从正在运行的桌面端进程内存里回收静态密钥来解密（只读、密钥
          只留在内存里，实现见 wb_atrest.py），所以这个入口重新放出来。 -->
-    <button class="sec" id="btnScanDesktop" onclick="scanDesktop(this)">扫描桌面客户端账号</button>
-    <button class="sec" onclick="openImport()">导入账号</button>
-    <button class="sec" onclick="exportAccounts(this)">导出账号</button>
+    <button class="sec" id="btnScanDesktop" onclick="scanDesktop(this)">扫描桌面客户端</button>
+    <button class="sec" onclick="openImport()">导入</button>
+    <button class="sec" onclick="exportAccounts(this)">导出</button>
     <span class="toolbar-sep" aria-hidden="true"></span>
-    <button class="sec" onclick="fetchCredits(this)">刷新积分</button>
+    <button class="sec" onclick="fetchCredits(this)">一键刷新积分</button>
     <button class="sec" onclick="refreshAccounts(this)" title="逐个刷新所有账号的上游访问凭证（相当于对每个账号点一次「刷新凭证」）">一键刷新凭证</button>
     <span class="toolbar-sep" aria-hidden="true"></span>
     <button class="sec" id="btnCheckin" onclick="doCheckin(this)" style="display:none">每日签到 (国内版)</button>
@@ -2704,7 +2715,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
          并在 updateUI() 里恢复它按视图显隐。 -->
     <button class="sec" id="btnDailyChatWeb" onclick="doDailyChatWeb(this)" style="display:none">网页通道打卡 (国际版)</button>
     <span class="toolbar-sep" aria-hidden="true"></span>
-    <button class="sec" onclick="autoAssignSlots()" title="把尚未绑定出口的已启用账号依次分配到已启用的代理槽；已有绑定的账号不受影响">分配代理出口给未绑定账号</button>
+    <button class="sec" onclick="autoAssignSlots()" title="把尚未绑定出口的已启用账号依次分配到已启用的代理槽；已有绑定的账号不受影响">一键分配代理</button>
     <button class="sec" onclick="setAll(true, this)">全部启用</button>
     <button class="sec" onclick="setAll(false, this)">全部停用</button>
     
@@ -4726,6 +4737,7 @@ function accountRow(a){
     +     '<button class="sec mini" onclick="syncProfile(&quot;' + uidAttr + '&quot;, this)" title="从 Web 控制台同步最新昵称（改名后免重登）">同步昵称</button>'
     +   '</div>'
     +   '<div class="acct-actions-row">'
+    +     '<span class="id-btn-label">出站身份：</span>'
     +     '<div class="id-btn-group" title="出站身份：默认 WorkBuddy 桌面端 (WB) / 官方 VSCode 插件 (VSC) / 官方 CodeBuddy CLI (CLI)">'
     +       '<button class="id-btn' + ((!a.product || a.product === 'workbuddy') ? ' active' : '') + '" onclick="setAccountProduct(&quot;' + uidAttr + '&quot;, &quot;workbuddy&quot;, this)">WB</button>'
     +       '<button class="id-btn' + (a.product === 'vscode' ? ' active' : '') + '" onclick="setAccountProduct(&quot;' + uidAttr + '&quot;, &quot;vscode&quot;, this)">VSC</button>'
@@ -4967,7 +4979,7 @@ async function fetchCredits(btn){
   }catch(e){
     toast('刷新积分失败: ' + e.message, 'bad');
   }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '刷新积分'; }
+    if(btn){ btn.disabled = false; btn.textContent = '一键刷新积分'; }
   }
 }
 const queryCredits = fetchCredits;
@@ -5129,7 +5141,7 @@ async function exportAccounts(btn){
   }catch(e){
     toast('导出失败: ' + e.message, 'err');
   }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '导出账号'; }
+    if(btn){ btn.disabled = false; btn.textContent = '导出'; }
   }
 }
 
@@ -5278,7 +5290,7 @@ async function scanDesktop(btn){
     const body = document.getElementById('desktopScanBody');
     if(body) body.innerHTML = '<p class="hint" style="color:var(--warn)">扫描失败: ' + esc(e.message) + '</p>';
   }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '扫描桌面客户端账号'; }
+    if(btn){ btn.disabled = false; btn.textContent = '扫描桌面客户端'; }
   }
 }
 
