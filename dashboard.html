@@ -877,6 +877,7 @@ a:hover{text-decoration:underline}
     '备注名称': 'Label',
     '复制': 'Copy',
     '复制失败:': 'Copy failed:',
+    '复制登录链接': 'Copy sign-in link',
     '复制当前视图显示的日志': 'Copy the log lines shown in the current view',
     '多个账号按会话粘性 + 轮询使用；某个账号被上游拒绝时自动切到下一个': 'Accounts are used with session stickiness plus round-robin; when one is rejected upstream it switches to the next',
     '天': 'days',
@@ -2695,13 +2696,25 @@ async function triggerLoginForSelectedRealm(){
     if(s1) s1.className = "step done";
     if(s2) s2.className = "step active";
     if(linkBox) linkBox.innerHTML =
-      '<a class="login-link" href="' + esc(r.authUrl) + '" target="_blank" rel="noopener">' + esc(r.authUrl) + '</a>'
+      '<a class="login-link" id="loginLink" href="' + esc(r.authUrl) + '" target="_blank" rel="noopener">' + esc(r.authUrl) + '</a>'
+      + '<button class="sec mini" onclick="copyLoginLink()">复制登录链接</button>'
       + '<div class="hint">点击上方链接在浏览器里完成登录授权。登录完成后本窗口会自动检测并完成入池。</div>';
     pollLogin();
     loginTimer = setInterval(pollLogin, 2500);
   }catch(e){
     if(statusBox) statusBox.textContent = "发起失败: " + e.message;
     if(s1) s1.className = "step";
+  }
+}
+
+async function copyLoginLink(){
+  const link = document.getElementById("loginLink");
+  if(!link) return;
+  try{
+    await writeClipboard(link.getAttribute("href"));
+    toast('已复制到剪贴板', 'ok');
+  }catch(e){
+    toast('复制失败: ' + e.message, 'bad');
   }
 }
 
