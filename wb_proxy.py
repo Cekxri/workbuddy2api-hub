@@ -2344,6 +2344,7 @@ def runtime_settings_view():
         "model_daily_token_limit": wb_settings.model_daily_token_limit(ACCOUNTS_DIR),
         "pricing_refresh_minutes": wb_settings.pricing_refresh_minutes(ACCOUNTS_DIR),
         "credits_refresh_hours": wb_settings.credits_refresh_hours(ACCOUNTS_DIR),
+        "ui_language": wb_settings.ui_language(ACCOUNTS_DIR),
         "pricing_variant_inherit": wb_settings.pricing_variant_inherit(ACCOUNTS_DIR),
         "pricing_enabled": wb_settings.pricing_enabled(ACCOUNTS_DIR),
         "auto_switch_product": wb_settings.auto_switch_product(ACCOUNTS_DIR),
@@ -7876,6 +7877,13 @@ class Handler(BaseHTTPRequestHandler):
                 body = fh.read()
         except Exception as exc:
             return self._error(500, f"dashboard.html unavailable: {exc}")
+        # The static file carries a placeholder; replace it with the instance
+        # default so the first paint already uses the right language.
+        language = wb_settings.ui_language(ACCOUNTS_DIR)
+        body = body.replace(
+            b'data-ui-language="__WB_UI_LANGUAGE__"',
+            ('data-ui-language="%s"' % language).encode("utf-8"),
+        )
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -8198,6 +8206,15 @@ class Handler(BaseHTTPRequestHandler):
                 wb_settings.set_credits_refresh_hours(ACCOUNTS_DIR, hours)
             if CREDITS_REFRESHER:
                 CREDITS_REFRESHER.wake()
+        if "ui_language" in payload:
+            # Instance-wide default language. The dashboard overrides this per
+            # browser with localStorage; this value is the fallback when no
+            # browser-local preference exists.
+            raw = payload.get("ui_language")
+            if not isinstance(raw, str) or raw not in ("zh", "zh-Hant", "en"):
+                return self._error(400, "ui_language must be zh, zh-Hant or en",
+                                   "invalid_request_error")
+            reply["ui_language"] = wb_settings.set_ui_language(ACCOUNTS_DIR, raw)
         if "pricing_variant_inherit" in payload:
             # Strictly a JSON boolean, like the other switches: "false" as a
             # string would be truthy and silently keep the feature on.
