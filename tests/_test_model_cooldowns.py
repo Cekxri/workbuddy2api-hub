@@ -99,14 +99,15 @@ class ModelCooldownTests(unittest.TestCase):
         self.assertFalse(any(thread.is_alive() for thread in threads), "worker did not stop")
         self.assertEqual(failures, [])
 
-    def drive_one_429(self, account):
+    def drive_one_429(self, account, detail="usage exceeds frequency limit",
+                      stub_parser=True):
         """Drive open_upstream into an upstream 429 with a stubbed urlopen.
 
         Returns the reset instant the stubbed parser reported, so callers can
-        assert the cooldown the gateway recorded.
+        assert the cooldown the gateway recorded. `stub_parser=False` leaves the
+        real parser in place, which is what the unparsed-body case needs.
         """
         reset = time.time() + 600
-        detail = "usage exceeds frequency limit"
         error = urllib.error.HTTPError("https://upstream.invalid", 429, "rate limit", {},
                                        io.BytesIO(detail.encode("utf-8")))
 
@@ -140,9 +141,10 @@ class ModelCooldownTests(unittest.TestCase):
         old_parser = proxy.parse_rate_limit_reset
         proxy.POOL = Pool()
         accounts.urlopen = lambda *args, **kwargs: (_ for _ in ()).throw(error)
-        # Keep these tests on the 429 -> account-list path, independent of the
-        # existing parser's timezone handling.
-        proxy.parse_rate_limit_reset = lambda _detail: reset
+        if stub_parser:
+            # Keep these tests on the model-cooldown path, independent of the
+            # existing parser's timezone handling.
+            proxy.parse_rate_limit_reset = lambda _detail: reset
         try:
             with self.assertRaises(proxy.RateLimited):
                 proxy.open_upstream({"model": "glm-5.3", "messages": [
@@ -161,6 +163,54 @@ class ModelCooldownTests(unittest.TestCase):
         self.assertEqual(row["modelCooldowns"][0]["model"], "glm-5.3")
         self.assertLess(abs(row["modelCooldowns"][0]["expiresAt"] - reset), 2)
         self.assertTrue(account.ready(model="another-model"))
+
+    def test_an_unparsed_intl_429_parks_only_the_model(self):
+        """A 429 whose reset wording the parser does not know must not park the
+        credential: that is how a realm ended up fully cooling while the panel
+        test kept reporting every account healthy."""
+        directory = tempfile.mkdtemp(prefix="intl-unparsed-")
+        old_dir = proxy.ACCOUNTS_DIR
+        proxy.ACCOUNTS_DIR = directory
+        try:
+            account = self.account()
+            self.drive_one_429(
+                account,
+                detail='{"code":6004,"message":"usage exceeds frequency limit, '
+                       'please retry later"}',
+                stub_parser=False)
+        finally:
+            proxy.ACCOUNTS_DIR = old_dir
+        row = account.public()
+        self.assertEqual(account.soft_streak, 0, "a parser miss is not account scope")
+        self.assertFalse(row["inCooldown"])
+        self.assertIsNone(row["cooldownFor"])
+        self.assertEqual([item["model"] for item in row["modelCooldowns"]], ["glm-5.3"])
+        self.assertLessEqual(row["modelCooldowns"][0]["expiresAt"] - time.time(), 61,
+                             "no reset clock means the short fixed window, not 600s")
+        self.assertTrue(account.ready(model="another-model"))
+
+    def test_repeated_unparsed_429s_do_not_amplify_into_an_account_park(self):
+        """Three misses in a row used to mean 600 -> 1200 -> 2400s on the whole
+        credential. They have to stay three short parks on one model."""
+        directory = tempfile.mkdtemp(prefix="intl-unparsed-repeat-")
+        old_dir = proxy.ACCOUNTS_DIR
+        proxy.ACCOUNTS_DIR = directory
+        try:
+            account = self.account()
+            for round_number in range(3):
+                self.drive_one_429(
+                    account,
+                    detail='{"code":6004,"message":"usage exceeds frequency limit"}',
+                    stub_parser=False)
+                self.assertEqual(account.soft_streak, 0,
+                                 "round %d fed the account-level streak" % round_number)
+                self.assertIsNone(account.public()["cooldownFor"],
+                                  "round %d parked the credential" % round_number)
+                self.assertLessEqual(
+                    account.model_cooldowns["glm-5.3"] - time.time(), 61,
+                    "round %d grew the window past the fixed 60s" % round_number)
+        finally:
+            proxy.ACCOUNTS_DIR = old_dir
 
     def test_the_auto_switch_setting_is_opt_in(self):
         """Off on a fresh install, and only a real JSON boolean turns it on."""

@@ -6846,15 +6846,33 @@ def is_transient(exc):
     return any(m in t for m in markers)
 
 
-def rate_limit_is_account_level(detail, reset_at):
-    """True when a 429 is a soft account limit rather than a model park.
+# Wording that scopes a 429 to the credential rather than to one model. Only an
+# explicit marker counts as evidence: neither realm's model-scoped wording (code
+# 6004, "usage exceeds frequency limit" / "使用量已超出频率限制") carries one, so
+# an unrecognised body falls back to the narrow model park.
+ACCOUNT_SCOPE_MARKERS = ("account", "credential", "账号", "账户", "凭证")
 
-    The upstream names a reset wall clock for the model-scoped form (code
-    6004, "usage exceeds frequency limit"). A 429 without one is a soft
-    limit on the credential, which gets an exponential account cooldown
-    instead of parking just one model.
+
+def rate_limit_is_account_level(detail, reset_at):
+    """True only with positive evidence that the 429 is credential-scoped.
+
+    The model-scoped form names a reset wall clock (code 6004). Treating the
+    *absence* of one as account scope made every parser miss - an unexpected
+    wording, a truncated or empty body - buy the whole credential a 600s
+    cooldown that doubles up to 7200s (note_soft_rate), so a handful of misses
+    left every account of a realm cooling at once while a panel test kept
+    reporting the credential healthy. A parser miss is evidence of nothing, so
+    the credential is parked only when the body says the limit is on the
+    credential itself; anything else parks the one model for 60s.
+
+    The marker list is deliberately short and provisional: the captured intl
+    account-level body was not in hand when this was written, so it is meant to
+    be re-checked against that payload rather than grown speculatively.
     """
-    return reset_at is None
+    if reset_at is not None:
+        return False
+    text = (detail or "").lower()
+    return any(marker in text for marker in ACCOUNT_SCOPE_MARKERS)
 
 
 def parse_rate_limit_reset(detail):
@@ -7031,7 +7049,14 @@ def open_upstream(payload, session_key=None, target_realm=None):
                     last_429 = exc
                     last_429_detail = detail
                     continue
+                # Narrow park: one model, and only for as long as the reset clock
+                # says. No clock and no credential wording means the body is not
+                # understood, which is not a reason to cool the whole account -
+                # a short fixed window keeps the credential serviceable.
                 wait = max(1.0, reset_at - time.time()) if reset_at else 60.0
+                if not reset_at:
+                    log("account %s: unparsed 429 body, parking '%s' for %.0fs only"
+                        % (account.uid[:8], model, wait))
                 # Model-scoped: only this model is throttled for this account,
                 # so sibling models stay serviceable on the same credential.
                 account.note_error("HTTP 429 (model throttled)", model=model, until=reset_at,
@@ -11783,7 +11808,14 @@ class Handler(BaseHTTPRequestHandler):
                 reply_text = (msg.get("content") or msg.get("reasoning_content") or "OK").strip()
                 if len(reply_text) > 80:
                     reply_text = reply_text[:77] + "..."
-                account.clear_error()
+                # A served request, so it takes the semantic success path. That
+                # clears the account-level streak/breaker/degrade counters, which
+                # clear_error() never touched: a green panel test used to leave
+                # soft_streak standing, and the next 429 resumed the ladder from
+                # it. Only the tested model's cooldown is dropped here - sibling
+                # models keep theirs, and a 402 balance park keeps its own lift
+                # path (revive_balance_cooldown on a credits refresh).
+                account.note_success(model=test_model)
                 log(f"account test: uid={account.uid[:8]} model={test_model} wall={wall_ms}ms ok=True", tag="accounts")
                 return self._json(200, {
                     "ok": True,
