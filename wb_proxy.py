@@ -667,13 +667,13 @@ _perf_cache = {}
 _perf_lock = threading.Lock()
 
 
-def perf_stats(sample=5000, realm=None, ttl=None, range=None, since=None, until=None):
-    """Cached wrapper: parsing thousands of rows is CPU-heavy, and the
-    dashboard polls this endpoint every few seconds.
+def _perf_stats_scope(sample, realm, range, since, until):
+    """(过滤用的 realm, since, until, 缓存键) —— perf_stats() 与它的 ETag 共用。
 
-    Rebuilds under the lock so a burst of pollers cannot each start their own
-    scan of the log."""
-    ttl = _STATS_TTL if ttl is None else ttl
+    抽出来只为一件事：取数和派生 ETag 必须走**同一套**键。两边各写一份的话，
+    只要有一处不同（比如一处 realm_scope、一处原始 realm），tag 就会落到另一条
+    缓存条目上，客户端拿到的是一个不描述当前响应体的校验符。
+    """
     r = realm_scope(realm, CURRENT_REALM)
     lo, hi = range_window(range, since, until)
     try:
@@ -685,6 +685,17 @@ def perf_stats(sample=5000, realm=None, ttl=None, range=None, since=None, until=
     except Exception:
         key = (5000, r or "all",
                lo if lo is not None else -1, hi if hi is not None else -1)
+    return r, lo, hi, key
+
+
+def perf_stats(sample=5000, realm=None, ttl=None, range=None, since=None, until=None):
+    """Cached wrapper: parsing thousands of rows is CPU-heavy, and the
+    dashboard polls this endpoint every few seconds.
+
+    Rebuilds under the lock so a burst of pollers cannot each start their own
+    scan of the log."""
+    ttl = _STATS_TTL if ttl is None else ttl
+    r, lo, hi, key = _perf_stats_scope(sample, realm, range, since, until)
     now = time.time()
     with _perf_lock:
         hit = _perf_cache.get(key)
@@ -693,6 +704,21 @@ def perf_stats(sample=5000, realm=None, ttl=None, range=None, since=None, until=
         data = _perf_stats_uncached(sample, r, since=lo, until=hi)
         _perf_cache[key] = (time.time(), data)
     return data
+
+
+def perf_stats_etag(sample=5000, realm=None, range=None, since=None, until=None):
+    """perf_stats() 当前缓存条目的 ETag；条目还不存在时返回 None。
+
+    _json_cached() 会在取数前后各调用一次并比对，两次一致才把 tag 发出去
+    （见那里的注释）。所以这里只回答"此刻这条缓存条目的戳是什么"，调用方不需要
+    自己安排调用顺序。
+    """
+    _r, _lo, _hi, key = _perf_stats_scope(sample, realm, range, since, until)
+    with _perf_lock:
+        hit = _perf_cache.get(key)
+    if hit is None:
+        return None
+    return _cache_etag("perf", repr(key), hit[0])
 
 
 def _perf_stats_uncached(sample=5000, realm=None, since=None, until=None):
@@ -1119,6 +1145,20 @@ def free_models_by_realm():
     return out
 
 
+def _usage_snapshot_scope(realm, range, since, until):
+    """(过滤用的 realm, since, until, 缓存键) —— usage_snapshot() 与它的 ETag 共用。
+
+    同 _perf_stats_scope()：键只允许有一个来源，否则 ETag 可能指向另一条缓存。
+    """
+    r = realm_scope(realm, CURRENT_REALM)
+    lo, hi = range_window(range, since, until)
+    # Bounds, not a today/all flag: this week and this month overlap, so a
+    # flag would let one window serve the other's totals from the cache.
+    key = "%s|%s|%s" % (r or "all",
+                        lo if lo is not None else "", hi if hi is not None else "")
+    return r, lo, hi, key
+
+
 def usage_snapshot(realm=None, ttl=None, range=None, since=None, until=None):
     """Cached wrapper: the dashboard polls this every few seconds.
 
@@ -1128,20 +1168,28 @@ def usage_snapshot(realm=None, ttl=None, range=None, since=None, until=None):
     of the same file.
     """
     ttl = _STATS_TTL if ttl is None else ttl
-    r = realm_scope(realm, CURRENT_REALM)
-    lo, hi = range_window(range, since, until)
+    r, lo, hi, key = _usage_snapshot_scope(realm, range, since, until)
     now = time.time()
     with _snap_lock:
-        # Bounds, not a today/all flag: this week and this month overlap, so a
-        # flag would let one window serve the other's totals from the cache.
-        key = "%s|%s|%s" % (r or "all",
-                            lo if lo is not None else "", hi if hi is not None else "")
         hit = _snap_cache.get(key)
         if hit is not None and (now - hit[0]) < ttl:
             return hit[1]
         data = _usage_snapshot_uncached(r, since=lo, until=hi)
         _snap_cache[key] = (time.time(), data)
     return data
+
+
+def usage_snapshot_etag(realm=None, range=None, since=None, until=None):
+    """usage_snapshot() 当前缓存条目的 ETag；条目不存在时返回 None。
+
+    配对调用（取数前后各一次、一致才发）由 _json_cached() 负责，理由见那里。
+    """
+    _r, _lo, _hi, key = _usage_snapshot_scope(realm, range, since, until)
+    with _snap_lock:
+        hit = _snap_cache.get(key)
+    if hit is None:
+        return None
+    return _cache_etag("usage", key, hit[0])
 
 
 def _fold_cost(bucket, cost, model):
@@ -1657,22 +1705,12 @@ _series_cache = {}
 _series_lock = threading.Lock()
 
 
-def usage_timeseries(realm=None, range=None, since=None, until=None,
-                     bucket_seconds=None, ttl=None):
-    """Bucketed token/credit series for the analytics chart.
+def _usage_timeseries_scope(realm, range, since, until, bucket_seconds):
+    """(realm, lo, hi, step, 缓存键) —— usage_timeseries() 与它的 ETag 共用。
 
-    Bucket size auto-scales with the window: minute (<=6h), hour (<=14d),
-    day otherwise; an explicit bucket_seconds overrides it. Completed
-    requests contribute tokens; every non-client-aborted row contributes
-    credit (money already spent). The most recent credited requests ride
-    along so the panel can show a credit history without another endpoint.
-
-    Cached wrapper: the Token chart polls this endpoint whenever the metrics
-    tab is open, and one uncached call re-reads and re-parses the whole log.
-    Same shared TTL as its siblings, and the rebuild runs under the lock so a
-    burst of pollers cannot each start their own scan.
+    lo/hi 是这次真正要扫的窗口（未钉住的边界在这里补成"现在/往前 24 小时"），
+    键只收**钉住的**边界，理由见下面 wrapper 里的注释。
     """
-    ttl = _STATS_TTL if ttl is None else ttl
     r = realm_scope(realm, CURRENT_REALM)
     lo, hi = range_window(range, since, until)
     # Which bounds the caller pinned, captured before the fallbacks below fill
@@ -1696,23 +1734,61 @@ def usage_timeseries(realm=None, range=None, since=None, until=None,
         step = 3600
     else:
         step = 86400
+    # Bounds, not a range flag: this week and this month overlap, so a flag
+    # would let one window serve the other's series from the cache. The
+    # bucket step joins the key for the same reason: an explicit bucket
+    # changes every bucket's width, and the auto-scaled one flips with the
+    # span, so two different steps are two different payloads.
+    key = (r or "all",
+           pinned_lo if pinned_lo is not None else "auto",
+           pinned_hi if pinned_hi is not None else "auto",
+           step)
+    return r, lo, hi, step, key
+
+
+def usage_timeseries(realm=None, range=None, since=None, until=None,
+                     bucket_seconds=None, ttl=None):
+    """Bucketed token/credit series for the analytics chart.
+
+    Bucket size auto-scales with the window: minute (<=6h), hour (<=14d),
+    day otherwise; an explicit bucket_seconds overrides it. Completed
+    requests contribute tokens; every non-client-aborted row contributes
+    credit (money already spent). The most recent credited requests ride
+    along so the panel can show a credit history without another endpoint.
+
+    Cached wrapper: the Token chart polls this endpoint whenever the metrics
+    tab is open, and one uncached call re-reads and re-parses the whole log.
+    Same shared TTL as its siblings, and the rebuild runs under the lock so a
+    burst of pollers cannot each start their own scan.
+    """
+    ttl = _STATS_TTL if ttl is None else ttl
+    r, lo, hi, step, key = _usage_timeseries_scope(realm, range, since, until,
+                                                   bucket_seconds)
     now = time.time()
     with _series_lock:
-        # Bounds, not a range flag: this week and this month overlap, so a flag
-        # would let one window serve the other's series from the cache. The
-        # bucket step joins the key for the same reason: an explicit bucket
-        # changes every bucket's width, and the auto-scaled one flips with the
-        # span, so two different steps are two different payloads.
-        key = (r or "all",
-               pinned_lo if pinned_lo is not None else "auto",
-               pinned_hi if pinned_hi is not None else "auto",
-               step)
         hit = _series_cache.get(key)
         if hit is not None and (now - hit[0]) < ttl:
             return hit[1]
         data = _usage_timeseries_uncached(r, lo, hi, step)
         _series_cache[key] = (time.time(), data)
     return data
+
+
+def usage_timeseries_etag(realm=None, range=None, since=None, until=None,
+                          bucket_seconds=None):
+    """usage_timeseries() 当前缓存条目的 ETag；没有条目时返回 None。
+
+    配对调用由 _json_cached() 负责。注意键里只有钉住的边界，所以"滚动窗口"这一类
+    请求始终落在同一条目上：条目没重建，响应体（含它自己的 until / 桶边界）就逐
+    字节不变，这正是可以放心回 304 的原因。
+    """
+    _r, _lo, _hi, _step, key = _usage_timeseries_scope(realm, range, since, until,
+                                                       bucket_seconds)
+    with _series_lock:
+        hit = _series_cache.get(key)
+    if hit is None:
+        return None
+    return _cache_etag("series", repr(key), hit[0])
 
 
 # Every row this process writes starts with `{"at": <float>,` - record_usage
@@ -2216,6 +2292,19 @@ def usage_by_account(ttl=None):
     return data
 
 
+def usage_by_account_etag():
+    """usage_by_account() 当前缓存条目的 ETag；没有条目时返回 None。
+
+    这个视图只有一条缓存（没有窗口/区域参数），所以键是常量。配对调用由
+    _json_cached() 负责。
+    """
+    with _byacct_lock:
+        if _byacct_cache["data"] is None:
+            return None
+        built_at = _byacct_cache["at"]
+    return _cache_etag("by-account", "all", built_at)
+
+
 _byacct_state = {"buckets": None, "offset": 0, "key": None, "tail": b""}
 # The wrapper above holds _byacct_lock while it rebuilds and then calls in
 # here, and _usage_by_account_uncached() is also called straight from the
@@ -2303,6 +2392,19 @@ _analytics_cache = {}
 _analytics_lock = threading.Lock()
 
 
+def _analytics_scope(realm, range, since, until):
+    """(since, until, 缓存键) —— compute_usage_analytics() 与它的 ETag 共用。
+
+    注意键里用的是**原始** realm（`realm or "all"`），与这个接口一直以来的键
+    一致；折叠时用 realm_scope(realm) 另有其义。两者都不能顺手"统一"，否则就是
+    换了一条缓存键。
+    """
+    lo, hi = range_window(range, since, until)
+    cache_key = "%s|%s|%s" % (realm or "all",
+                              lo if lo is not None else "", hi if hi is not None else "")
+    return lo, hi, cache_key
+
+
 def compute_usage_analytics(ttl=None, realm=None, range=None, since=None, until=None):
     """Cached analytics payload.
 
@@ -2317,9 +2419,7 @@ def compute_usage_analytics(ttl=None, realm=None, range=None, since=None, until=
     """
     ttl = _STATS_TTL if ttl is None else ttl
     now = time.time()
-    lo, hi = range_window(range, since, until)
-    cache_key = "%s|%s|%s" % (realm or "all",
-                              lo if lo is not None else "", hi if hi is not None else "")
+    lo, hi, cache_key = _analytics_scope(realm, range, since, until)
     with _analytics_lock:
         entry = _analytics_cache.get(cache_key)
         if entry is not None and (now - entry["at"]) < ttl:
@@ -2327,6 +2427,19 @@ def compute_usage_analytics(ttl=None, realm=None, range=None, since=None, until=
         data = _compute_usage_analytics_uncached(realm=realm_scope(realm), since=lo, until=hi)
         _analytics_cache[cache_key] = {"at": time.time(), "data": data}
     return data
+
+
+def usage_analytics_etag(realm=None, range=None, since=None, until=None):
+    """compute_usage_analytics() 当前缓存条目的 ETag；无条目返回 None。
+
+    配对调用由 _json_cached() 负责，理由见那里。
+    """
+    _lo, _hi, cache_key = _analytics_scope(realm, range, since, until)
+    with _analytics_lock:
+        entry = _analytics_cache.get(cache_key)
+    if entry is None:
+        return None
+    return _cache_etag("analytics", cache_key, entry["at"])
 
 
 def _new_analytics_stat():
@@ -8345,11 +8458,38 @@ def _if_none_match_hit(header_value, etag):
     return False
 
 
+def _cache_etag(kind, key, built_at):
+    """给带 TTL 缓存的只读接口派生一个强校验符（ETag）。
+
+    由 (接口名, 缓存键, 缓存条目的构建时刻) 三者派生，**不是**对响应字节做哈希：
+
+      - 构建时刻在两次重建之间是恒定的，所以"数字没变"的轮询回 304；缓存一重建
+        它必然变化，客户端立刻拿到新数据。哈希响应字节恰好相反——payload 里有
+        time.time() 派生的字段（/usage 的 started/since、/usage/timeseries 的
+        桶边界与 until），同一份缓存被序列化两次都不逐字节相同，tag 会永远不命中，
+        每次轮询照样重传 10~100KB，还白搭一次全量序列化 + 哈希的 CPU。
+      - (键, 时刻) 都是现成的，一次 sha1 只哈希几十字节的键文本；哈希整个响应体
+        则要先把 JSON 序列化出来，在 5 秒一轮的热路径上反而更贵。
+
+    键文本进摘要而不是直接拼进 tag：缓存键里含调用方给的 realm，它可能带引号 /
+    反斜杠（`?realm=a"b` 一路原样进键），拼出来会发出一个畸形的 ETag 头；摘要
+    则永远是合法的 etagc 字符。摘要只取 16 个十六进制位：它只需要在"同一实例的
+    少量缓存条目"之间区分，不是安全边界。
+    """
+    stamp = "%x" % int(built_at * 1_000_000)
+    digest = hashlib.sha1(("%s\x1f%s" % (kind, key)).encode("utf-8")).hexdigest()[:16]
+    return '"%s-%s"' % (stamp, digest)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     # Which configured API key the caller used, set by _key_ok(). Its bound
     # realm decides the upstream exit for this request alone.
     key_entry = None
+    # 本次 _json() 响应要附带的校验符（由 _json_cached() 设置）。放成实例属性
+    # 而不是参数，是因为测试里大量 Handler 桩只覆写了 _json(code, obj) 这两个
+    # 位置参数——加参数会让它们全部报错，而属性默认 None 对它们完全无感。
+    _json_etag = None
     # The stdlib default caps the request line at 64KB and answers an opaque
     # bare "414 Request-URI Too Long" for anything longer. Raise it and reply in
     # the normal JSON error shape so an over-long URL is diagnosable.
@@ -8361,6 +8501,9 @@ class Handler(BaseHTTPRequestHandler):
         # it inherited the realm binding of whatever API key used the connection
         # before it - sending that request to the wrong upstream exit.
         self.key_entry = None
+        # 校验符同理：留着上一轮的 tag，下一次 _json() 就会把别的请求的 ETag
+        # 发出去（keep-alive 上同一个 Handler 实例服务一整条连接）。
+        self._json_etag = None
         # Body-tracking state must also start clean for every request, otherwise
         # a later drain would skip a body that has not been read yet.
         self._body_consumed = False
@@ -8434,6 +8577,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        # 只有 _json_cached() 覆盖的只读接口才有校验符；其余调用点保持原样，
+        # 一个头都不多发。
+        etag = self._json_etag
+        if etag is not None:
+            # no-cache 而不是 no-store：允许浏览器存一份，但每次使用前必须回源
+            # 校验。配合 ETag，校验命中就是一次 304（无 body），而不是重传
+            # 10~100KB 的 JSON；no-store 会让浏览器连存都不存，条件请求无从谈起。
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("ETag", etag)
         # self.path is unset when parse_request() never ran (an over-long
         # request line is rejected before it), so fall back to "".
         if cors_origin_allowed(getattr(self, "path", "") or ""):
@@ -8448,6 +8600,57 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.close_connection = True
+    def _json_cached(self, code, data_fn, etag_fn):
+        """带 TTL 缓存的只读接口：_json() + 条件请求（命中 If-None-Match 回 304）。
+
+        data_fn() 取数、etag_fn() 取"当前缓存条目的校验符"，两者在这里配对调用，
+        而且是**取数前后各取一次戳**：只有两次相同，才敢把这个 tag 发出去。这个
+        相等就是"这份响应体确实出自该 tag 所描述的那条缓存条目"的证明——
+
+          - 两次读取之间若发生了一次重建，戳就会变，于是这一次不发校验符，走普通
+            200；客户端下一轮就重新同步（下一轮取数前取到的就是新条目的戳，前后
+            一致，tag 生效）。代价是每次重建后多一次全量响应，换来的是绝不会发出
+            一个不描述本次响应体的 tag。
+          - 反过来（先取数、后取戳）才有真问题：拿到的是新条目的戳配旧条目的数据，
+            客户端会带着这个 tag 回来，命中 304，于是把过期数字一直显示到下一次
+            重建为止。
+
+        两个可调用对象都无参，参数由调用方用闭包带上；顺序由这里保证，调用方不
+        必（也不该）自己拼这个顺序。任何解析/取值异常都退化成"没有校验符"的普通
+        200，绝不让响应路径崩掉。
+        """
+        try:
+            before = etag_fn()
+        except Exception:
+            before = None
+        data = data_fn()
+        try:
+            after = etag_fn()
+        except Exception:
+            after = None
+        etag = after if (after is not None and after == before) else None
+        if etag is not None:
+            try:
+                inm = self.headers.get("If-None-Match")
+            except Exception:
+                # 没有 headers 对象（测试桩 / 未走 parse_request）时按不匹配处理。
+                inm = None
+            if inm is not None and _if_none_match_hit(inm, etag):
+                # 304 不带 body，也不带 Content-Length：RFC 7230 §3.3.3 规定 304
+                # 在空行处结束，再报一个全量长度反而会诱使客户端 / 代理去等一个
+                # 永远不会来的 body。校验符和 Cache-Control 必须原样重发
+                # （RFC 7232 §4.1），否则缓存会丢掉状态、下次又整份重取。
+                self.send_response(304)
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("ETag", etag)
+                self.end_headers()
+                return
+            self._json_etag = etag
+        try:
+            return self._json(code, data)
+        finally:
+            # 无论 _json() 是否抛异常，都不能把这次请求的 tag 留给下一次。
+            self._json_etag = None
     def _discard_body(self):
         """Drain the request body so the connection stays in sync.
 
@@ -8974,8 +9177,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         req_realm = query.get('realm', [None])[0] or self.headers.get('X-Realm') or CURRENT_REALM
         req_range, req_since, req_until = range_query(query)
-        return self._json(200, usage_snapshot(realm=req_realm, range=req_range,
-                                              since=req_since, until=req_until))
+        # 取数与取校验符必须看到同一套参数（否则 tag 落到另一条缓存条目上），
+        # 但"先取戳、再取数、再取一次戳"的配对顺序由 _json_cached 保证。
+        return self._json_cached(
+            200,
+            lambda: usage_snapshot(realm=req_realm, range=req_range,
+                                   since=req_since, until=req_until),
+            lambda: usage_snapshot_etag(realm=req_realm, range=req_range,
+                                        since=req_since, until=req_until))
 
     def _get_usage_recent(self, query):
         if not self._authorized():
@@ -9119,13 +9328,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         req_realm = query.get("realm", [None])[0] or None
         req_range, req_since, req_until = range_query(query)
-        return self._json(200, compute_usage_analytics(realm=req_realm, range=req_range,
-                                                       since=req_since, until=req_until))
+        return self._json_cached(
+            200,
+            lambda: compute_usage_analytics(realm=req_realm, range=req_range,
+                                            since=req_since, until=req_until),
+            lambda: usage_analytics_etag(realm=req_realm, range=req_range,
+                                         since=req_since, until=req_until))
 
     def _get_usage_by_account(self):
         if not self._authorized():
             return
-        return self._json(200, {"accounts": usage_by_account()})
+        return self._json_cached(200,
+                                 lambda: {"accounts": usage_by_account()},
+                                 usage_by_account_etag)
 
     def _get_usage_timeseries(self, query):
         if not self._authorized():
@@ -9138,9 +9353,14 @@ class Handler(BaseHTTPRequestHandler):
             bucket_seconds = int(bucket) if bucket else None
         except (TypeError, ValueError):
             bucket_seconds = None
-        return self._json(200, usage_timeseries(
-            realm=req_realm, range=req_range, since=req_since,
-            until=req_until, bucket_seconds=bucket_seconds))
+        return self._json_cached(
+            200,
+            lambda: usage_timeseries(realm=req_realm, range=req_range,
+                                     since=req_since, until=req_until,
+                                     bucket_seconds=bucket_seconds),
+            lambda: usage_timeseries_etag(realm=req_realm, range=req_range,
+                                          since=req_since, until=req_until,
+                                          bucket_seconds=bucket_seconds))
 
     def _get_usage_perf(self, query):
         if not self._authorized():
@@ -9151,8 +9371,12 @@ class Handler(BaseHTTPRequestHandler):
             sample = 5000
         req_realm = query.get('realm', [None])[0] or self.headers.get('X-Realm') or CURRENT_REALM
         req_range, req_since, req_until = range_query(query)
-        return self._json(200, perf_stats(sample, realm=req_realm, range=req_range,
-                                          since=req_since, until=req_until))
+        return self._json_cached(
+            200,
+            lambda: perf_stats(sample, realm=req_realm, range=req_range,
+                               since=req_since, until=req_until),
+            lambda: perf_stats_etag(sample, realm=req_realm, range=req_range,
+                                    since=req_since, until=req_until))
 
     def _get_tasks(self, query):
         if not self._authorized():
