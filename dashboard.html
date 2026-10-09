@@ -2891,9 +2891,19 @@ function updateUI(){
   if(elCnAcct) elCnAcct.innerHTML = '<b style="color:var(--accent)">' + cnActive + '</b>/' + cnAccts.length + ' 可用';
 };
 
+// 切换视图的唯一入口：改完 VIEW_REALM 立刻用**已经加载好的**全量 window.ACCOUNTS
+// 重画一次「当前禁用账号与模型」，不等后面的异步账号重载 —— 否则在重载返回之前那
+// 段间隙里，DOM 里还留着上一个 realm 的停用行，重载失败时它们会一直留着（issue
+// #31 要求切换立即生效、不留旧行）。启动时的赋值不走这里：那时还没有任何行被画
+// 出来，第一次 loadAccounts() 会画。
+function setViewRealm(r){
+  window.VIEW_REALM = r;
+  renderDisabled();
+}
+
 async function switchViewRealm(r){
   if(window.VIEW_REALM === r) return;
-  window.VIEW_REALM = r;
+  setViewRealm(r);
   RECENT_PAGE = 1;
   window.updateUI();
   // 并行发起，不要逐个 await：国内版的成长任务一次要约 2 秒（上游两个接口），
@@ -2908,7 +2918,7 @@ async function toggleActiveGatewayRealm(){
     const res = await postJSON("/realm", {realm: next});
     window.ACTIVE_GATEWAY_REALM = res.current || next;
     toast("网关默认上游已切换并永久保存为: " + (window.ACTIVE_GATEWAY_REALM === "intl" ? "国际版" : "国内版"));
-    window.VIEW_REALM = window.ACTIVE_GATEWAY_REALM;
+    setViewRealm(window.ACTIVE_GATEWAY_REALM);
     window.updateUI();
     await Promise.all([loadAccounts(), loadModels(), loadGrowthTasks(),
                        loadSchedulerStatus(), loadAnalytics(), refresh()]);
@@ -3810,9 +3820,19 @@ function ensureHoverTip(){
   return el;
 }
 
+// 当前视图的账号：realm 为空的账号两侧都可见，与账号卡片一直以来的口径一致。
+// 全页只留这一处 realm 过滤表达式 —— 账号卡片与「当前禁用账号与模型」都走它，
+// 两处不会各写一份、然后各自漂移。视图的真源是 window.VIEW_REALM。
+function accountsInView(){
+  const view = window.VIEW_REALM || "intl";
+  return (window.ACCOUNTS || []).filter(a => !a.realm || a.realm === view);
+}
+
 // 当前禁用总览：把散落在账号卡片上的停用/限流状态汇总成一张表。
 // 四类来源：①面板手动停用 ②上游账号级冷却 ③上游模型级冷却 ④本地日限额/积分护栏。
 // 全部读 window.ACCOUNTS，不额外发请求；数据与账号卡片同源，不会互相矛盾。
+// 只描述当前视图（accountsInView）：计数、分组与空状态都从这同一份过滤后的数据
+// 算出来，否则切到国内版时会看到国际版的停用状态（issue #31）。
 function disabledRows(){
   const rows = [];
   const now = Math.floor(Date.now() / 1000);
@@ -3821,7 +3841,7 @@ function disabledRows(){
     const d = new Date(); d.setHours(24, 0, 0, 0);
     return Math.floor(d.getTime() / 1000);
   })();
-  (window.ACCOUNTS || []).forEach(a => {
+  accountsInView().forEach(a => {
     const who = (a.nickname || '?') + ' (' + String(a.uid || '').slice(0, 8) + ')';
     const realm = a.realm === 'cn' ? '国内版' : '国际版';
     const detail = a.lastErrorDetail || '';
@@ -3902,7 +3922,7 @@ function renderAccounts(){
   renderDisabled();
   const box = document.getElementById('accounts');
   const currentView = (window.VIEW_REALM || "intl");
-  let list = (window.ACCOUNTS || []).filter(a => !a.realm || a.realm === currentView);
+  let list = accountsInView();
   // Enabled accounts first; disabled ones sink to the bottom. Within each
   // group keep the server order stable so the table does not jump around.
   list = list.map((a, i) => [a, i])
