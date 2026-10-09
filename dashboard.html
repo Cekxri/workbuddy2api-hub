@@ -4521,12 +4521,29 @@ function authHeaders(base){
   return h;
 }
 
-async function getJSON(url){
-  const r = await fetch(url, {cache:'no-store', headers: authHeaders()});
+async function getJSON(url, opts){
+  // cache 模式分两档，按"响应体在服务端是否有一份 TTL 缓存"来选：
+  //
+  //  - 默认 no-store：不落盘、每次整份重取。登录轮询（/accounts/login/poll）、
+  //    密钥类读取（/settings/reveal）以及任何"写完之后立刻回读"都必须走这档。
+  //  - opts.revalidate（见 POLL_READ）：允许浏览器存一份、每次使用前回源校验。
+  //    用量那几个读接口在服务端带 _STATS_TTL 缓存，同一份缓存期间响应体逐字节
+  //    不变，服务端会发 ETag + Cache-Control: no-cache。no-cache 的语义正是
+  //    "可以存、每次使用前必须回源校验"，于是浏览器自动带上 If-None-Match：
+  //    数字没变就只回一个 304（无 body），省下 10~100KB 的重复传输。
+  //    这里绝不能写 no-store——那会让浏览器连副本都不存，条件请求无从谈起，
+  //    服务端的 ETag 也就永远用不上。
+  const cache = (opts && opts.revalidate) ? 'no-cache' : 'no-store';
+  const r = await fetch(url, {cache: cache, headers: authHeaders()});
   if(r.status === 401 || r.status === 403){ panelSessionLost(); throw new Error('unauthorized'); }
   if(!r.ok) throw new Error(r.status);
   return r.json();
 }
+// 轮询读取的 fetch 选项：这些接口的响应体由服务端的 TTL 缓存决定，同一份缓存
+// 期间不变，所以可以让浏览器存一份、每次回源校验（服务端 ETag 命中即 304）。
+// 只有真的会被轮询、且服务端确实发 ETag 的只读接口才用它；其余读取保持默认的
+// no-store，免得"顺手加上"之后把必须每次都新的响应也变成可缓存校验的。
+const POLL_READ = {revalidate: true};
 async function postJSON(url, body){
   const r = await fetch(url, {method:'POST', headers: authHeaders({'Content-Type':'application/json'}),
                               body: JSON.stringify(body || {})});
@@ -4899,7 +4916,7 @@ function renderAccounts(){
 
 async function loadAccounts(){
   try{
-    const [acct, byAcct] = await Promise.all([getJSON('/accounts?realm=all'), getJSON('/usage/by-account')]);
+    const [acct, byAcct] = await Promise.all([getJSON('/accounts?realm=all'), getJSON('/usage/by-account', POLL_READ)]);
     window.ACCOUNTS = acct.accounts || [];
     USAGE_BY_ACCOUNT = {};
     (byAcct.accounts || []).forEach(a => { USAGE_BY_ACCOUNT[a.account] = a; });
@@ -5885,9 +5902,11 @@ async function refreshInner(gen){
   let usage, recent, perf;
   try{
     [usage, recent, perf] = await Promise.all([
-      getJSON('/usage?realm=' + encodeURIComponent(window.VIEW_REALM)),
+      getJSON('/usage?realm=' + encodeURIComponent(window.VIEW_REALM), POLL_READ),
+      // /usage/recent 不在这里改成可校验：它没有服务端缓存，每次新请求都进榜，
+      // 响应体每轮都在变，服务端也就没有稳定的校验符可发——照旧整份重取。
       getJSON('/usage/recent?limit=' + RECENT_LIMIT + '&page=' + RECENT_PAGE + '&realm=' + encodeURIComponent(window.VIEW_REALM)),
-      getJSON('/usage/perf?realm=' + encodeURIComponent(window.VIEW_REALM)),
+      getJSON('/usage/perf?realm=' + encodeURIComponent(window.VIEW_REALM), POLL_READ),
     ]);
     // 取数期间又发起了更新的一轮（例如刚切了区域），这批结果已经过期，
     // 直接扔掉，交给排队的那一轮渲染，免得把旧区域的数字画上去。
@@ -8463,8 +8482,8 @@ async function loadAnalyticsMatrix(){
   try{
       const q = analyticsQuery();
     const [usage, perf, models] = await Promise.all([
-      getJSON('/usage' + q),
-      getJSON('/usage/perf' + q),
+      getJSON('/usage' + q, POLL_READ),
+      getJSON('/usage/perf' + q, POLL_READ),
       // The catalog is only a display filter, so a failure here must not
       // blank the table; null keeps the previous allowlist.
       getJSON('/v1/models?realm=all').catch(() => null),
@@ -8802,7 +8821,7 @@ function renderPerfMatrix(usage, perf){
 async function loadAnalytics(){
   try {
     // 载荷永远按当前选中的窗口取，它的 window 桶就是第一列要展示的数字。
-    const data = await getJSON('/usage/analytics' + analyticsQuery());
+    const data = await getJSON('/usage/analytics' + analyticsQuery(), POLL_READ);
     renderAnalytics(data);
     loadUsageSeries();
   } catch(err) {
@@ -8811,7 +8830,7 @@ async function loadAnalytics(){
 }
 
 function loadUsageSeries(){
-  getJSON('/usage/timeseries' + analyticsQuery())
+  getJSON('/usage/timeseries' + analyticsQuery(), POLL_READ)
     .then(data => { renderUsageSeries(data); renderCreditHistory(data); })
     .catch(() => {});
 }
@@ -8880,7 +8899,7 @@ function renderUsageSeries(data){
 async function loadCreditHistory(btn){
   if(btn) btn.disabled = true;
   try{
-    const data = await getJSON('/usage/timeseries' + analyticsQuery());
+    const data = await getJSON('/usage/timeseries' + analyticsQuery(), POLL_READ);
     renderUsageSeries(data);
     renderCreditHistory(data);
     if(btn) toast('积分扣减历史已刷新', 'ok');
