@@ -48,6 +48,21 @@ HTTP_TIMEOUT = 20
 SEARCH_ENDPOINT = "https://html.duckduckgo.com/html/"
 
 
+class _UnsafeRedirectError(Exception):
+    """Raised when a web tool response redirects into a disallowed address."""
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Apply the same URL policy to every redirect target as the initial URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = urllib.parse.urljoin(req.full_url, str(newurl or ""))
+        safe_url, problem = _guard_url(target)
+        if problem:
+            raise _UnsafeRedirectError(problem)
+        return super().redirect_request(req, fp, code, msg, headers, safe_url)
+
+
 def max_rounds():
     """最多代跑幾輪網路工具。環境變數可覆蓋，方便臨時關小。"""
     try:
@@ -209,7 +224,8 @@ def _http_get(url):
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     })
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+    opener = urllib.request.build_opener(_SafeRedirectHandler())
+    with opener.open(req, timeout=HTTP_TIMEOUT) as resp:
         raw = resp.read()
         charset = resp.headers.get_content_charset() or "utf-8"
     try:
@@ -262,6 +278,8 @@ def search(query, num_results=5):
     url = SEARCH_ENDPOINT + "?" + urllib.parse.urlencode({"q": query})
     try:
         page = _http_get(url)
+    except _UnsafeRedirectError as exc:
+        return "Error: search redirect blocked (%s)." % exc
     except urllib.error.HTTPError as exc:
         return "Error: the search backend answered HTTP %s for %r." % (exc.code, query)
     except Exception as exc:
@@ -321,6 +339,8 @@ def fetch(url, start_index=0):
         return "Error: %s" % problem
     try:
         page = _http_get(url)
+    except _UnsafeRedirectError as exc:
+        return "Error: redirect blocked (%s)." % exc
     except urllib.error.HTTPError as exc:
         return "Error: %s answered HTTP %s." % (url, exc.code)
     except Exception as exc:
