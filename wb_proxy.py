@@ -2349,6 +2349,7 @@ def runtime_settings_view():
         "auto_switch_product": wb_settings.auto_switch_product(ACCOUNTS_DIR),
         "daily_chat_web": wb_settings.daily_chat_web(ACCOUNTS_DIR),
         "local_web_tools": wb_settings.local_web_tools(ACCOUNTS_DIR),
+        "accounts_collapsed": wb_settings.accounts_collapsed(ACCOUNTS_DIR),
         "upstream": wb_settings.upstream_config(ACCOUNTS_DIR),
         "prompt": wb_settings.prompt_config(ACCOUNTS_DIR),
         "accounts_dir": ACCOUNTS_DIR,
@@ -8238,6 +8239,16 @@ class Handler(BaseHTTPRequestHandler):
                                    "invalid_request_error")
             wb_settings.set_local_web_tools(ACCOUNTS_DIR, raw)
             reply["local_web_tools"] = raw
+        if "accounts_collapsed" in payload:
+            # A disclosure state, and the only thing this branch may touch: the
+            # submission carries just this key, so the settings it does not name
+            # survive the write.
+            raw = payload.get("accounts_collapsed")
+            if not isinstance(raw, bool):
+                return self._error(400, "accounts_collapsed must be true or false",
+                                   "invalid_request_error")
+            wb_settings.set_accounts_collapsed(ACCOUNTS_DIR, raw)
+            reply["accounts_collapsed"] = raw
         if "upstream" in payload:
             raw = payload.get("upstream")
             if not isinstance(raw, dict):
