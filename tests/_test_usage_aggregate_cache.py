@@ -400,8 +400,10 @@ print()
 print("[1] 往返：写盘 → 模拟重启加载 → 与不落盘逐字节一致（含键顺序）")
 check("写盘成功", make_checkpoint())
 stored = cache_data()
-check("checkpoint 是一个 schema=2 的 JSON 对象",
-      isinstance(stored, dict) and stored.get("schema") == 2)
+check("checkpoint 是一个 schema=当前版本的 JSON 对象（v3 起带按日分桶）",
+      isinstance(stored, dict) and stored.get("schema") == P._USAGE_CACHE_SCHEMA
+      and stored.get("schema") == 3,
+      stored.get("schema"))
 check("三份状态都写进去了（每个 realm 一份）",
       len(stored["snapshot"]) == 3 and len(stored["by_account"]) == 1
       and len(stored["analytics"]) == 3,
@@ -562,7 +564,9 @@ restart()
 check("文件不存在：结果回到真值", canon(live()) == GOLDEN)
 
 # 4.2 schema
-mutate_cache(lambda d: d.update({"schema": 3}), "schema 版本不符")
+mutate_cache(lambda d: d.update({"schema": 4}), "schema 版本不符（比当前新）")
+mutate_cache(lambda d: d.update({"schema": 2}),
+             "旧 schema（v2 没有按日分桶）")
 mutate_cache(lambda d: d.update({"schema": 1}),
              "旧 schema（v1 用 sort_keys 写盘，键序不是折叠序）")
 mutate_cache(lambda d: d.update({"schema": True}),
@@ -823,7 +827,8 @@ restart()
 live()
 check("时间阈值到点：即使没有新字节也写一次", os.path.exists(CACHE))
 with io.open(CACHE, encoding="utf-8") as fh:
-    check("写出来的还是完整的 checkpoint", json.load(fh).get("schema") == 2)
+    check("写出来的还是完整的 checkpoint",
+          json.load(fh).get("schema") == P._USAGE_CACHE_SCHEMA)
 # 加载之后不产生「白写」：采用 checkpoint 会把节流基线对齐到加载的 offset
 cache_env(enabled=1)                     # 默认阈值
 before = os.stat(CACHE).st_mtime_ns
