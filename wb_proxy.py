@@ -7476,6 +7476,12 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if path.startswith("/logs"):
             return True
+        # The pricing table is the panel's own view of the estimate, not part
+        # of the OpenAI-compatible surface: its writes (/pricing/refresh,
+        # /pricing/mapping) were already panel-only, and the read side returns
+        # the same management state plus resolved project-local file paths.
+        if path.startswith("/pricing"):
+            return True
         return False
     def do_OPTIONS(self):
         self.send_response(204)
