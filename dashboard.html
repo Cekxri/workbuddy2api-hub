@@ -4284,18 +4284,12 @@ async function loadGrowthTasks(){
         } else {
           const today = new Date().toISOString().slice(0, 10);
           const doneCount = targetAccts.filter(a => a.lastCheckin && a.lastCheckin.startsWith(today)).length;
-          if(targetAccts.length === 1){
-            chkStateEl.innerHTML = (doneCount === 1)
-              ? '<span style="color:#26bb82">今日已签到 (1个账号)</span>'
-              : '<span style="color:var(--warn)">今日未签到</span>';
+          if(doneCount === targetAccts.length){
+            chkStateEl.innerHTML = '<span style="color:#26bb82">今日已签到 (' + doneCount + '/' + targetAccts.length + ')</span>';
+          } else if(doneCount > 0){
+            chkStateEl.innerHTML = '<span style="color:var(--accent)">部分已签到 (' + doneCount + '/' + targetAccts.length + ')</span>';
           } else {
-            if(doneCount === targetAccts.length){
-              chkStateEl.innerHTML = '<span style="color:#26bb82">今日已签到 (' + doneCount + '/' + targetAccts.length + '个账号)</span>';
-            } else if(doneCount > 0){
-              chkStateEl.innerHTML = '<span style="color:var(--accent)">部分已签到 (' + doneCount + '/' + targetAccts.length + '个账号)</span>';
-            } else {
-              chkStateEl.innerHTML = '<span style="color:var(--warn)">今日未签到 (0/' + targetAccts.length + '个账号)</span>';
-            }
+            chkStateEl.innerHTML = '<span style="color:var(--warn)">今日未签到 (0/' + targetAccts.length + ')</span>';
           }
         }
       }catch(e){
