@@ -311,6 +311,8 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
+- **按 API Key 的消耗归属表可收起「(切换前)」行**：这张表末尾的「(切换前)」是升级前的历史尾巴（早于 `key` 字段的请求），口径上只减不增却一直占一行。表头新增一个与「启用价估算」同款的 `.switch` 开关，默认关（照常显示），打开即收起该行；偏好与账号区折叠一样存服务端 `accounts/settings.json`（`key_before_hidden`），由 `/settings` 下发、`/settings/save` 单键写回，不走浏览器存储。只有明确的布尔 `true` 才收起，手改成 `"true"` 或 `1` 都仍显示。没有这一行的部署开关自动隐藏，收起时页脚也不再解释那行。
+
 已发布版本的完整记录（v1.4.5 ~ v1.6.19，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
 
 ---

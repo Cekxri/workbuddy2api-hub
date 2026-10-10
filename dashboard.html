@@ -431,6 +431,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #analyticsKpiCards .card .k{font-size:11px;white-space:nowrap;margin-bottom:3px;font-weight:600;color:var(--dim)}
 #analyticsKpiCards .card .s{font-size:10px;white-space:normal;line-height:1.35;margin-top:2px;color:var(--dim)}
 .model-pill{display:inline-flex;align-items:center;gap:4px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:2px 8px;font-size:11px;margin:2px 4px 2px 0;white-space:nowrap}
+/* 归属表表头里的行开关，直接复用设置页的 .switch 胶囊样式，只是表头比
+   设置页紧凑，把 40px 的最小高度收掉。 */
+.key-row-switch{min-height:0}
 .log-line{display:flex;align-items:flex-start;gap:8px;padding:3px 6px;border-radius:4px;font-family:Consolas,Monaco,'Courier New',monospace;font-size:12px;line-height:1.55;transition:background .1s}
 .log-line:hover{background:rgba(255,255,255,.05)}
 .log-ts{color:#64748b;font-variant-numeric:tabular-nums;flex-shrink:0;user-select:none}
@@ -719,6 +722,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     'CNY（策略记录的汇率，': 'CNY (rate recorded with the policy,',
     'GitHub 项目仓库': 'GitHub repository',
     'Key 维度只从本次升级之后开始记录：更早的请求没有这个字段，会一直留在「(切换前)」里且不会再增长。': 'Per-key attribution starts only with this upgrade: earlier requests have no such field, so they stay under (before switch) and never grow.',
+    '收起「(切换前)」': 'Collapse "(before switch)"',
+    '只影响这张表的显示，不改变任何统计口径：收起后那一行的用量依然计入合计': 'Only changes how this table is drawn, not any accounting: a folded row still counts toward the totals',
     'OpenRouter 价估算': 'OpenRouter estimate',
     'OpenRouter 价估算：按 OpenRouter 公布的模型价折算，覆盖该账号在所选区间内的请求；按条件定价的模型（输入长度阈值或时段）按每条请求取档；单条请求实际用的策略、三档单价与匹配来源见「最近请求」里那条的悬停提示': 'OpenRouter estimate: converted from the model prices OpenRouter publishes, covering the requests of this account in the selected range; conditionally priced models (input-length thresholds or time windows) are tiered per request; the policy a single request actually used, its three unit prices and the match source are in the hover tip of that row in Recent requests',
     'OpenRouter 价估算：按该行（模型·区域·账号）的 token 消耗折算；按条件定价的模型（输入长度阈值或时段）按每条请求取档；单条请求实际用的策略、三档单价与匹配来源见「最近请求」里那条的悬停提示': 'OpenRouter estimate: converted from the token usage of this row (model · region · account); conditionally priced models (input-length thresholds or time windows) are tiered per request; the policy a single request actually used, its three unit prices and the match source are in the hover tip of that row in Recent requests',
@@ -2964,9 +2969,15 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 
     <!-- 表格 2：按 API Key 的消耗归属 -->
     <section>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px">
         <h2 style="margin:0">按 API Key 的消耗归属 <em id="analyticsKeyCount"></em></h2>
-        <div style="font-size:12px;color:var(--dim)">同一批请求按调用方使用的 API Key 再分一次组，用于把消耗归属到人 / 项目</div>
+        <label class="switch key-row-switch" id="keyBeforeSwitch" style="display:none"
+               title="只影响这张表的显示，不改变任何统计口径：收起后那一行的用量依然计入合计">
+          <input id="keyBeforeToggle" type="checkbox" onchange="onKeyBeforeToggle(this)">
+          <span class="switch-track"></span>
+          <span style="font-size:12px">收起「(切换前)」</span>
+        </label>
+        <div style="font-size:12px;color:var(--dim);margin-left:auto">同一批请求按调用方使用的 API Key 再分一次组，用于把消耗归属到人 / 项目</div>
       </div>
       <div style="overflow-x:auto">
         <table id="analyticsKeyTable" class="data-cards">
@@ -6685,6 +6696,8 @@ async function loadSettings(showToast){
 
     // 账号区折叠：服务端没存过、存坏了，或后端根本没这个字段，都按展开算。
     applyAccountsCollapsed(data.accounts_collapsed === true);
+    // 「(切换前)」行开关同理：只有明确存过 true 才收起，其余都照常显示。
+    applyKeyBeforeHidden(data.key_before_hidden === true);
 
       const creditsHoursInput = document.getElementById('setCreditsRefreshHours');
       if(creditsHoursInput && data.credits_refresh_hours !== undefined){
@@ -9141,7 +9154,32 @@ function renderAnalytics(data){
 
 /* 按 API Key 的归属表。口径与账号表完全一致（window 桶 = 当前选中范围），
    所以两张表的请求数应当相等；对不上是数据问题，不是渲染能修的，故这里
-   不隐藏任何一行——(未知 key) 那行正是用来兜住差额的。 */
+   不隐藏任何会兜差额的行——(未知 key) 正是用来兜住差额的。唯一能收起的是
+   「(切换前)」：它是升级前的历史尾巴，只减不增，收起与否都不影响对账。 */
+
+/* 「(切换前)」行开关的状态。表格每 5 秒重绘一次，所以状态不能存在渲染函数
+   里，得放在外面；偏好与账号区折叠一样存服务端的 accounts/settings.json
+   （key_before_hidden），不用 localStorage。 */
+let keyBeforeHidden = false;
+let lastKeyData = null;
+/* 唯一的写入口：内存状态、复选框与表格一起改，三者不会不同步。 */
+function applyKeyBeforeHidden(hidden){
+  keyBeforeHidden = hidden === true;
+  const box = document.getElementById('keyBeforeToggle');
+  if(box) box.checked = keyBeforeHidden;
+  if(lastKeyData) renderKeyTable(lastKeyData);
+  return keyBeforeHidden;
+}
+// 显式选择走既有的 settings save 通道（一个键的 patch，不动别的设置）。
+async function onKeyBeforeToggle(box){
+  const next = !!(box && box.checked);
+  applyKeyBeforeHidden(next);
+  try {
+    await postJSON('/settings/save', {key_before_hidden: next});
+  } catch(e) {
+    toast('「(切换前)」行开关保存失败: ' + e.message, 'bad');
+  }
+}
 function keyRealmCell(k){
   if(k.source === 'bucket') return '<span style="color:var(--dim)">—</span>';
   if(k.realm === 'cn') return '<span class="badge warn" style="font-size:10px">国内版</span>';
@@ -9174,7 +9212,15 @@ function renderKeyTable(data){
   const countEm = document.getElementById('analyticsKeyCount');
   const note = document.getElementById('analyticsKeyNote');
   const keys = data.keys || [];
-  if(countEm) countEm.textContent = keys.length ? '(' + keys.length + ' 把)' : '';
+  lastKeyData = data;
+  const wrap = document.getElementById('keyBeforeSwitch');
+  const box = document.getElementById('keyBeforeToggle');
+  const hasBefore = keys.some(k => k.key === '__before_keys__');
+  // 新装的环境没有这一行，就没得收，开关也不该出现。
+  if(wrap) wrap.style.display = hasBefore ? '' : 'none';
+  if(box) box.checked = keyBeforeHidden;
+  const shown = keyBeforeHidden ? keys.filter(k => k.key !== '__before_keys__') : keys;
+  if(countEm) countEm.textContent = shown.length ? '(' + shown.length + ' 把)' : '';
 
   if(note){
     const named = keys.filter(k => k.source !== 'bucket');
@@ -9182,16 +9228,17 @@ function renderKeyTable(data){
     const parts = [];
     if(!named.length) parts.push('设置里还没有任何 API Key，全部流量都落在下面的未归属行里。');
     if(cross) parts.push('有 ' + cross + ' 把 Key 没有绑定出口，它的积分由国际版与国内版两套价格相加而来，只能当量级看。');
-    parts.push('Key 维度只从本次升级之后开始记录：更早的请求没有这个字段，会一直留在「(切换前)」里且不会再增长。');
+    // 收起那行时就不再解释那行，否则读者找不到话里指的东西。
+    if(!keyBeforeHidden) parts.push('Key 维度只从本次升级之后开始记录：更早的请求没有这个字段，会一直留在「(切换前)」里且不会再增长。');
     note.innerHTML = parts.join(' ');
   }
 
-  if(!keys.length){
+  if(!shown.length){
     tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无 API Key 用量数据</td></tr>';
     return;
   }
 
-  tbody.innerHTML = keys.map(k => {
+  tbody.innerHTML = shown.map(k => {
     const st = k.window || {};
     const sub = {panel:'面板 Key', launcher:'启动参数', bucket:'未归属', builtin:'内置'}[k.source] || '';
     let nameCell = '<td style="text-align:left" data-label="API Key">'

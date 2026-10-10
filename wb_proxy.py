@@ -4726,6 +4726,7 @@ def runtime_settings_view():
         "daily_chat_web": wb_settings.daily_chat_web(ACCOUNTS_DIR),
         "local_web_tools": wb_settings.local_web_tools(ACCOUNTS_DIR),
         "accounts_collapsed": wb_settings.accounts_collapsed(ACCOUNTS_DIR),
+        "key_before_hidden": wb_settings.key_before_hidden(ACCOUNTS_DIR),
         "update_check_enabled": wb_settings.update_check_enabled(ACCOUNTS_DIR),
         "upstream": wb_settings.upstream_config(ACCOUNTS_DIR),
         "prompt": wb_settings.prompt_config(ACCOUNTS_DIR),
@@ -10993,6 +10994,16 @@ class Handler(BaseHTTPRequestHandler):
                                    "invalid_request_error")
             wb_settings.set_accounts_collapsed(ACCOUNTS_DIR, raw)
             reply["accounts_collapsed"] = raw
+        if "key_before_hidden" in payload:
+            # Same shape as accounts_collapsed: one disclosure state per
+            # submission, and strictly a JSON boolean, because "false" as a
+            # string would be truthy and silently fold the row away.
+            raw = payload.get("key_before_hidden")
+            if not isinstance(raw, bool):
+                return self._error(400, "key_before_hidden must be true or false",
+                                   "invalid_request_error")
+            wb_settings.set_key_before_hidden(ACCOUNTS_DIR, raw)
+            reply["key_before_hidden"] = raw
         if "update_check_enabled" in payload:
             # Strictly a JSON boolean, like the switches above: "false" as a
             # string would be truthy and silently start the daily GitHub call.
