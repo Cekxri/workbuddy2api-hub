@@ -174,6 +174,13 @@ class Scheduler:
                     self.log(f"🐱 账号 [{uid8}] 猫猫日常处理: {tr.get('msg')}")
                 time.sleep(1.0)
 
+                # 连登管家闭环（补签保连登 -> 礼包/补偿 -> 连登兑换 -> 自动抽奖）
+                bonus = wb_tasks.run_streak_bonus(acc)
+                if bonus.get("logs"):
+                    for l in bonus["logs"]:
+                        self.log(f"★ 账号 [{uid8}] {l}")
+                    time.sleep(1.0)
+
                 # 01:00 夜猫子专属任务: black_cat 只在 23:00-08:00 上报计数,
                 # 之前这个整点只是空转通用巡检, 从未真正上报过夜猫事件。
                 if time.localtime().tm_hour in self.cat_hours:
