@@ -327,6 +327,8 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 - **上游连接复用**（[PR #245](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/245)，感谢 [@aodianjun](https://github.com/aodianjun)）：urllib 写死 `Connection: close`，每个请求都要重新 TCP+TLS 握手（真机裸握手 TCP 55.5ms、TLS 118.0ms，是请求路径上最大的一笔）。新增 `wb_upstream_pool.py`：按（目标, 代理串）分池复用连接，每键最多 2 条空闲、LIFO、90s 回收、取出探活、复用前重置读超时、只在 body 读到自然结尾时归还。真机 A/B：14 条流式请求的 TCP 连接 14 → 1，loopback p50 19.9ms → 13.3ms、经真实 RTT 链路 36.2ms → 20.4ms。只在「还没发出请求体 / 还没读到任何响应字节」时安全重试一次；非 http(s) 目标、非 HTTP 代理、3xx 一律回退原路径，`WB_UPSTREAM_KEEPALIVE=0` 可整条关掉。
 
+- **每日活跃打卡的日志带上网页通道结果**（issue #236）：国际版打卡分两步，桌面端那条轻量对话几乎不会失败，真正决定 30/50 积分的是网页通道会话——而巡检日志只写「✓ 每日活跃对话成功」，网页通道失败时面板上完全看不出来，只能等第二天发现积分没涨。现在巡检与手动打卡的日志都直接带上结果（`网页通道 completed：N 段输出，N ms` / `网页通道失败：<原因>`），与国内签到那条日志的写法一致。
+
 已发布版本的完整记录（v1.4.5 ~ v1.6.19，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
 ## 七、致谢与引用声明 (Credits & References)
 
