@@ -4282,10 +4282,10 @@ async function loadGrowthTasks(){
         elCat.innerHTML = '<span style="color:var(--accent)">旅行中...</span>';
         if(elCatDesc) elCatDesc.textContent = '预计稍后归来';
       } else if(tr.daily_limit_reached) {
-        elCat.textContent = '今日次数已用尽';
-        if(elCatDesc) elCatDesc.textContent = '次日 00:00 刷新';
+        elCat.innerHTML = '<span style="color:var(--dim)">今日旅行已完成</span>';
+        if(elCatDesc) elCatDesc.textContent = '今日旅行已跑完 · 次日 00:00 刷新';
       } else {
-        elCat.textContent = '在家待命中';
+        elCat.innerHTML = '<span style="color:var(--accent2)">猫猫在家待命</span>';
         if(elCatDesc) elCatDesc.textContent = '随时可出发旅行';
       }
     }
