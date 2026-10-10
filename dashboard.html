@@ -950,7 +950,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '国际版 (Global)': 'Global',
     '国际版 (Global) · www.workbuddy.ai': 'Global · www.workbuddy.ai',
     '国际版每日活跃打卡': 'Global daily activity check-in',
-    '国际版账号每日打卡时，除桌面端身分的轻量对话外，再走一次网页通道的会话（在 console/as 下建一个带 prompt 的会话）。实测只有网页端对话会被计入官方「每日活跃」，桌面身分的对话不计入。默认开启。': 'When a Global account checks in, besides the light desktop-identity chat it also runs one web-channel session (a session with a prompt is created under console/as). In practice only web-side chats count toward the official daily activity; desktop-identity chats do not. On by default.',
+    '国际版账号每日打卡时，除桌面端身分的轻量对话外，再走一次网页通道的会话。默认开启。': 'When a Global account checks in, besides the light desktop-identity chat it also runs one web-channel session. On by default.',
     '在家待命中': 'At home, idle',
     '在浏览器里打开下方链接并完成登录授权': 'Open the link below in a browser and finish the sign-in authorization',
     '域名': 'Domain',
@@ -1268,7 +1268,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '没有启用的代理槽，请先在「设置 → 账号代理槽」添加并保存': 'No proxy slot is enabled; add and save one under Settings → Account proxy slots first',
     '注意：切换后的身分会被保存，重启后继续沿用，不会自动回到 WB。': 'Note: the switched identity is saved and kept after a restart; it does not go back to WB on its own.',
     '注意：开启后网关会主动出网抓取模型给出的 URL（只挡字面私网地址），且每轮代跑都会多跑一次上游、多消耗该账号的额度；国内网络下 DuckDuckGo 可能连不上，那时模型拿到的是错误文本。': 'Note: with this on, the gateway goes out to fetch the URLs the model asks for (only literal private addresses are blocked), and every proxied round makes one extra upstream call and spends more of that account quota; on Chinese networks DuckDuckGo may be unreachable, and the model then gets error text.',
-    '注意：网页通道会真的起一次任务，消耗该账号少量积分，换来的是每日 30/50 积分活跃奖励。': 'Note: the web channel really runs a task and spends a few credits from that account, in exchange for the daily 30/50 credit activity reward.',
     '活跃打卡成功': 'Activity check-in succeeded',
     '流式': 'Streaming',
     '浅色': 'Light',
@@ -1761,7 +1760,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "启用自动切换": "啟用自動切換",
     "启用调度": "啟用排程",
     "回收密钥": "回收金鑰",
-    "国际版账号每日打卡时，除桌面端身分的轻量对话外，再走一次网页通道的会话（在 console/as 下建一个带 prompt 的会话）。实测只有网页端对话会被计入官方「每日活跃」，桌面身分的对话不计入。默认开启。": "國際版帳號每日打卡時，除桌面端身分的輕量對話外，再走一次網頁通道的會話（在 console/as 下建一個帶 prompt 的會話）。實測只有網頁端對話會被計入官方「每日活躍」，桌面身分的對話不計入。預設開啟。",
+    "国际版账号每日打卡时，除桌面端身分的轻量对话外，再走一次网页通道的会话。默认开启。": "國際版帳號每日打卡時，除桌面端身分的輕量對話外，再走一次網頁通道的會話。預設開啟。",
     "在浏览器里打开下方链接并完成登录授权": "在瀏覽器裡開啟下方連結並完成登入授權",
     "备注名称": "備註名稱",
     "复制": "複製",
@@ -1928,7 +1927,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "没有启用的代理槽，请先在「设置 → 代理槽」添加并保存": "沒有啟用的代理槽，請先在「設定 → 代理槽」新增並儲存",
     "注意：切换后的身分会被保存，重启后继续沿用，不会自动回到 WB。": "注意：切換後的身分會被儲存，重啟後繼續沿用，不會自動回到 WB。",
     "注意：开启后网关会主动出网抓取模型给出的 URL（只挡字面私网地址），且每轮代跑都会多跑一次上游、多消耗该账号的额度；国内网络下 DuckDuckGo 可能连不上，那时模型拿到的是错误文本。": "注意：開啟後閘道會主動出網抓取模型給出的 URL（只擋字面私網地址），且每輪代跑都會多跑一次上游、多消耗該帳號的額度；國內網路下 DuckDuckGo 可能連不上，那時模型拿到的是錯誤文字。",
-    "注意：网页通道会真的起一次任务，消耗该账号少量积分，换来的是每日 30/50 积分活跃奖励。": "注意：網頁通道會真的起一次任務，消耗該帳號少量積分，換來的是每日 30/50 積分活躍獎勵。",
     "测试通过 (": "測試透過 (",
     "浏览器拒绝了复制操作": "瀏覽器拒絕了複製操作",
     "添加 WorkBuddy 账号 (OAuth 授权)": "新增 WorkBuddy 帳號 (OAuth 授權)",
@@ -3360,10 +3358,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
           <div>
             <h2 style="margin:0">国际版每日活跃打卡 <em id="setDailyChatWebState"></em></h2>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              国际版账号每日打卡时，除桌面端身分的轻量对话外，再走一次网页通道的会话（在 console/as 下建一个带 prompt 的会话）。实测只有网页端对话会被计入官方「每日活跃」，桌面身分的对话不计入。默认开启。
-            </div>
-            <div style="font-size:12px;color:var(--warn);margin-top:4px">
-              注意：网页通道会真的起一次任务，消耗该账号少量积分，换来的是每日 30/50 积分活跃奖励。
+              国际版账号每日打卡时，除桌面端身分的轻量对话外，再走一次网页通道的会话。默认开启。
             </div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
