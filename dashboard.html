@@ -4210,7 +4210,7 @@ async function switchGrowthAccount(uid){
 async function loadIntlTasks(){
   try{
     const [r, g] = await Promise.all([
-      getJSON('/accounts'),
+      getJSON('/accounts?realm=all'),
       getJSON('/accounts/credits/grants').catch(() => ({}))
     ]);
     const accts = (r.accounts || []).filter(a => a.realm === 'intl' && a.enabled);
@@ -4274,7 +4274,7 @@ async function loadGrowthTasks(){
     const chkStateEl = document.getElementById("cnTodayCheckinState");
     if(chkStateEl){
       try{
-        const allAcctsRes = await getJSON('/accounts');
+        const allAcctsRes = await getJSON('/accounts?realm=all');
         const allList = allAcctsRes.accounts || [];
         let targetAccts = allList.filter(a => a.realm === 'cn' && a.enabled);
         if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
