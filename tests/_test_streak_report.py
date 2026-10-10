@@ -43,6 +43,20 @@ def make_account(uid="u1", realm="cn", **extra):
 
 
 class CanReportActivityTests(unittest.TestCase):
+    def test_can_checkin_skips_enterprise(self):
+        acc = make_account(uid="ent-chk", realm="cn", enterpriseId="ent-1")
+        self.assertFalse(acc.can_checkin())
+        res = acc.checkin()
+        self.assertFalse(res.get("ok"))
+        self.assertIn("enterprise", res.get("error", ""))
+
+    def test_can_report_activity_skips_enterprise(self):
+        acc = make_account(uid="ent-rep", realm="cn", enterpriseId="ent-1")
+        self.assertFalse(acc.can_report_activity())
+        res = acc.report_activity()
+        self.assertFalse(res.get("ok"))
+        self.assertIn("enterprise", res.get("error", ""))
+
     def test_intl_account_never_reports(self):
         acc = make_account(realm="intl")
         self.assertFalse(acc.can_report_activity())

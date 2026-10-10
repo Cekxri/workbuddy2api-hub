@@ -106,6 +106,8 @@ TEAM_ID_POOL = [
 
 def fetch_growth_tasks(account):
     """查询成长任务列表及当前状态。"""
+    if getattr(account, "is_enterprise", lambda: False)():
+        return []
     url = CHAT_BASE + "/v2/activity/growth/tasks"
     req = urllib.request.Request(url, headers=account.headers("chat"))
     try:
@@ -460,6 +462,8 @@ def _travel_depart(account, lid):
 
 def do_cat_travel(account):
     """检查并执行猫猫旅行 (领奖 / 派出)。"""
+    if getattr(account, "is_enterprise", lambda: False)():
+        return {"ok": True, "action": "skip", "msg": "企业版账号无成长体系，跳过"}
     headers = account.headers("chat")
     # 1. 查询状态
     try:
@@ -631,6 +635,8 @@ def run_growth_tasks(account, gap=1.0):
     """完整执行批量成长任务点亮与领奖。"""
     if account.realm != "cn":
         return {"ok": False, "msg": "国际版不适用国内成长任务中心", "logs": []}
+    if getattr(account, "is_enterprise", lambda: False)():
+        return {"ok": True, "msg": "企业版账号无成长体系，跳过", "logs": []}
 
     logs = []
     logs.append(f"开始为账号 {account.nickname or account.uid[:8]} 运行成长任务自动化...")
@@ -708,6 +714,8 @@ def run_night_growth(account):
     每天计 1 次、累计 3 天后可领奖。白天调用会诚实跳过。"""
     if account.realm != "cn":
         return {"ok": False, "msg": "国际版不适用国内成长任务中心", "logs": [], "earned_credit": 0}
+    if getattr(account, "is_enterprise", lambda: False)():
+        return {"ok": True, "msg": "企业版账号无成长体系，跳过", "logs": [], "earned_credit": 0}
     logs = []
     name = account.nickname or account.uid[:8]
     if not in_night_window():

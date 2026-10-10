@@ -683,9 +683,9 @@ class Account(object):
             "lastCheckin": self.last_checkin,
             "lastDailyChat": self.last_daily_chat,
             "lastActivityReport": self.last_activity_report,
-            "canCheckin": self.realm == "cn",
+            "canCheckin": self.realm == "cn" and not self.is_enterprise(),
             "canDailyChat": self.realm == "intl",
-            "canReportActivity": self.realm == "cn",
+            "canReportActivity": self.realm == "cn" and not self.is_enterprise(),
             "machineId": derive_id(self.uid, "machine"),
             "sessionId": derive_id(self.uid, "session"),
         }
@@ -1130,6 +1130,8 @@ class Account(object):
     def can_checkin(self):
         if self.realm != "cn":
             return False
+        if self.is_enterprise():
+            return False
         if not self.last_checkin:
             return True
         today_str = time.strftime("%Y-%m-%d")
@@ -1146,6 +1148,8 @@ class Account(object):
     def can_report_activity(self):
         """国内版每天一次的对话活跃上报（点亮 growth 连登）是否还没做过。"""
         if self.realm != "cn":
+            return False
+        if self.is_enterprise():
             return False
         if not self.last_activity_report:
             return True
@@ -1328,6 +1332,8 @@ class Account(object):
         """
         if self.realm != "cn":
             return {"ok": False, "error": "checkin is only available for CN realm accounts"}
+        if self.is_enterprise():
+            return {"ok": False, "error": "enterprise accounts do not support checkin"}
         res = self._checkin_upstream()
         wb_activity.record_attempt(self, wb_activity.TASK_CHECKIN, trigger, res)
         return res
@@ -1366,6 +1372,8 @@ class Account(object):
         """
         if self.realm != "cn":
             return {"ok": False, "error": "activity report is only for CN realm accounts"}
+        if self.is_enterprise():
+            return {"ok": False, "error": "enterprise accounts do not support activity report"}
         import wb_tasks
         event = wb_tasks.build_event(self, "chat")
         if not wb_tasks.report_events(self, [event]):
