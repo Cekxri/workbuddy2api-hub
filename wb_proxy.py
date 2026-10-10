@@ -15,6 +15,7 @@ start-wb-proxy.command (or ./start-wb-proxy.sh) on macOS/Linux.
 """
 import argparse
 import hashlib
+import ipaddress
 from collections import deque
 import re
 import json
@@ -243,6 +244,85 @@ def _prune_login_attempts(now=None, window=60):
             _login_attempts[ip] = recent
         else:
             del _login_attempts[ip]
+# --------------------------------------------------- 面板登录限流的来源判定
+# 限流按「客户端 IP」分桶（每 IP 5 次失败 / 60 秒），但反代部署下 socket 对端
+# 永远不是真实客户端：路由器上 nginx 把 ai.home 转给 127.0.0.1:8788，所有请求
+# 的对端都是 127.0.0.1。若照旧拿对端地址当键，任意一个人连错 5 次密码，就会把
+# 所有经反代的用户、连同跑在同一台机器上的缓存预热器一起锁死 60 秒——实测里
+# 预热器被 429 打掉后直接打印"登录失败（http=429），跳过本轮"，缓存转冷，
+# 用户点开统计页要付一次全表扫描。所以键要取「真实来源」，且只在对端可信时
+# 才读代理头：对端是回环地址（本机代理）或显式列进 WB_TRUSTED_PROXIES 的代理
+# 时，按 X-Real-IP（优先）或 X-Forwarded-For 的第一个地址分桶；其余对端一律
+# 忽略这两个头、仍按对端地址分桶——公网客户端不能靠伪造头换个桶绕过限流。
+def parse_trusted_proxies(raw):
+    """解析 WB_TRUSTED_PROXIES：逗号分隔的 IP 或 CIDR（如 10.0.0.1,fd00::/8）。
+    解析不了的条目直接丢弃：一个笔误不该让网关起不来。
+    """
+    entries = []
+    for item in str(raw or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            entries.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            continue
+    return tuple(entries)
+TRUSTED_PROXIES = parse_trusted_proxies(os.environ.get("WB_TRUSTED_PROXIES", ""))
+def peer_is_trusted(peer_ip):
+    """对端是否有资格代表它的客户端说话：回环（本机反代）或显式配置的代理。"""
+    try:
+        addr = ipaddress.ip_address(str(peer_ip))
+    except ValueError:
+        return False
+    if addr.is_loopback:
+        return True
+    for net in TRUSTED_PROXIES:
+        if addr.version == net.version and addr in net:
+            return True
+    return False
+_PROXY_HEADER_IP_MAX = 64  # 最长的 IPv6 文本也到不了 46 字符，再长就是垃圾
+def _proxy_header_ip(value):
+    """从代理头里取一个合法 IP 的规范文本；取不到返回 None（绝不抛异常）。
+
+    接受裸 IPv4/IPv6，也接受 nginx 变体可能写出的 host:port / [v6]:port；
+    多值（含逗号）、超长、其余畸形串一律判为不可用，由调用方决定回退。
+    """
+    text = str(value or "").strip()
+    if not text or len(text) > _PROXY_HEADER_IP_MAX or "," in text:
+        return None
+    if text.startswith("["):
+        end = text.find("]")
+        if end == -1:
+            return None
+        text = text[1:end]
+    elif text.count(":") == 1:
+        # v4:port 形式；裸 IPv6 至少两个冒号，不会被这里截断
+        host, _, port = text.partition(":")
+        if port.isdigit():
+            text = host
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        return None
+def login_rate_limit_key(peer_ip, headers):
+    """限流键：对端可信时取代理头里的真实客户端 IP，否则取对端地址。
+
+    X-Real-IP 优先（nginx 里放的就是真实来源），其次 X-Forwarded-For 的
+    第一个（链上最左是最初的客户端）。头不可用就退回对端地址：宁可让经
+    反代的客户端共用一个桶（退化为旧行为），也不能拿解析不出来的串当键。
+    """
+    if not peer_is_trusted(peer_ip):
+        return peer_ip
+    real = _proxy_header_ip(headers.get("X-Real-IP") if headers else None)
+    if real:
+        return real
+    forwarded = (headers.get("X-Forwarded-For") if headers else None) or ""
+    first = forwarded.split(",")[0]
+    via_chain = _proxy_header_ip(first)
+    if via_chain:
+        return via_chain
+    return peer_ip
 _models_cache = {"intl": {"at": 0.0, "data": None}, "cn": {"at": 0.0, "data": None}}
 # Usage accounting: every upstream response carries a usage block, and the
 # proxy also records one JSONL line per request. Defaults to a folder next to
@@ -11495,7 +11575,9 @@ class Handler(BaseHTTPRequestHandler):
         if payload is None:
             return
         if path == "/panel/login":
-            client_ip = self.client_address[0] if hasattr(self, "client_address") and self.client_address else "127.0.0.1"
+            peer_ip = self.client_address[0] if hasattr(self, "client_address") and self.client_address else "127.0.0.1"
+            # 限流键不能直接取对端地址：反代后对端是代理本身，见 login_rate_limit_key
+            client_ip = login_rate_limit_key(peer_ip, getattr(self, "headers", None))
             now = time.time()
             with _login_lock:
                 _prune_login_attempts(now)
