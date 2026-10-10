@@ -5678,13 +5678,39 @@ SANITIZE_KV_RE = re.compile(r"(?i)\bcc_[a-z0-9_]+=[^;\r\n]*;?\s*")
 SANITIZE_OMO_JUNIOR_RE = re.compile(
     r"Sisyphus-Junior - Focused executor from OhMyOpenCode", re.IGNORECASE
 )
+# 指纹判定的字面量快路径（见 has_fingerprint）：原先对每段文本跑两个 (?i) 正则，
+# 4KB 输入实测 319µs，其中正则 137+188µs、几个 `in` 只占 9µs；64KB 文本要
+# 6.2ms，而 sanitize_messages 会给每个文本段都过一遍——build_upstream_body
+# (168KB) 的耗时约 95% 都耗在这里（13.60ms -> 2.14ms）。
+# 两个模式都是纯字面量，换成小写副本上的 `in` 之后是纯 C 速度的单遍扫描。
+#
+# 等价性：re.IGNORECASE 的 Unicode 语义与 str.lower() 只有三处差异（CPython
+# 3.13 全码点实测，其余所有带大小写的码点两法完全一致）：
+#   'İ'(U+0130) 与 'ı'(U+0131) 能匹配字面量 i，'ſ'(U+017F) 能匹配 s，
+# 而这三个字符的 lower() 并不落到 i/s。所以先把它们按 SANITIZE_REI_FOLD
+# 归一化成基字母、再小写，副本上的 `in` 与 (?i) search 完全等价（多字符模式
+# 同样成立；全码点替换 + 定向用例 + 随机串对拍零差异，见 tests/_test_hotpath_savings.py）。
+SANITIZE_REI_FOLD = str.maketrans({0x130: "i", 0x131: "i", 0x17F: "s"})
+# 两个小写字面量直接从正则派生，保证与正则永远同源：手抄第二份迟早漂移，
+# 派生出来的值不存在这个问题。pattern 里的 (?i) 是内联旗标，剥掉后就是
+# 字面量本体。
+SANITIZE_BARE_HDR_LOWER = SANITIZE_BARE_HDR_RE.pattern
+if SANITIZE_BARE_HDR_LOWER.startswith("(?i)"):
+    SANITIZE_BARE_HDR_LOWER = SANITIZE_BARE_HDR_LOWER[4:]
+SANITIZE_OMO_JUNIOR_LOWER = SANITIZE_OMO_JUNIOR_RE.pattern.lower()
 def has_fingerprint(text):
     if not isinstance(text, str) or not text:
         return False
     for f in SANITIZE_FEATURES:
         if f in text:
             return True
-    return bool(SANITIZE_BARE_HDR_RE.search(text) or SANITIZE_OMO_JUNIOR_RE.search(text))
+    # 三个特例字符几乎从不出现：先做三次 C 速度探测，命中才走归一化副本，
+    # 常规文本只付一次 lower()。
+    if "\u0130" in text or "\u0131" in text or "\u017f" in text:
+        low = text.translate(SANITIZE_REI_FOLD).lower()
+    else:
+        low = text.lower()
+    return SANITIZE_BARE_HDR_LOWER in low or SANITIZE_OMO_JUNIOR_LOWER in low
 def sanitize_text(text):
     if not isinstance(text, str) or not text:
         return text
@@ -7030,7 +7056,7 @@ def _apply_stream_idle_timeout(response, seconds):
         return False
 
 
-def open_upstream(payload, session_key=None, target_realm=None):
+def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=None):
     # Refresh the daily guards before picking. The scan underneath is
     # incremental and TTL-cached, so this is a stat() plus a cached dict on
     # the hot path, and an account parked by any of the guards is skipped
@@ -7040,7 +7066,12 @@ def open_upstream(payload, session_key=None, target_realm=None):
     apply_model_daily_token_limit()
     realm = target_realm or detect_model_realm(payload.get("model")) or CURRENT_REALM
     model = str(payload.get("model") or "")
-    upstream_body = build_upstream_body(payload)
+    # 复用调用方已建好的 body：/v1/chat/completions 在进这里之前已经 build 过
+    # 一次（那次的产物只用于一行日志和 prompt_fingerprint），此前这里会为同一
+    # 个 payload 再建一遍，大请求实测白付 ~13.6ms/请求。403 降级重试时仍按
+    # payload 重建（degrade 会切换 prompt 模式，必须拿到新 body）。
+    upstream_body = (prebuilt_body if prebuilt_body is not None
+                     else build_upstream_body(payload))
     # PATCHED-BY-OPS: 客户端未提供会话标识时，用对话稳定前缀兜底。
     # 位置放在 build_upstream_body 之后，保证键与真正发往上游的消息一致
     # （该函数可能在最前面插入 SYSTEM_PROMPT）。
@@ -7315,12 +7346,17 @@ def extract_session_key(headers, payload):
         return str(key).strip()
     return None
 
+# CJK 计数走单遍 C 扫描：先 sub 掉 CJK 再按长度差计数，与原来的逐字符 Python
+# 循环逐值相等（64KB ASCII 实测 18.7ms -> 1.25ms）。别换 findall，实测更慢。
+# 调用点：aggregate_stream、_chat_stream_response 的 usage 兜底、
+# /v1/messages/count_tokens。
+CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
 def estimate_tokens(text):
     if not text:
         return 0
     if not isinstance(text, str):
         text = str(text)
-    cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff' or '\u3400' <= c <= '\u4dbf')
+    cjk = len(text) - len(CJK_RE.sub("", text))
     other = len(text) - cjk
     return cjk + max(1, int(other / 3.6)) if text else 0
 
@@ -12553,7 +12589,8 @@ class Handler(BaseHTTPRequestHandler):
             if key_blocked:
                 return self._error(400, key_blocked, "invalid_request_error")
             upstream, account, effort = open_upstream(
-                payload, session_key=session_key, target_realm=req_realm)
+                payload, session_key=session_key, target_realm=req_realm,
+                prebuilt_body=forwarded)
         except ContentRejected as exc:
             record_error(model, 403, exc.detail[:200],
                          elapsed_ms=int((time.time() - t_start) * 1000),
