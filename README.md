@@ -351,6 +351,8 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 - **perf(usage): 剩余用量估算不再重复计算**（[PR #248](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/248)，感谢 [@aodianjun](https://github.com/aodianjun)）：每个「账号 × 模型」的用量缓冲从 deque-of-tuple 换成**时间戳 + 累计和**（窗口求和 = 两次二分 + 一次相减，O(log n)，约 16 字节/行），载荷挂 15 秒短 TTL（`WB_REMAINING_TTL`）并支持 `ETag` / `If-None-Match`：面板 5 秒一轮的轮询在 TTL 内复用上次算好的载荷（连日志尾部都不再扫），带条件请求时回 304。实测 2 万行缓冲：轮询一分钟 21.5ms → 2.9ms、缓冲内存 2.3MB → 321KB（116 → 16 字节/行）、热重建 1.8ms → 0.7ms；并修掉一处裁剪后累计和的重基错误（`tests/_test_remaining_usage.py` 的 600 行对拍用例抓到的，15 → 18 项）。
 
+- **「国际版每日活跃打卡」的说明精简**：设置页那段解释删掉实现细节与「会消耗少量积分」的提示，只留「国际版账号每日打卡时，除桌面端身分的轻量对话外，再走一次网页通道的会话。默认开启。」；英文与正體中文词条同步。
+
 已发布版本的完整记录（v1.4.5 ~ v1.6.19，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
 ## 七、致谢与引用声明 (Credits & References)
 
