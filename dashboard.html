@@ -4276,17 +4276,17 @@ async function loadGrowthTasks(){
     const elCatDesc = document.getElementById("catDesc");
     if(elCat){
       if(tr.state === 'arrived') {
-        elCat.innerHTML = '<span style="color:#26bb82">旅行归来！待领奖</span>';
-        if(elCatDesc) elCatDesc.textContent = '获得奖励 +' + (tr.reward_credit || 0) + ' 积分';
+        elCat.innerHTML = '<span style="color:#26bb82">待领奖</span>';
+        if(elCatDesc) elCatDesc.textContent = '猫猫旅行 (奖励 +' + (tr.reward_credit || 0) + ' 积分)';
       } else if(tr.state === 'traveling') {
-        elCat.innerHTML = '<span style="color:var(--accent)">旅行中...</span>';
-        if(elCatDesc) elCatDesc.textContent = '预计稍后归来';
+        elCat.innerHTML = '<span style="color:var(--accent)">旅行中</span>';
+        if(elCatDesc) elCatDesc.textContent = '猫猫旅行 (预计稍后归来)';
       } else if(tr.daily_limit_reached) {
-        elCat.innerHTML = '<span style="color:var(--dim)">今日旅行已完成</span>';
-        if(elCatDesc) elCatDesc.textContent = '今日旅行已跑完 · 次日 00:00 刷新';
+        elCat.innerHTML = '<span style="color:var(--dim)">今日已完成</span>';
+        if(elCatDesc) elCatDesc.textContent = '猫猫旅行 (次日 00:00 刷新)';
       } else {
-        elCat.innerHTML = '<span style="color:var(--accent2)">猫猫在家待命</span>';
-        if(elCatDesc) elCatDesc.textContent = '随时可出发旅行';
+        elCat.innerHTML = '<span style="color:var(--accent2)">在家待命</span>';
+        if(elCatDesc) elCatDesc.textContent = '猫猫旅行 (随时可出发)';
       }
     }
 
