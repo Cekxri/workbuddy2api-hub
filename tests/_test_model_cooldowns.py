@@ -140,12 +140,14 @@ class ModelCooldownTests(unittest.TestCase):
 
         class Pool(object):
             accounts = [account]
-            affinity = types.SimpleNamespace(unbind=lambda _key: None)
+            affinity = types.SimpleNamespace(unbind=lambda _key: None,
+                                             demote=lambda _key, _uid=None: None)
 
             def count_ready(self, realm, model=None):
                 return sum(a.ready(model=model) for a in self.accounts)
 
-            def pick_for_session(self, realm, session_key=None, exclude=(), model=None):
+            def pick_for_session(self, realm, session_key=None, exclude=(), model=None,
+                                 page=None):
                 return next((a for a in self.accounts if a.uid not in exclude
                              and a.realm == realm and a.ready(model=model)), None)
 

@@ -230,7 +230,7 @@ class CreditGuardPoolTests(unittest.TestCase):
                 return sum(a.ready(model=model) for a in accounts)
 
             def pick_for_session(self, realm, session_key=None, exclude=(),
-                                 model=None):
+                                 model=None, page=None):
                 return next((a for a in accounts if a.uid not in exclude
                              and a.realm == realm and a.ready(model=model)), None)
 

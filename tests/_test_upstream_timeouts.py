@@ -270,13 +270,14 @@ class StreamTimeoutTests(unittest.TestCase):
 
             class Pool(object):
                 accounts = [account]
-                affinity = type("Affinity", (), {"unbind": lambda self, key: None})()
+                affinity = type("Affinity", (), {"unbind": lambda self, key: None,
+                                                 "demote": lambda self, key, uid=None: None})()
 
                 def count_ready(self, realm, model=None):
                     return 1
 
                 def pick_for_session(self, realm, session_key=None, exclude=(),
-                                     model=None):
+                                     model=None, page=None):
                     return account
 
                 def list_public(self):

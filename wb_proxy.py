@@ -5709,34 +5709,59 @@ AFFINITY_DEBUG = os.environ.get("WB_AFFINITY_DEBUG", "0").lower() in (
 # 阈值不能设得太低，否则会波及正常长度的对话（本实例 94% 的请求缓存命中率
 # 来自亲和）。设 0 表示不限制，保持 1.6.x 的原有行为。
 AFFINITY_MAX_MSGS = int(os.environ.get("WB_AFFINITY_MAX_MSGS", "400") or 0)
-def derive_affinity_key(messages):
-    """Derive a stable affinity key from a conversation's stable prefix.
-    The first two messages (system + first user turn) stay byte-identical for
-    the whole life of a conversation, so hashing them pins every later turn of
-    that conversation to the same upstream account - exactly what prompt
-    caching needs. Distinct conversations differ in their first user turn and
-    therefore still spread across the pool.
+# 超限对话改成【页内轮转】而不是撒到整个池子。
+#
+# 为什么：整池轮转下每个账号要等「池子大小」轮才再见到这段对话，间隔一旦
+# 超过上游缓存的存活期就整段漏。线上实测（2026-10-10，37706 条请求）：超限
+# 对话占 59% 的 prompt token，却贡献了 64% 的漏掉量，签名是只命中约 24k 的
+# 系统提示（账号见过同一客户端的系统提示、没见过这段历史）——典型的「落在
+# 没预热过的账号上」。页内轮转把「再见到」的周期从「池子大小」轮缩到 size
+# 轮，页里每个账号都留着前缀；同时超大请求体仍摊在 size 个账号上，不是压回
+# 一个（那正是 400 条上限要解决的断连问题）。
+#
+# 取值：≥2 = 页大小（账号数）；1 = 和普通对话一样钉住（等于取消上限）；
+# 0 = 保持 1.6.x 的整池轮转。页的划分见 wb_accounts.AccountPool._page_slice。
+AFFINITY_PAGE_SIZE = int(os.environ.get("WB_AFFINITY_PAGE_SIZE", "3") or 0)
+def affinity_route(messages):
+    """This conversation's (session_key, page).
 
-    Conversations longer than AFFINITY_MAX_MSGS deliberately get no key: they
-    are the ones whose oversized bodies make the upstream drop the connection,
-    and pinning them only guarantees the next turn is oversized too.
+    `session_key` is the stable conversation key; `page` is the (index, size)
+    of the pool page a conversation past AFFINITY_MAX_MSGS rotates over, or
+    None for every other case (short conversations, the page switched off, and
+    conversations whose client supplied its own session key). Both come from
+    the same head hash, so every turn of a conversation agrees on its key and
+    its page without any server-side state.
     """
     if not AFFINITY_BY_PREFIX:
-        return None
+        return None, None
     try:
         msgs = messages or []
         if not msgs:
-            return None
+            return None, None
+        head = msgs[:2]
+        blob = json.dumps(head, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        digest = hashlib.sha256(blob).hexdigest()[:16]
+        key = "pfx-" + digest
         if AFFINITY_MAX_MSGS > 0 and len(msgs) > AFFINITY_MAX_MSGS:
+            if AFFINITY_PAGE_SIZE > 1:
+                page = (int(digest[:8], 16) % AFFINITY_PAGE_SIZE, AFFINITY_PAGE_SIZE)
+                if AFFINITY_DEBUG:
+                    log("affinity: %d msgs (> %d), page %d/%d"
+                        % (len(msgs), AFFINITY_MAX_MSGS, page[0], page[1]))
+                return key, page
+            if AFFINITY_PAGE_SIZE == 1:
+                # Pinned like any other conversation: the cap is switched off.
+                return key, None
             if AFFINITY_DEBUG:
                 log("affinity: skip %d msgs (> %d), letting the pool rotate"
                     % (len(msgs), AFFINITY_MAX_MSGS))
-            return None
-        head = msgs[:2]
-        blob = json.dumps(head, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        return "pfx-" + hashlib.sha256(blob).hexdigest()[:16]
+            return None, None
+        return key, None
     except Exception:
-        return None
+        return None, None
+def derive_affinity_key(messages):
+    """Conversation key only; see affinity_route for the pool page."""
+    return affinity_route(messages)[0]
 def prompt_fingerprint(messages):
     """Privacy-safe fingerprint of the outgoing prompt.
     Cache hits need a byte-identical prefix, so these hashes answer "is my
@@ -8009,9 +8034,11 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                      else build_upstream_body(payload))
     # PATCHED-BY-OPS: 客户端未提供会话标识时，用对话稳定前缀兜底。
     # 位置放在 build_upstream_body 之后，保证键与真正发往上游的消息一致
-    # （该函数可能在最前面插入 SYSTEM_PROMPT）。
+    # （该函数可能在最前面插入 SYSTEM_PROMPT）。affinity_page 只在超限对话上
+    # 有值（页内轮转），客户端自带会话键的请求不参与。
+    affinity_page = None
     if not session_key:
-        session_key = derive_affinity_key(upstream_body.get("messages"))
+        session_key, affinity_page = affinity_route(upstream_body.get("messages"))
         if session_key and AFFINITY_DEBUG:
             log("affinity: derived %s for %d msgs"
                 % (session_key, len(upstream_body.get("messages") or [])))
@@ -8031,9 +8058,13 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
     # once per retry, so a settings read never lands in the retry loop.
     header_timeout, idle_timeout = upstream_timeouts()
     max_attempts = max(2, total) + 1 + (MAX_PRODUCT_SWITCHES if auto_switch else 0)
+    # 每次失败都把【出错的那个账号】从这段对话的历史里降级（demote），而不是
+    # 忘掉整段对话：重选时优先回到还留着这段前缀的暖号（见 SessionAffinity），
+    # 一次大 prompt 的冷启动比重选一次账号贵得多。
     for _attempt in range(max_attempts):
         account = POOL.pick_for_session(realm=realm, session_key=session_key,
-                                        exclude=tried, model=model) if POOL else None
+                                        exclude=tried, model=model,
+                                        page=affinity_page) if POOL else None
         if account is None:
             if transient_hits and _attempt < max_attempts - 1:
                 tried.clear()
@@ -8041,7 +8072,7 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                 continue
             break
         if account.realm != realm:
-            if session_key and POOL: POOL.affinity.unbind(session_key)
+            if session_key and POOL: POOL.affinity.demote(session_key, account.uid)
             continue
         tried.add(account.uid)
         last_uid = account.uid
@@ -8080,7 +8111,7 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                         % (account.uid[:8], credential_scope_phrase(detail), wait,
                            account.soft_streak))
                     if session_key and POOL:
-                        POOL.affinity.unbind(session_key)
+                        POOL.affinity.demote(session_key, account.uid)
                     last_error = exc
                     last_429 = exc
                     last_429_detail = detail
@@ -8116,12 +8147,12 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                     except Exception:
                         pass
                     if session_key and POOL:
-                        POOL.affinity.unbind(session_key)
+                        POOL.affinity.demote(session_key, account.uid)
                     continue
                 log("account %s throttled on '%s' (429), retry in %ds"
                     % (account.uid[:8], model, int(wait)))
                 if session_key and POOL:
-                    POOL.affinity.unbind(session_key)
+                    POOL.affinity.demote(session_key, account.uid)
                 last_error = exc
                 last_429 = exc
                 last_429_detail = detail
@@ -8145,7 +8176,7 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                     continue
                 log("upstream 403 for '%s' (content review), passing through" % model)
                 if session_key and POOL:
-                    POOL.affinity.unbind(session_key)
+                    POOL.affinity.demote(session_key, account.uid)
                 last_error = exc
                 last_403_detail = detail
                 break
@@ -8158,13 +8189,13 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                 log("account %s out of credits (402), parked until 04:00"
                     % account.uid[:8])
                 if session_key and POOL:
-                    POOL.affinity.unbind(session_key)
+                    POOL.affinity.demote(session_key, account.uid)
                 last_error = exc
                 continue
             if exc.code == 401:
                 log("account %s rejected (HTTP 401), rotating" % account.uid[:8])
                 if session_key and POOL:
-                    POOL.affinity.unbind(session_key)
+                    POOL.affinity.demote(session_key, account.uid)
                 account.note_error("HTTP 401",
                                    cooldown=60,
                                    single_account=(total <= 1))
@@ -8176,13 +8207,13 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                 log("upstream %s for '%s', retrying (fails=%d)"
                     % (exc.code, model, account.fails))
                 if session_key and POOL:
-                    POOL.affinity.unbind(session_key)
+                    POOL.affinity.demote(session_key, account.uid)
                 last_error = exc
                 continue
             raise
         except Exception as exc:
             if session_key and POOL:
-                POOL.affinity.unbind(session_key)
+                POOL.affinity.demote(session_key, account.uid)
             if is_transient(exc):
                 transient_hits += 1
                 account.note_unknown_failure("connection: %s" % type(exc).__name__)
