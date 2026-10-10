@@ -2889,11 +2889,27 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         <button class="primary" id="btnPageDailyChat" onclick="doDailyChat(this)">每日活跃打卡 (国际版)</button>
       </div>
     </div>
-    <div class="cards" style="margin-bottom:14px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
-      <div class="card"><div class="val" id="intlAcctCount">-</div><div class="lbl">国际版账号数量</div></div>
-      <div class="card accent"><div class="val" id="intlBonusCredits">-</div><div class="lbl">每日活跃奖励额度</div></div>
-      <div class="card accent2"><div class="val" id="intlTodayActiveState">-</div><div class="lbl">今日活跃打卡状态</div></div>
-      <div class="card warn"><div class="val" id="intlTotalGranted">-</div><div class="lbl">累计活跃奖励积分</div></div>
+    <div class="cards" style="margin-bottom:16px;grid-template-columns:repeat(auto-fit,minmax(210px,1fr))">
+      <div class="card">
+        <div class="k">国际版账号数量</div>
+        <div class="v" id="intlAcctCount">-</div>
+        <div class="s">已启用账号</div>
+      </div>
+      <div class="card">
+        <div class="k">每日活跃奖励额度</div>
+        <div class="v" id="intlBonusCredits" style="color:var(--accent)">30 / 50 <span style="font-size:13px;font-weight:400;color:var(--dim)">积分/天</span></div>
+        <div class="s">官方每日活跃福利</div>
+      </div>
+      <div class="card accent2">
+        <div class="k">今日活跃打卡状态</div>
+        <div class="v" id="intlTodayActiveState" style="font-size:20px">-</div>
+        <div class="s">每日 09:00 / 21:00 巡检</div>
+      </div>
+      <div class="card warn">
+        <div class="k">累计活跃奖励积分</div>
+        <div class="v" id="intlTotalGranted" style="color:var(--warn)">-</div>
+        <div class="s">Bonus Pack 历史总计</div>
+      </div>
     </div>
   </section>
 
@@ -2914,13 +2930,37 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       </div>
     </div>
 
-    <div class="cards" style="margin-bottom:14px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
-      <div class="card"><div class="val" id="stkDays">-</div><div class="lbl">连续打卡天数</div></div>
-      <div class="card"><div class="val" id="makeupCards">-</div><div class="lbl">补签卡余额</div></div>
-      <div class="card warn"><div class="val" id="lotteryChances">-</div><div class="lbl">成长抽奖次数</div></div>
-      <div class="card accent2"><div class="val" id="catState">-</div><div class="lbl" id="catDesc">猫猫旅行状态</div></div>
-      <div class="card"><div class="val" id="nrgBalance">-</div><div class="lbl">成长能量余额</div></div>
-      <div class="card accent"><div class="val" id="cnTotalGranted">-</div><div class="lbl">已获取福利总积分</div></div>
+    <div class="cards" style="margin-bottom:16px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
+      <div class="card">
+        <div class="k">连续打卡天数</div>
+        <div class="v" id="stkDays" style="color:var(--accent2)">-</div>
+        <div class="s">7d/14d/28d 解锁档位</div>
+      </div>
+      <div class="card">
+        <div class="k">补签卡余额</div>
+        <div class="v" id="makeupCards">-</div>
+        <div class="s">漏签时自动保连登</div>
+      </div>
+      <div class="card warn">
+        <div class="k">成长抽奖次数</div>
+        <div class="v" id="lotteryChances" style="color:var(--warn)">-</div>
+        <div class="s">连登兑换赠送抽奖</div>
+      </div>
+      <div class="card accent2">
+        <div class="k">猫猫旅行状态</div>
+        <div class="v" id="catState" style="font-size:19px">-</div>
+        <div class="s" id="catDesc">每日 00:00 刷新</div>
+      </div>
+      <div class="card">
+        <div class="k">成长能量余额</div>
+        <div class="v" id="nrgBalance">-</div>
+        <div class="s">官方成长中心能量</div>
+      </div>
+      <div class="card accent">
+        <div class="k">已获取福利总积分</div>
+        <div class="v" id="cnTotalGranted" style="color:var(--accent)">-</div>
+        <div class="s">签到/任务/活动总计</div>
+      </div>
     </div>
 
     <div style="overflow-x:auto">
@@ -4283,10 +4323,10 @@ async function loadGrowthTasks(){
         if(elCatDesc) elCatDesc.textContent = '猫猫旅行 (预计稍后归来)';
       } else if(tr.daily_limit_reached) {
         elCat.innerHTML = '<span style="color:var(--dim)">今日已完成</span>';
-        if(elCatDesc) elCatDesc.textContent = '猫猫旅行 (次日 00:00 刷新)';
+        if(elCatDesc) elCatDesc.textContent = '次日 00:00 刷新';
       } else {
         elCat.innerHTML = '<span style="color:var(--accent2)">在家待命</span>';
-        if(elCatDesc) elCatDesc.textContent = '猫猫旅行 (随时可出发)';
+        if(elCatDesc) elCatDesc.textContent = '随时可出发旅行';
       }
     }
 
