@@ -164,6 +164,11 @@ class ModelCooldownTests(unittest.TestCase):
             def apply_model_daily_token_limit(self, value=None, per_model=None):
                 return value or 0
 
+            def apply_remaining_weights(self, weights=None):
+                # 剩余用量优先调度的权重表也由请求路径推给池；桩只负责接住
+                # 调用（开关默认关，推来的就是 None）。
+                return weights or {}
+
         old_pool, old_urlopen = proxy.POOL, accounts.urlopen
         old_parser = proxy.parse_rate_limit_reset
         proxy.POOL = Pool()

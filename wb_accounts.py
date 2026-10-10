@@ -2162,6 +2162,13 @@ class AccountPool(object):
         # keyed by uid (see _weighted_pick). Runtime-only: a restart just
         # restarts the rotation.
         self._expiry_weights = {}
+        # 剩余用量优先调度：wb_proxy 每请求推来的 {(uid, model): 权重}（只有它
+        # 读得到剩余估算）。空表 = 不启用——开关关着、或没有任何组合接近估计
+        # 限额——选择就是原来的纯轮询。纯派生值，不落盘。
+        self._remaining_weights = {}
+        # 这条偏好自己的平滑加权轮询累计值，键是 (uid, model)：与临期的
+        # _expiry_weights 分开，两个偏好各自记各自的轮次。
+        self._remaining_pick_state = {}
         self.affinity = SessionAffinity()
 
     def load(self):
@@ -2378,6 +2385,28 @@ class AccountPool(object):
                 account.expiring_window_days = _realm_limit(values, account.realm)
         return values
 
+    def apply_remaining_weights(self, weights):
+        """换上 wb_proxy 算好的 (账号, 模型) 权重表（剩余用量优先调度）。
+
+        数据方向与 apply_daily_* 同款：只有 wb_proxy 读得到剩余估算（折叠、
+        预算与载荷都在那边），池不反向依赖它，只存派生值。None / 空表表示
+        「不启用」——开关关着，或这一刻没有组合接近估计限额——把上次的权重
+        清掉，选择立即回到纯轮询（开关关时行为与从前逐字节一致）。
+        权重 <= 1 的条目没有偏好意义，直接丢弃。返回存下来的表（测试用）。
+        """
+        table = {}
+        for pair, weight in (weights or {}).items():
+            try:
+                uid, model = pair
+                weight = int(weight)
+            except (TypeError, ValueError):
+                continue
+            if weight > 1:
+                table[(str(uid), str(model))] = weight
+        with self._lock:
+            self._remaining_weights = table
+        return table
+
     def apply_daily_token_limit(self, values=None, usage=None):
         """Re-resolve the daily token guard for every account.
 
@@ -2549,6 +2578,12 @@ class AccountPool(object):
         account = self._pick_expiring_first(snapshot, exclude, model)
         if account is not None:
             return account
+        # 剩余用量优先调度（开关默认关）：估计剩余接近耗尽的 (账号, 模型) 接着
+        # 被优先交出（见 _pick_remaining_first）。权重表为空时这条路径直接
+        # 返回 None，落到与从前完全相同的纯轮询上。
+        account = self._pick_remaining_first(snapshot, exclude, model)
+        if account is not None:
+            return account
         return self._rotate_pick(snapshot, exclude, model)
 
     def _pick_expiring_first(self, snapshot, exclude, model):
@@ -2587,13 +2622,64 @@ class AccountPool(object):
             return 1
         return max(1, int(round(window - days)) + 1)
 
-    def _weighted_pick(self, ready):
-        """Smooth weighted round-robin over the ready accounts.
+    def _pick_remaining_first(self, snapshot, exclude, model):
+        """剩余估算接近耗尽的 (账号, 模型) 优先接单，或 None（没有可交的）。
 
-        nginx's algorithm: every account accrues its weight each pick, the
+        与临期积分那条同款的两层结构：只有权重 > 1（快达到估计限额）的组合
+        进入这一层，它们之间按剩余多少平滑加权轮询——越接近耗尽分到的流量
+        越多，但同层之内没有谁独占。没有加权的可选项，或它们此刻都不可用
+        （冷却、限额、被排除）时落回纯轮询，一个快耗尽的组合不会把整个模型
+        卡死。剩余为 0 与没有预算样本的组合由 wb_proxy 侧就不进表：前者没有
+        「先用掉」的意义（冷却中的本来也不可用），后者没有可比较的尺度。
+        """
+        if not model:
+            return None
+        table = self._remaining_weights
+        if not table:
+            return None
+        ready = []
+        for account in snapshot:
+            if account.uid in exclude:
+                continue
+            weight = table.get((account.uid, model))
+            if weight is None or weight <= 1:
+                continue
+            if not account.ready(model=model):
+                continue
+            ready.append((account, weight))
+        if not ready:
+            return None
+        return self._smooth_weighted_pick(
+            [(account, (account.uid, model), weight) for account, weight in ready],
+            "_remaining_pick_state",
+            keep_uids=set(a.uid for a in snapshot))
+
+    def _weighted_pick(self, ready):
+        """临期积分那条的入口：在窗口内的账号之间平滑加权轮询。"""
+        return self._smooth_weighted_pick(
+            [(account, account.uid, self._expiry_weight(account))
+             for account in ready], "_expiry_weights")
+
+    def _smooth_weighted_pick(self, entries, state_name, keep_uids=None):
+        """Smooth weighted round-robin over (account, key, weight) triples.
+
+        nginx's algorithm: every entry accrues its weight each pick, the
         largest running total wins, and the winner pays back the whole round's
-        weight. Equal weights degenerate to a plain rotation, so the
-        same-day-expiry accounts keep alternating.
+        weight. Equal weights degenerate to a plain rotation, so same-weight
+        entries keep taking turns.
+
+        `key` is what the rotation state is kept under - a uid for the
+        expiring-credits window, a (uid, model) pair for the remaining-usage
+        preference - and `state_name` names the pool attribute holding that
+        state, so the two preferences never share a rotation.
+
+        Without `keep_uids` the state is pruned to exactly the entries taking
+        part this pick (the expiring window's behaviour). The remaining-usage
+        preference passes every account still in the pool instead: pruning by
+        the current pick alone would drop another model's (or another realm's)
+        rotation every time it is someone else's turn, and a rotation that
+        restarts every pick collapses the weights into "always the first
+        entry". Entries of accounts that really left the pool are dropped.
 
         The rotation state is shared by every request thread, so the
         read-modify-write runs under the pool lock. The `ready()` checks that
@@ -2601,23 +2687,27 @@ class AccountPool(object):
         holding the lock across one expiring credential would serialise every
         dispatch in the realm behind it.
         """
-        ready_uids = set(a.uid for a in ready)
-        weights = [(account, self._expiry_weight(account)) for account in ready]
+        keys = set(key for _account, key, _weight in entries)
         with self._lock:
-            state = dict((uid, value) for uid, value in self._expiry_weights.items()
-                         if uid in ready_uids)
+            stored = getattr(self, state_name)
+            if keep_uids is None:
+                state = dict((key, value) for key, value in stored.items()
+                             if key in keys)
+            else:
+                state = dict((key, value) for key, value in stored.items()
+                             if key[0] in keep_uids)
             total = 0
             chosen = None
-            for account, weight in weights:
-                state[account.uid] = state.get(account.uid, 0) + weight
+            for account, key, weight in entries:
+                state[key] = state.get(key, 0) + weight
                 total += weight
-                if chosen is None or state[account.uid] > state[chosen.uid]:
-                    chosen = account
+                if chosen is None or state[key] > state[chosen[1]]:
+                    chosen = (account, key)
             if chosen is None:
                 return None
-            state[chosen.uid] -= total
-            self._expiry_weights = state
-        return chosen
+            state[chosen[1]] -= total
+            setattr(self, state_name, state)
+        return chosen[0]
 
     def _rotate_pick(self, group, exclude, model):
         """Round-robin one group of accounts, advancing the shared cursor."""

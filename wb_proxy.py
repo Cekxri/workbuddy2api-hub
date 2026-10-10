@@ -1711,6 +1711,67 @@ def remaining_usage_etag():
     return _cache_etag("remaining", "all", built_at)
 
 
+# ---------------------------------------------------------------------------
+# 剩余用量优先调度（开关默认关，见 wb_settings.remaining_priority_enabled）
+#
+# 「快达到估计限额的 (账号, 模型) 先被交出」：估计剩余占预算的比例越小权重
+# 越高，分派侧（AccountPool._pick_remaining_first）只对权重 > 1 的组合做平滑
+# 加权轮询。分档而不是线性：面板上说得清（剩不到 30% 开始加权、5% 以内最重），
+# 测试里也钉得住确切数字。权重表由请求路径每请求推给池——数据方向与
+# apply_daily_* 一致，池不反向依赖本模块。
+# ---------------------------------------------------------------------------
+_REMAINING_PRIORITY_BANDS = ((0.05, 4), (0.15, 3), (0.30, 2))
+
+
+def _remaining_schedule_weight(remaining, budget):
+    """估计剩余对应的调度权重：1 = 不加权，2..4 = 越接近耗尽越重。
+
+    没有可比较的尺度时不猜：预算样本缺失（budget 为 None/0）或剩余未知
+    （remaining 为 None）一律不加权。剩余 <= 0 也不加权——它没有「先用掉」
+    的意义（真正用满的组合正在冷却，本来就不可用；estimated 口径下它只是
+    下界，不值得把流量往一个可能已经耗尽的组合上压）。
+    """
+    try:
+        remaining = float(remaining)
+        budget = float(budget)
+    except (TypeError, ValueError):
+        return 1
+    if remaining <= 0 or budget <= 0:
+        return 1
+    ratio = remaining / budget
+    for ceiling, weight in _REMAINING_PRIORITY_BANDS:
+        if ratio <= ceiling:
+            return weight
+    return 1
+
+
+def remaining_priority_enabled():
+    """优先调度开关（默认关）。"""
+    return wb_settings.remaining_priority_enabled(ACCOUNTS_DIR) is True
+
+
+def remaining_schedule_weights():
+    """{(uid, model): 权重}：估计剩余接近耗尽的组合，权重 > 1。
+
+    只读剩余估算载荷的既有字段（rows 的 uid / model / remaining / budget），
+    不碰折叠与预算的实现。载荷自带短 TTL：面板在轮询时本来就维持着它，请求
+    路径这里拿到的基本都是缓存，重建只发生在 TTL 到点时（与面板同款成本）。
+    best-effort：任何失败都只意味着这一次不加权，绝不能连累请求本身。
+    """
+    try:
+        payload = remaining_usage()
+        weights = {}
+        for row in payload.get("rows") or []:
+            weight = _remaining_schedule_weight(row.get("remaining"),
+                                                row.get("budget"))
+            if weight > 1:
+                weights[(row.get("uid") or "", row.get("model") or "")] = weight
+        return weights
+    except Exception as exc:
+        log("remaining priority weights unavailable: %s" % exc)
+        return {}
+
+
 _free_models_cache = {"at": 0.0, "data": None}
 _FREE_MODELS_TTL = 60.0
 
@@ -5597,6 +5658,8 @@ def runtime_settings_view():
         "auto_switch_product": wb_settings.auto_switch_product(ACCOUNTS_DIR),
         "daily_chat_web": wb_settings.daily_chat_web(ACCOUNTS_DIR),
         "local_web_tools": wb_settings.local_web_tools(ACCOUNTS_DIR),
+        "remaining_priority_enabled":
+            wb_settings.remaining_priority_enabled(ACCOUNTS_DIR),
         "accounts_collapsed": wb_settings.accounts_collapsed(ACCOUNTS_DIR),
         "key_before_hidden": wb_settings.key_before_hidden(ACCOUNTS_DIR),
         "update_check_enabled": wb_settings.update_check_enabled(ACCOUNTS_DIR),
@@ -7929,6 +7992,13 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
     apply_daily_token_limit()
     apply_daily_credit_limit()
     apply_model_daily_token_limit()
+    # 剩余用量优先调度（开关默认关）：把「估计剩余接近耗尽」的 (账号, 模型)
+    # 权重推给池，让它们先接单。只在开关打开时读剩余估算（载荷有短 TTL，热路径
+    # 上是缓存命中）；关着时推空表，把上一次可能留下的权重清掉，下一个请求就
+    # 回到与从前逐字节一致的纯轮询。
+    if POOL is not None:
+        POOL.apply_remaining_weights(
+            remaining_schedule_weights() if remaining_priority_enabled() else None)
     realm = target_realm or detect_model_realm(payload.get("model")) or CURRENT_REALM
     model = str(payload.get("model") or "")
     # 复用调用方已建好的 body：/v1/chat/completions 在进这里之前已经 build 过
@@ -11931,6 +12001,18 @@ class Handler(BaseHTTPRequestHandler):
                                    "invalid_request_error")
             wb_settings.set_local_web_tools(ACCOUNTS_DIR, raw)
             reply["local_web_tools"] = raw
+        if "remaining_priority_enabled" in payload:
+            raw = payload.get("remaining_priority_enabled")
+            if not isinstance(raw, bool):
+                return self._error(400, "remaining_priority_enabled must be true or false",
+                                   "invalid_request_error")
+            wb_settings.set_remaining_priority_enabled(ACCOUNTS_DIR, raw)
+            reply["remaining_priority_enabled"] = raw
+            if not raw and POOL is not None:
+                # 关掉就立刻清掉池里上一次推的权重，不等下一个请求；打开则
+                # 由下一个请求照常推（此刻就算推也要先折一次剩余估算，没必要
+                # 为一个开关多付这一趟）。
+                POOL.apply_remaining_weights(None)
         if "accounts_collapsed" in payload:
             # A disclosure state, and the only thing this branch may touch: the
             # submission carries just this key, so the settings it does not name

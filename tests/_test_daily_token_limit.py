@@ -169,6 +169,10 @@ class DailyTokenLimitTests(unittest.TestCase):
             def apply_model_daily_token_limit(self, value=None, per_model=None):
                 return value or 0
 
+            def apply_remaining_weights(self, weights=None):
+                # 优先调度的权重表也由请求路径推给池；桩只负责接住调用。
+                return weights or {}
+
         old_pool = P.POOL
         P.POOL = Pool()
         try:
