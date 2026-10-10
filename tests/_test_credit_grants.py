@@ -204,6 +204,7 @@ print()
 print("[6] 发放记录 ↔ 本机签到 / 每日活跃的关联")
 
 import json as _json  # noqa: E402
+import datetime as _dt  # noqa: E402
 import wb_activity as A  # noqa: E402
 
 index = {"uid-alpha": [
@@ -236,8 +237,10 @@ os.makedirs(os.path.dirname(history), exist_ok=True)
 created = P._parse_stamp_epoch("2026-10-10 00:42:45")
 with open(history, "a", encoding="utf-8") as fh:
     fh.write(_json.dumps({
-        "ts": P.time.strftime("%Y-%m-%dT%H:%M:%S+08:00",
-                              P.time.localtime(created - 60)),
+        # 时间戳必须按机器自己的时区写：CI 上是 UTC，写死 +08:00 会让这条
+        # 记录被解析到 8 小时之外，关联窗口直接对不上。
+        "ts": _dt.datetime.fromtimestamp(created - 60).astimezone()
+                 .isoformat(timespec="seconds"),
         "uid": "uid-alpha", "nickname": "meyadi", "realm": "intl",
         "task": "daily_chat", "trigger": "scheduler", "ok": True,
         "message": "ok", "accessToken": "SECRET"}) + "\n")
