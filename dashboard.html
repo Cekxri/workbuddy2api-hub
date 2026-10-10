@@ -1444,6 +1444,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '其他客户端': 'Other Clients',
     '已配置': 'Configured',
     '已检测到': 'Detected',
+    ' / 共 ': ' / ',
     '未检测到': 'Not Detected',
     '网关地址': 'Gateway URL',
     '默认模型': 'Default Model',
@@ -8170,8 +8171,15 @@ async function loadAgents(showToast){
     renderAgentManualUrls();
     const n = agentClients().filter(c => c.installed || (c.status && c.status !== 'missing')).length;
     if(state){
-      state.textContent = '(已检测到 ' + n + ' 个)';
-      state.style.color = n ? 'var(--accent2)' : 'var(--dim)';
+      // 计数必须按卡片自己的判定来数（agentStatusBadge 认 installed / detected），
+      // 否则会出现「5 张卡片、标题 4 个」的错位（issue #250）：卡片列表是全部
+      // 支持的客户端，检测到的只是其中一部分，两个数字都写出来。
+      const clients = agentClients();
+      const found = clients.filter(c => c.installed || c.detected).length;
+      state.textContent = clients.length > found
+        ? '(已检测到 ' + found + ' / 共 ' + clients.length + ' 个)'
+        : '(已检测到 ' + found + ' 个)';
+      state.style.color = found ? 'var(--accent2)' : 'var(--dim)';
     }
     if(showToast) toast('客户端检测完成', 'ok');
   } catch(e) {
