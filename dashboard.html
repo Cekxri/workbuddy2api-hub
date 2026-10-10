@@ -770,6 +770,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '上次:': 'Last:',
     '上次取价': 'Last price fetch',
     '上次失败：': 'Last failure:',
+    '上游按 24 小时窗口给每个账号、每个模型配额；预算 = 撞线账号在窗口内用量的平均值（上游不给这个数字，只能撞线时反推），已用从各账号自己的重置时刻起算。没有撞线记录（或记录已过期）的组合按最近 24 小时保守估计（标「按 24h 估算」）。': 'The upstream grants each account a per-model quota inside a 24h window. The budget is the average window usage of the accounts that hit the cap (the upstream never publishes it, so it is inferred when one does), and each account\'s used amount counts from its own reset clock. Pairs with no cap on record (or a stale one) are estimated from the last 24h and marked "est. from last 24h".',
     '上游中断': 'Upstream interrupted',
     '上面的美元单价按它折算成人民币）': ', converted to CNY at that rate)',
     '下一页': 'Next',
@@ -854,6 +855,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '关闭': 'Close',
     '内置': 'Built-in',
     '冷却': 'Cooling',
+    '冷却至 ': 'Cooling until ',
     '出口': 'Exit',
     '出口已更新': 'Exit updated',
     '出口更新失败:': 'Updating the exit failed:',
@@ -898,6 +900,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '剩': 'left',
     '剩余可用': 'Remaining',
     '剩余可用积分': 'Remaining credits',
+    '剩余用量估算': 'Remaining usage estimate',
     '剩余积分 / 额度': 'Credits / quota left',
     '剩余积分 ·': 'Credits left ·',
     '剩余额度最大': 'Most quota left',
@@ -905,6 +908,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '勾选要导入为槽位的出口：': 'Tick the exits to import as slots:',
     '匹配来源：': 'Match source:',
     '区域': 'Region',
+    '区间': 'range',
     '单价 · USD /': 'unit price · USD /',
     '单价（USD /': 'unit price (USD /',
     '即将到期': 'Expiring soon',
@@ -1104,6 +1108,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '把)': ')',
     '把尚未绑定出口的已启用账号依次分配到已启用的代理槽；已有绑定的账号不受影响': 'Assign enabled accounts with no exit to enabled proxy slots in order; accounts that are already bound are left alone',
     '拉取积分明细失败:': 'Fetching credit details failed:',
+    '按 24h 估算': 'est. from last 24h',
     '按 API Key 的消耗归属': 'Usage attributed by API key',
     '按 OpenRouter 公布的模型价折算的等价 token 花费': 'Equivalent token cost converted from the model prices OpenRouter publishes',
     '按 OpenRouter 模型价折算的等价 token 花费': 'Equivalent token cost converted from OpenRouter model prices',
@@ -1113,6 +1118,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '推理': 'Reasoning',
     '提示词前缀命中复用比': 'Share of prompt-prefix reuse',
     '搜索包名/代码/来源…': 'Search package name / code / source...',
+    '样本': 'samples',
     '操作': 'Actions',
     '操作失败': 'Operation failed',
     '操作失败:': 'Operation failed:',
@@ -1155,6 +1161,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '暂无数据': 'No data',
     '暂无日志可导出': 'No logs to export',
     '暂无账号用量数据': 'No account usage data yet',
+    '暂无数据（需要账号先有用量或撞线记录）': 'No data yet (needs usage or a cap on record)',
+    '暂无预算样本：等某个账号把某个模型的窗口用满（撞线）后自动出现。': 'No budget samples yet: they appear once an account fills a model\'s window (hits the cap).',
     '更新时间:': 'Updated:',
     '更新时间: -': 'Updated: -',
     '最低保留积分': 'Minimum reserved credits',
@@ -1295,6 +1303,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '生效中': 'Active',
     '生效时间': 'Effective from',
     '用于打开本看板。默认密码为': 'Used to open this dashboard. The default password is',
+    '用量 ≥80%': 'usage ≥80%',
     '用量占比': 'Usage share',
     '用量日志目录': 'Usage log directory',
     '由网关代跑': 'run by the gateway',
@@ -1324,6 +1333,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '积分后仅免费模型可用': 'credits, only free models are allowed',
     '积分限额': 'Credit limit',
     '积分，超出后仅免费模型)': 'credits, beyond which only free models are allowed)',
+    '窗口 ': 'Window ',
+    '窗口起点': 'Window start',
+    '窗口内已用': 'Used this window',
     '立即保活刷新': 'Keep-alive refresh now',
     '立即取价': 'Fetch prices now',
     '立即巡检保活': 'Run the keep-alive check now',
@@ -1360,6 +1372,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '估算价格': 'Estimated cost',
     '估算价格（国内版）': 'Estimated cost (China)',
     '估算价格（国际版）': 'Estimated cost (Global)',
+    '估算剩余': 'Estimated left',
     '网关调用量': 'Gateway calls',
     '网关调用量（国内版）': 'Gateway calls (China)',
     '网关调用量（国际版）': 'Gateway calls (Global)',
@@ -1438,6 +1451,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '该槽位被': 'This slot is used by',
     '该模型今日已达限额，仅此模型受限（本地 0 点恢复）': 'This model reached the daily limit; only this model is restricted (resets at local midnight)',
     '该模型暂无定价数据': 'No pricing data for this model yet',
+    '当前窗口的起点未知（没有撞线记录，或记录已过期），已用按最近 24 小时统计，是剩余量的下界': 'The start of the current window is unknown (no cap on record, or a stale one); used counts the last 24h, a lower bound of what is left',
     '该账号仅此模型受限；时间为本地时间': 'only this model is restricted for this account; times are local',
     '该账号属于': 'This account belongs to the',
     '说明': 'Description',
@@ -1538,7 +1552,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '面板访问密码': 'Panel access password',
     '页 / 共': '/',
     '页 · 共': '·',
+    '项 · 冷却中': 'items · cooling',
     '预计稍后归来': 'Expected back later',
+    '预算 ≈ ': 'budget ≈ ',
     '颜色主题': 'Color theme',
     '颜色主题:': 'Color theme:',
     '额度利用率:': 'Quota utilization:',
@@ -1658,6 +1674,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "上下文窗口": "上下文視窗",
     "上下文缓存命中率": "上下文快取命中率",
     "上游 429": "上游 429",
+    "上游": "上游",
     "上游中断": "上游中斷",
     "上游限流": "上游限流",
     "下载为 .log 文件": "下載為 .log 檔案",
@@ -1939,6 +1956,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "积分扣减历史已刷新": "積分扣減歷史已重新整理",
     "积分数据刷新间隔请填 0 或正整数（0 = 关闭后台刷新）": "積分資料重新整理間隔請填 0 或正整數（0 = 關閉後臺重新整理）",
     "积分数据刷新间隔（小时）": "積分資料重新整理間隔（小時）",
+    "窗口": "視窗",
     "立即保活刷新": "立即保活重新整理",
     "立即拉取最新日志": "立即拉取最新日誌",
     "等待授权回调完成（自动检测）": "等待授權回撥完成（自動檢測）",
@@ -2943,6 +2961,32 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         <div class="s" id="kpiCostDetail">按 OpenRouter 模型价折算的等价 token 花费</div>
       </div>
     </div>
+
+    <!-- 剩余用量估算：上游对「账号 × 模型」的 24 小时窗口还剩多少 -->
+    <section style="margin-bottom:20px" id="remainingUsageSection">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+        <div>
+          <h2 style="margin:0">剩余用量估算 <em id="remainingUsageWindow" style="font-style:normal;color:var(--dim);font-size:12px"></em></h2>
+          <div style="font-size:12px;color:var(--dim)">上游按 24 小时窗口给每个账号、每个模型配额；预算 = 撞线账号在窗口内用量的平均值（上游不给这个数字，只能撞线时反推），已用从各账号自己的重置时刻起算。没有撞线记录（或记录已过期）的组合按最近 24 小时保守估计（标「按 24h 估算」）。</div>
+        </div>
+        <div style="font-size:12px;color:var(--dim)" id="remainingUsageSummary">-</div>
+      </div>
+      <div id="remainingBudgets" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"></div>
+      <div style="overflow-x:auto;max-height:340px">
+        <table class="data-cards" id="remainingUsageTable">
+          <thead><tr>
+            <th style="text-align:left">账号</th>
+            <th style="text-align:center;width:64px">区域</th>
+            <th style="text-align:left">模型</th>
+            <th style="text-align:center">窗口起点</th>
+            <th style="text-align:right">窗口内已用</th>
+            <th style="text-align:right">估算剩余</th>
+            <th style="min-width:150px">用量占比</th>
+          </tr></thead>
+          <tbody id="remainingUsageTbody"></tbody>
+        </table>
+      </div>
+    </section>
 
     <!-- Token 时序 + 积分扣减历史 -->
     <section style="margin-bottom:20px">
@@ -9072,9 +9116,99 @@ async function loadAnalytics(){
     const data = await getJSON('/usage/analytics' + analyticsQuery(), POLL_READ);
     renderAnalytics(data);
     loadUsageSeries();
+    loadRemainingUsage();
   } catch(err) {
     console.error('loadAnalytics failed:', err);
   }
+}
+
+// ---------------------------------------------------------------------------
+// 剩余用量估算（/usage/remaining）
+//
+// 上游按 24 小时窗口给「账号 × 模型」配额，预算 = 撞线账号窗口用量的平均；
+// 这个区块把每个账号当前窗口的剩余列出来。数字随用量实时变化，不跟时间窗
+// 选择器联动（它只描述「现在」），所以载荷不带 range 参数。
+// ---------------------------------------------------------------------------
+async function loadRemainingUsage(){
+  try {
+    const data = await getJSON('/usage/remaining', POLL_READ);
+    renderRemainingUsage(data);
+  } catch(err) {
+    if(!isAuthError(err)) console.error('loadRemainingUsage failed:', err);
+  }
+}
+
+function fmtTok(v){
+  if(v == null) return '—';
+  const n = Number(v) || 0;
+  if(Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if(Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
+
+function renderRemainingUsage(data){
+  const tbody = document.getElementById('remainingUsageTbody');
+  if(!tbody) return;
+  const rows = (data && data.rows) || [];
+  const budgets = (data && data.budgets) || [];
+  const realmName = r => (r === 'cn' ? '国内版' : '国际版');
+
+  const winEm = document.getElementById('remainingUsageWindow');
+  if(winEm){
+    winEm.textContent = data ? ('窗口 ' + (data.window_seconds / 3600) + 'h') : '';
+  }
+  const budgetsEl = document.getElementById('remainingBudgets');
+  if(budgetsEl){
+    budgetsEl.innerHTML = budgets.length
+      ? budgets.map(b => '<span class="badge" style="font-size:11px" title="'
+          + esc('样本 ' + b.n + ' · 区间 ' + fmtTok(b.min) + ' ~ ' + fmtTok(b.max)) + '">'
+          + esc(realmName(b.realm) + ' · ' + b.model) + ' · 预算 ≈ <b>' + fmtTok(b.avg) + '</b>'
+          + ' <span style="color:var(--dim)">(n=' + b.n + ')</span></span>').join(' ')
+      : '<span style="font-size:12px;color:var(--dim)">暂无预算样本：等某个账号把某个模型的窗口用满（撞线）后自动出现。</span>';
+  }
+
+  const summary = document.getElementById('remainingUsageSummary');
+  if(summary){
+    const cooling = rows.filter(r => r.cooling).length;
+    const tight = rows.filter(r => !r.cooling && r.used_pct != null && r.used_pct >= 80).length;
+    summary.textContent = rows.length
+      ? (rows.length + ' 项 · 冷却中 ' + cooling + ' · 用量 ≥80% ' + tight)
+      : '暂无数据';
+  }
+
+  if(!rows.length){
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--dim)">'
+      + '暂无数据（需要账号先有用量或撞线记录）</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r => {
+    const pct = r.used_pct == null ? null : Math.max(0, Math.min(100, r.used_pct));
+    const color = r.cooling || (pct != null && pct >= 90) ? 'var(--bad)'
+      : (pct != null && pct >= 70 ? 'var(--warn)' : 'var(--accent2)');
+    const bar = '<div style="display:flex;align-items:center;gap:6px">'
+      + '<div style="flex:1;height:6px;background:var(--panel2);border:1px solid var(--line);border-radius:3px;overflow:hidden">'
+      + '<div style="height:100%;width:' + (pct == null ? 0 : pct) + '%;background:' + color + ';transition:width .3s ease"></div>'
+      + '</div>'
+      + '<span style="font-size:11px;color:var(--dim);min-width:44px;text-align:right">'
+      + (r.used_pct == null ? '—' : r.used_pct.toFixed(1) + '%') + '</span></div>';
+    const flags = [];
+    if(r.cooling) flags.push('<span class="badge" style="font-size:10px;color:var(--bad)">冷却至 '
+      + esc((r.reset_iso || '').slice(5, 16)) + '</span>');
+      else if(r.estimated) flags.push('<span class="badge" style="font-size:10px;color:var(--dim)" '
+      + 'title="当前窗口的起点未知（没有撞线记录，或记录已过期），已用按最近 24 小时统计，是剩余量的下界">按 24h 估算</span>');
+    const remainCell = r.remaining == null ? '—'
+      : (r.cooling ? '<b style="color:var(--bad)">0</b>' : '<b>' + fmtTok(r.remaining) + '</b>');
+    return '<tr>'
+      + '<td style="text-align:left">' + esc(r.nickname || (r.uid || '').slice(0, 8)) + '</td>'
+      + '<td style="text-align:center">' + esc(realmName(r.realm)) + '</td>'
+      + '<td style="text-align:left">' + esc(r.model) + ' ' + flags.join(' ') + '</td>'
+      + '<td style="text-align:center;font-size:11px;color:var(--dim)">'
+      + esc((r.window_iso || '').slice(5, 16)) + '</td>'
+      + '<td style="text-align:right">' + fmtTok(r.used) + '</td>'
+      + '<td style="text-align:right">' + remainCell + '</td>'
+      + '<td>' + bar + '</td>'
+      + '</tr>';
+  }).join('');
 }
 
 function loadUsageSeries(){

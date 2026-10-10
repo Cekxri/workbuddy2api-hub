@@ -8,7 +8,9 @@
 始终保持热乎，用户点开即是毫秒级。
 
 覆盖：面板会轮询的全部贵接口——/usage 汇总、统计页矩阵（带 range）、
-analytics / timeseries 时间窗、面板自己轮询的 realm 接口（intl/cn）与 by-account。
+analytics / timeseries 时间窗、面板自己轮询的 realm 接口（intl/cn）与 by-account，
+外加 /usage/remaining（它不挂 TTL 缓存，但首次调用要冷扫一遍日志建增量折叠，
+预热把这一步挪到面板打开之前）。
 开关：uci workbuddy2api.main.warm（默认 1，设 0 跳过）。
 日志：只在真的重建过（慢）或失败时写 syslog（cron 每 2 分钟一轮，全部命中不写，
 以免刷屏），`logread -e workbuddy2api-warm` 可看。
@@ -120,6 +122,10 @@ def main():
         "/usage/perf?realm=intl",
         "/usage/perf?realm=cn",
         "/usage/by-account",
+        # 剩余用量估算：接口本身不挂 TTL（数字要新鲜），但它背后的增量折叠在
+        # 进程重启后第一次调用要冷扫全量日志（这台路由器上约 1~2s），预热一下
+        # 面板打开时就不用等。
+        "/usage/remaining",
     ]
 
     slow = []

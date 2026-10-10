@@ -131,7 +131,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 107 个套件：81 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 109 个套件：82 个 Python + 27 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - `tests/_mobile_check.py` 是独立的 Playwright 手机/桌面布局检查器（需自行安装 Playwright），按需手动运行，不在上面的套件集里。
 - CI（`.github/workflows/tests.yml`）跑同一条命令：Ubuntu 上 python 3.9 与 3.12（3.9 是本项目声称的最低版本），Windows 上 python 3.12；推送 `v*` tag 时额外断言 **tag == 源码版本**（`-ci` 演练 tag 豁免）。
 
@@ -228,6 +228,15 @@ Codex App 这类客户端会在 Responses 请求里声明 `web_search` / `web_fe
 
 模块内部设计与新增客户端的方法见 **[docs/CONTRIBUTING-智能体配置.md](docs/CONTRIBUTING-智能体配置.md)**。
 
+### 9. 剩余用量估算（数据看板 → 剩余用量估算）
+
+上游按 **24 小时窗口**给「账号 × 模型」配额（用满时 429 / code 6004 会带上重置墙钟），但从不告诉你这个窗口的预算是多少。看板新增的「剩余用量估算」区块把它反推出来：
+
+- **预算 = 撞线账号窗口用量的平均**：账号撞线（收到带重置时刻的 429）的那一刻，它在该模型上「自窗口起点以来的成功用量」就是预算的一个样本；按区域聚合、先按账号平均再跨账号平均。样本在 429 处理的那一刻就记进 `usage/limit-events.jsonl`（重试循环里只有最后一个账号会留下带归属的 429 用量行，光靠日志会漏掉大部分撞线），历史日志里带账号的 429 行作为补充，两者按「账号 + 模型 + 重置时刻」去重。
+- **已用从每个账号自己的重置时刻起算**：窗口起点取该账号该模型最近一次重置时刻；重置时刻在未来的组合（正在冷却）剩余记 0 并显示恢复时间。
+- **没有撞线记录的组合标「按 24h 估算」**：窗口起点未知时按最近 24 小时用量统计——窗口起点必然落在最近 24h 内，所以这是剩余量的**下界**（偏保守，不会高估）。
+- 接口 `GET /usage/remaining`（需面板会话）返回 `budgets`（每个区域 × 模型的预算均值 / 区间 / 样本数）与 `rows`（每个账号 × 模型：已用、预算、剩余、窗口起点、是否冷却、是否估算），区块只读不写，不参与请求路径（唯一的请求路径接触点是撞线时记一行事件）。
+
 ---
 
 ## 三、账号添加与管理
@@ -302,6 +311,7 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 | GET | /scheduler | 定时调度器运行状态与排程日志 |
 | POST | /scheduler/trigger | 手动立即执行后台巡检保活 |
 | GET | /activity/history | 账号每日活动历史：签到与每日活跃的每一次真实尝试（`range` / `uid` / `task` / `result` / `limit`，最新在前） |
+| GET | /usage/remaining | 剩余用量估算：每个账号 × 模型在当前 24h 窗口的已用 / 预算 / 剩余（预算取撞线账号的平均用量；需面板会话） |
 
 ---
 
@@ -335,6 +345,8 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
   - 看板启动时用新增的廉价接口 `GET /agents/available` 判定（不 import、不探测），判定为不可用就把入口整个撤掉，`?tab=agents` 的书签退回网关页；本机打开看板的行为一点没变；
   - **移动端顶栏**：≤640px 主 Tab 行改成横向滚动（与 `.page-nav` 在 ≤860px 的做法一致），按钮保持可读宽度、放得下时仍然平分整行——issue 里的实测溢出（414px +5px、360px +19px、320px +59px）全部归零，390px 五个 Tab 一行放得下；
   - 测试：`tests/_test_agents.py` +11 项、`tests/_test_panel_route_auth.py` +4 项（远程来源读 `enabled:false`、写 403、容器标记压过回环、能力探测两侧答案）、`tests/_test_agent_ui.js` +3 项（入口隐藏与书签回退）；`tests/_mobile_check.py` 的 `nav-equal-width` 不再写死 4 个 Tab，改钉「标签不截断 / 不顶出导航条 / 填满整行」三条几何性质。
+
+- **剩余用量估算：把上游 24h 窗口的预算反推出来**（[PR #247](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/247)，感谢 [@aodianjun](https://github.com/aodianjun)）：上游按 24 小时窗口给「账号 × 模型」配额（用满即 429 / code 6004，带重置墙钟），预算数字却从不公开。新增 `GET /usage/remaining` 与数据看板「剩余用量估算」区块：**预算 = 撞线账号在窗口内用量的平均**（撞线那一刻该账号「自窗口起点以来的成功用量」就是一个样本；按区域聚合，先按账号平均、再跨账号平均），**已用从各账号自己的重置时刻起算**，重置时刻还在未来的组合（冷却中）剩余记 0 并显示恢复时间；没有撞线记录的组合按最近 24h 统计并标「按 24h 估算」——窗口起点必然落在最近 24h 内，所以那是剩余量的下界，偏保守。样本由 429 处理路径**实时**写进 `usage/limit-events.jsonl`：一次请求的重试可能接连撞好几个账号，而日志里只有最后那个账号留着带归属的 429 行，光靠日志会漏掉大部分撞线；历史日志里带账号的 429 行作补充，按（账号 + 模型 + 重置时刻）去重。新增 `tests/_test_remaining_usage.py`（15 项）与 `tests/_test_remaining_usage.js`（26 项）。
 
 已发布版本的完整记录（v1.4.5 ~ v1.6.19，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
 ## 七、致谢与引用声明 (Credits & References)
