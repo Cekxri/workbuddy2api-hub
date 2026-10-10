@@ -634,6 +634,71 @@ finally:
     A.integrate = orig_integrate
     A.restore = orig_restore
 
+print()
+print("[27] rollback restores a pre-existing file from its backup (NameError regression)")
+
+# 覆盖回滚分支的两半：文件原本存在（先备份 → 失败时从备份回滚）与原本不
+# 存在（失败时删除）。失败必须发生在 **Phase 2 写入** 里——占位成目录会让
+# _read_text 先失败、根本走不到写入；这里改用「.credentials.yaml 是可读的
+# 普通文件，但它的 .tmp 路径被目录占位」，让第二个文件的写入才失败。
+# 修复前回滚分支里有一个未定义的 backup_dir(...)，NameError 被 except 吞掉：
+# settings.yaml 停在半配置状态、state 也没写——面板显示「未配置」，restore()
+# 又因为查不到记录而拒绝执行，用户两头都回不去。
+home13 = tempfile.mkdtemp(prefix="wb-agents-home13-")
+acct13 = tempfile.mkdtemp(prefix="wb-agents-acct13-")
+dsh_settings13 = os.path.join(home13, ".dsh", "settings.yaml")
+os.makedirs(os.path.dirname(dsh_settings13), exist_ok=True)
+orig13 = b"agent-default-model:\n  provider: other\n  model: keep-me\n"
+with open(dsh_settings13, "wb") as fh:
+    fh.write(orig13)
+dsh_creds13 = os.path.join(home13, ".dsh", ".credentials.yaml")
+with open(dsh_creds13, "wb") as fh:
+    fh.write(b"")                        # 可读（构建阶段能通过）
+os.makedirs(dsh_creds13 + ".tmp", exist_ok=True)   # 写入阶段必失败
+raised13 = ""
+try:
+    A.integrate(acct13, "dsh", "http://127.0.0.1:8788/v1", "key", home=home13)
+except A.AgentConfigError as exc:
+    raised13 = str(exc)
+check("integrate raised from the write phase (rollback path was reached)",
+      "failed to write dsh files" in raised13, repr(raised13))
+with open(dsh_settings13, "rb") as fh:
+    after13 = fh.read()
+check("pre-existing settings.yaml was rolled back byte-exact",
+      after13 == orig13, (after13, orig13))
+check("no state record was saved (the panel must not read as half-configured)",
+      "dsh" not in A._load_state(acct13), A._load_state(acct13))
+ov13 = A.overview(acct13, home=home13)
+check("overview reports dsh as unconfigured", ov13["dsh"]["configured"] is False,
+      ov13["dsh"])
+refused13 = ""
+try:
+    A.restore(acct13, "dsh", home=home13)
+except A.AgentConfigError as exc:
+    refused13 = str(exc)
+check("restore still refuses (nothing was recorded to restore)",
+      "no recorded integration" in refused13, repr(refused13))
+
+# 另一半：同样的写失败，但 settings.yaml 原本不存在 → 回滚把它删掉
+home14 = tempfile.mkdtemp(prefix="wb-agents-home14-")
+acct14 = tempfile.mkdtemp(prefix="wb-agents-acct14-")
+dsh_creds14 = os.path.join(home14, ".dsh", ".credentials.yaml")
+os.makedirs(os.path.dirname(dsh_creds14), exist_ok=True)
+with open(dsh_creds14, "wb") as fh:
+    fh.write(b"")
+os.makedirs(dsh_creds14 + ".tmp", exist_ok=True)
+raised14 = ""
+try:
+    A.integrate(acct14, "dsh", "http://127.0.0.1:8788/v1", "key", home=home14)
+except A.AgentConfigError as exc:
+    raised14 = str(exc)
+check("same write failure with no pre-existing settings.yaml also raises",
+      "failed to write dsh files" in raised14, repr(raised14))
+check("the created settings.yaml was removed again",
+      not os.path.exists(os.path.join(home14, ".dsh", "settings.yaml")))
+check("no state record for the second home either",
+      "dsh" not in A._load_state(acct14), A._load_state(acct14))
+
 # ---------------------------------------------------------------------------
 # cleanup
 # ---------------------------------------------------------------------------
@@ -641,7 +706,7 @@ finally:
 for d in (home, accounts, home2, acct2, home3, acct3, home4, acct4,
           home5, acct5, home6, acct6, home7, acct7, home8, acct8,
           home9, acct9, home10, acct10, home11, acct11, home12, acct12,
-          home_paths):
+          home13, acct13, home14, acct14, home_paths):
     shutil.rmtree(d, ignore_errors=True)
 
 print()
