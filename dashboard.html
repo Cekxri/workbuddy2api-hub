@@ -1476,6 +1476,12 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '该模型今日已达限额，仅此模型受限（本地 0 点恢复）': 'This model reached the daily limit; only this model is restricted (resets at local midnight)',
     '该模型暂无定价数据': 'No pricing data for this model yet',
     '当前窗口的起点未知（没有撞线记录，或记录已过期），已用按最近 24 小时统计，是剩余量的下界': 'The start of the current window is unknown (no cap on record, or a stale one); used counts the last 24h, a lower bound of what is left',
+    // 模型冷却 pill 的动态文本按片段匹配（整串含模型名与时间戳，命不中整串键），
+    // 所以片段键必须带前后空格，避免误命中其它文案。
+    ' · 撞线 ': ' · hit at ',
+    ' · 恢复 ': ' · back at ',
+    '撞线时间': 'Cap time',
+    '该账号仅此模型受限（上游判定额度用满）；撞线时间与恢复时间均为本地时间': 'only this model is restricted for this account (the upstream declared its quota exhausted); cap and reset times are local',
     '该账号仅此模型受限；时间为本地时间': 'only this model is restricted for this account; times are local',
     '该账号属于': 'This account belongs to the',
     '说明': 'Description',
@@ -1579,6 +1585,25 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '项 · 冷却中': 'items · cooling',
     '预计稍后归来': 'Expected back later',
     '预算 ≈ ': 'budget ≈ ',
+    // 剩余用量（batch 2）：分段记账、按模型总剩余、未参与标记。
+    '撞线后窗口记账在撞线时刻截断，恢复时刻起的新窗口重新记账（旧窗口用量不计入本窗口的已用；两段相加的总量看「各账号用量透视与模型消耗分布」）。按模型的总剩余 = 可用组的剩余之和，冷却/用完的组记 0、不拉低别的组。昨天或今天没消耗过的模型不参与统计（预算样本仍保留并标「未参与」）。':
+      'After a cap the window is truncated at the cap, and a new window re-counts from the reset clock (the old window\'s usage never counts into the current window\'s used figure; the two segments added together are shown in the per-account usage breakdown). A model\'s total remaining is the sum of the remaining of its usable groups; cooling/full groups count 0 and never drag the others down. Models with no usage yesterday or today do not take part (their budget samples stay, marked not counted).',
+    ' · 总剩余 ': ' · total left ',
+    '(可用 ': '(usable ',
+    ' · 冷却 ': ' · cooling ',
+    ' · 未知 ': ' · unknown ',
+    '未参与': 'not counted',
+    '近两日未使用，未参与剩余用量': 'no usage in the last two days; not counted',
+    '按模型汇总：可用组的剩余之和；冷却/用完的组记 0，不拉低别的组':
+      'Per-model total: the sum of the remaining of usable groups; cooling/full groups count 0 and never drag the others down',
+    '+上段 ': '+prev ',
+    '上一窗口已用 ': 'previous window used ',
+    '（撞线截断于 ': ' (truncated at the cap at ',
+    '），本窗口自 ': '); this window re-counts from ',
+    ' 起重新记账': '',
+    '已用到撞线时刻为止（': 'counted up to the cap (',
+    '），额度 ': '); quota returns at ',
+    ' 恢复': '',
     '颜色主题': 'Color theme',
     '颜色主题:': 'Color theme:',
     '额度利用率:': 'Quota utilization:',
@@ -1641,6 +1666,11 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   };
   var HANT_PHRASES = {
     " · 周期已过": " · 週期已過",
+    // 撞线（6004）相关：pill 的动态片段 + 禁用总览的列头 + pill 悬停标题。
+    " · 撞线 ": " · 撞線 ",
+    " · 恢复 ": " · 恢復 ",
+    "撞线时间": "撞線時間",
+    "该账号仅此模型受限（上游判定额度用满）；撞线时间与恢复时间均为本地时间": "該帳號僅此模型受限（上游判定額度用滿）；撞線時間與恢復時間均為本地時間",
     " 个未绑定账号分配代理出口": " 個未繫結帳號分配代理出口",
     " 个槽位，记得点「保存槽位」": " 個槽位，記得點「儲存槽位」",
     " 个账号 → ": " 個帳號 → ",
@@ -3047,23 +3077,49 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         <div>
           <h2 style="margin:0">剩余用量估算 <em id="remainingUsageWindow" style="font-style:normal;color:var(--dim);font-size:12px"></em></h2>
           <div style="font-size:12px;color:var(--dim)">上游按 24 小时窗口给每个账号、每个模型配额；预算 = 撞线账号在窗口内用量的平均值（上游不给这个数字，只能撞线时反推），已用从各账号自己的重置时刻起算。没有撞线记录（或记录已过期）的组合按最近 24 小时保守估计（标「按 24h 估算」）。</div>
+          <div style="font-size:12px;color:var(--dim)">撞线后窗口记账在撞线时刻截断，恢复时刻起的新窗口重新记账（旧窗口用量不计入本窗口的已用；两段相加的总量看「各账号用量透视与模型消耗分布」）。按模型的总剩余 = 可用组的剩余之和，冷却/用完的组记 0、不拉低别的组。昨天或今天没消耗过的模型不参与统计（预算样本仍保留并标「未参与」）。</div>
         </div>
         <div style="font-size:12px;color:var(--dim)" id="remainingUsageSummary">-</div>
       </div>
-      <div id="remainingBudgets" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"></div>
-      <div style="overflow-x:auto;max-height:340px">
-        <table class="data-cards" id="remainingUsageTable">
-          <thead><tr>
-            <th style="text-align:left">账号</th>
-            <th style="text-align:center;width:64px">区域</th>
-            <th style="text-align:left">模型</th>
-            <th style="text-align:center">窗口起点</th>
-            <th style="text-align:right">窗口内已用</th>
-            <th style="text-align:right">估算剩余</th>
-            <th style="min-width:150px">用量占比</th>
-          </tr></thead>
-          <tbody id="remainingUsageTbody"></tbody>
-        </table>
+      <div style="margin-bottom:16px">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
+          <b>国际版</b>
+          <span style="font-size:12px;color:var(--dim)" id="remainingSummaryIntl">-</span>
+        </div>
+        <div id="remainingBudgetsIntl" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"></div>
+        <div style="overflow-x:auto;max-height:340px">
+          <table class="data-cards" id="remainingUsageTableIntl">
+            <thead><tr>
+              <th style="text-align:left">账号</th>
+              <th style="text-align:left">模型</th>
+              <th style="text-align:center">窗口起点</th>
+              <th style="text-align:right">窗口内已用</th>
+              <th style="text-align:right">估算剩余</th>
+              <th style="min-width:150px">用量占比</th>
+            </tr></thead>
+            <tbody id="remainingTbodyIntl"></tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
+          <b>国内版</b>
+          <span style="font-size:12px;color:var(--dim)" id="remainingSummaryCn">-</span>
+        </div>
+        <div id="remainingBudgetsCn" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"></div>
+        <div style="overflow-x:auto;max-height:340px">
+          <table class="data-cards" id="remainingUsageTableCn">
+            <thead><tr>
+              <th style="text-align:left">账号</th>
+              <th style="text-align:left">模型</th>
+              <th style="text-align:center">窗口起点</th>
+              <th style="text-align:right">窗口内已用</th>
+              <th style="text-align:right">估算剩余</th>
+              <th style="min-width:150px">用量占比</th>
+            </tr></thead>
+            <tbody id="remainingTbodyCn"></tbody>
+          </table>
+        </div>
       </div>
     </section>
 
@@ -4991,8 +5047,15 @@ function coolPills(a){
   const list = a && Array.isArray(a.modelCooldowns) ? a.modelCooldowns : [];
   const pills = list.map(c => {
     const at = c && fmtCoolAt(c.expiresAt);
-    return at ? '<span class="cool-pill" title="该账号仅此模型受限；时间为本地时间">'
-      + esc(c.model) + ' · ' + at + ' 恢复</span>' : '';
+    if(!at) return '';
+    // 撞过线（上游 code 6004）的模型带 cappedAt：把撞线时间一并画出来，
+    // 两段时间配合就能看出这是窗口配额用满，而不是一次临时限流。
+    const hit = c && fmtCoolAt(c.cappedAt);
+    return hit
+      ? '<span class="cool-pill" title="该账号仅此模型受限（上游判定额度用满）；撞线时间与恢复时间均为本地时间">'
+        + esc(c.model) + ' · 撞线 ' + hit + ' · 恢复 ' + at + '</span>'
+      : '<span class="cool-pill" title="该账号仅此模型受限；时间为本地时间">'
+        + esc(c.model) + ' · ' + at + ' 恢复</span>';
   }).filter(Boolean);
   return pills.length ? '<div class="cool-list">' + pills.join('') + '</div>' : '';
 }
@@ -5188,7 +5251,10 @@ function disabledRows(){
     }
     (Array.isArray(a.modelCooldowns) ? a.modelCooldowns : []).forEach(c => {
       if(!c || !c.model) return;
-      rows.push({who, realm, scope: c.model, kind: '上游限流', detail,
+      // 带 cappedAt 的是 6004 撞线（恢复时间来自上游）：撞线时间单独一列，
+      // 没有撞线记录的临时限流窗口该列为「—」。
+      const hit = c.cappedAt ? fmtCoolAt(c.cappedAt) : '';
+      rows.push({who, realm, scope: c.model, kind: '上游限流', detail, cappedAt: hit,
                  reason: '该模型配额耗尽（code 6004），同账号其他模型不受影响',
                  until: fmtCoolAt(c.expiresAt)});
     });
@@ -5234,6 +5300,7 @@ function renderDisabled(){
     + '<th style="text-align:left">范围</th>'
     + '<th style="text-align:center;width:100px">类型</th>'
     + '<th style="text-align:left">原因</th>'
+    + '<th style="text-align:center;width:156px">撞线时间</th>'
     + '<th style="text-align:center;width:156px">恢复时间</th>'
     + '</tr></thead><tbody>'
     + rows.map(r => '<tr>'
@@ -5243,6 +5310,8 @@ function renderDisabled(){
         + '<td style="text-align:center"><span class="badge ' + badge(r.kind) + '">' + esc(r.kind) + '</span></td>'
         + '<td style="text-align:left"' + (r.detail ? ' data-tip="' + esc(r.detail) + '"' : '') + '>'
           + esc(r.reason) + '</td>'
+        // 撞线时间：只有 6004 撞线（持久化的 model_caps）才有；其余行「—」。
+        + '<td style="text-align:center">' + esc(r.cappedAt || '—') + '</td>'
         + '<td style="text-align:center">' + (r.manual ? '—（需手动启用）' : (r.until || '—')) + '</td>'
         + '</tr>').join('')
     + '</tbody></table></div>';
@@ -9379,69 +9448,168 @@ function fmtTok(v){
   return String(n);
 }
 
+// 上一轮真正画进 DOM 的载荷指纹（同 refreshInner 里的 recentFp 那套）。
+let lastRemainingFp = null;
+// 模型筛选（点「模型总量」徽章只看那个模型，再点一次显示全部）与最近一次载荷
+// ——切换筛选要立刻重画，不能等下一轮轮询。
+let remainingModelFilter = '';
+let lastRemainingData = null;
+
+function toggleRemainingModelFilter(model){
+  remainingModelFilter = (remainingModelFilter === model) ? '' : (model || '');
+  if(lastRemainingData) renderRemainingUsage(lastRemainingData);
+}
+
+// 剩余用量按区域分成两块（国际版 / 国内版）：各自的徽章、统计与表格；区域列
+// 因此不再需要——区块标签已经说明了区域。
+const REMAINING_REALMS = [
+  {realm: 'intl', budgets: 'remainingBudgetsIntl',
+   summary: 'remainingSummaryIntl', tbody: 'remainingTbodyIntl'},
+  {realm: 'cn', budgets: 'remainingBudgetsCn',
+   summary: 'remainingSummaryCn', tbody: 'remainingTbodyCn'},
+];
+
 function renderRemainingUsage(data){
-  const tbody = document.getElementById('remainingUsageTbody');
-  if(!tbody) return;
+  const bodies = REMAINING_REALMS.map(r => document.getElementById(r.tbody));
+  if(!bodies[0]) return;
+  const tbody = bodies[0];   // 指纹守卫只关心「这一块画过没有」
+  // 5 秒一轮的重画里，载荷没变就不碰 DOM：接口挂了 15 秒 TTL，同一个缓存
+  // 条目会连着命中好几轮轮询，每轮重写三十行 innerHTML 是白付的解析与布局。
+  // 指纹取载荷本身——它包含所有会画进表格的输入，而同一缓存条目的两次响应
+  // 逐字节相同。tbody 为空时照常重画（换页签/清空后不能停在空白上）。
+  // 筛选状态也算指纹的一部分：切换筛选必须立刻重画。
+  const fp = remainingModelFilter + '\u0000' + JSON.stringify(data);
+  if(fp === lastRemainingFp && tbody.innerHTML) return;
+  lastRemainingFp = fp;
+  lastRemainingData = data;
   const rows = (data && data.rows) || [];
   const budgets = (data && data.budgets) || [];
-  const realmName = r => (r === 'cn' ? '国内版' : '国际版');
+  // 模型筛选：徽章选中的模型只留它自己的行（'' = 全部）。统计行按可见行算，
+  // 免得「表里 3 行、上面写 20 项」。
+  const visible = remainingModelFilter
+    ? rows.filter(r => r.model === remainingModelFilter) : rows;
 
   const winEm = document.getElementById('remainingUsageWindow');
   if(winEm){
     winEm.textContent = data ? ('窗口 ' + (data.window_seconds / 3600) + 'h') : '';
   }
-  const budgetsEl = document.getElementById('remainingBudgets');
-  if(budgetsEl){
-    budgetsEl.innerHTML = budgets.length
-      ? budgets.map(b => '<span class="badge" style="font-size:11px" title="'
-          + esc('样本 ' + b.n + ' · 区间 ' + fmtTok(b.min) + ' ~ ' + fmtTok(b.max)) + '">'
-          + esc(realmName(b.realm) + ' · ' + b.model) + ' · 预算 ≈ <b>' + fmtTok(b.avg) + '</b>'
-          + ' <span style="color:var(--dim)">(n=' + b.n + ')</span></span>').join(' ')
+  // 预算样本与按模型总剩余并成同一个徽章：同一个 (区域, 模型) 的两个指标
+  // （预算来自撞线样本；总剩余 = 可用组的剩余之和，冷却/已满记 0、只加不减），
+  // 分两行展示会被当成重复条目。徽章按区域各画一块。
+  const models = (data && data.models) || [];
+  const merged = new Map();
+  budgets.forEach(b => merged.set(b.realm + '\u0000' + b.model, {budget: b}));
+  models.forEach(m => {
+    const key = m.realm + '\u0000' + m.model;
+    const entry = merged.get(key) || {};
+    entry.model = m;
+    merged.set(key, entry);
+  });
+  REMAINING_REALMS.forEach(({realm, budgets: elId}) => {
+    const el = document.getElementById(elId);
+    if(!el) return;
+    const chips = [];
+    merged.forEach(entry => {
+      const budget = entry.budget, model = entry.model;
+      const src = model || budget;
+      if(src.realm !== realm) return;
+      // 近两日没消耗的模型不参与剩余计算（服务端过滤），但预算样本保留并
+      // 标「未参与」——预算要撞线才学得到，不能因为暂时没用就从面板消失。
+      const off = budget && budget.active === false;
+      const bits = [];
+      const tips = [];
+      if(budget){
+        bits.push('预算 ≈ <b>' + fmtTok(budget.avg) + '</b>'
+                  + ' <span style="color:var(--dim)">(n=' + budget.n + ')</span>'
+                  + (off ? ' <span style="color:var(--dim)">未参与</span>' : ''));
+        tips.push('样本 ' + budget.n + ' · 区间 ' + fmtTok(budget.min) + ' ~ ' + fmtTok(budget.max)
+                  + (off ? ' · 近两日未使用，未参与剩余用量' : ''));
+      }
+      if(model){
+        bits.push('总剩余 <b>'
+                  + (model.total_remaining == null ? '—' : fmtTok(model.total_remaining)) + '</b>'
+                  + ' <span style="color:var(--dim)">(可用 ' + (model.available || 0)
+                  + ' · 冷却 ' + (model.cooling || 0)
+                  + (model.unknown ? ' · 未知 ' + model.unknown : '') + ')</span>');
+        tips.push('按模型汇总：可用组的剩余之和；冷却/用完的组记 0，不拉低别的组');
+      }
+      chips.push('<span class="badge" style="font-size:11px;cursor:pointer'
+        + (off ? ';opacity:.55' : '')
+        + (remainingModelFilter === src.model
+           ? ';outline:2px solid var(--accent);outline-offset:1px' : '')
+        + '" title="' + esc(tips.join('；') + ' · 点击只看这个模型，再点一次显示全部') + '"'
+        + ' data-model="' + esc(src.model) + '"'
+        + ' onclick="toggleRemainingModelFilter(this.dataset.model)">'
+        + esc(src.model) + ' · ' + bits.join(' · ') + '</span>');
+    });
+    el.innerHTML = chips.length
+      ? chips.join(' ')
       : '<span style="font-size:12px;color:var(--dim)">暂无预算样本：等某个账号把某个模型的窗口用满（撞线）后自动出现。</span>';
-  }
+  });
 
-  const summary = document.getElementById('remainingUsageSummary');
-  if(summary){
-    const cooling = rows.filter(r => r.cooling).length;
-    const tight = rows.filter(r => !r.cooling && r.used_pct != null && r.used_pct >= 80).length;
-    summary.textContent = rows.length
-      ? (rows.length + ' 项 · 冷却中 ' + cooling + ' · 用量 ≥80% ' + tight)
+  const countLine = list => {
+    const cooling = list.filter(r => r.cooling).length;
+    const tight = list.filter(r => !r.cooling && r.used_pct != null && r.used_pct >= 80).length;
+    return list.length
+      ? (list.length + ' 项 · 冷却中 ' + cooling + ' · 用量 ≥80% ' + tight)
       : '暂无数据';
-  }
+  };
+  const summary = document.getElementById('remainingUsageSummary');
+  if(summary) summary.textContent = countLine(visible);
+  REMAINING_REALMS.forEach(({realm, summary: elId}) => {
+    const el = document.getElementById(elId);
+    if(el) el.textContent = countLine(visible.filter(r => r.realm === realm));
+  });
 
-  if(!rows.length){
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--dim)">'
-      + '暂无数据（需要账号先有用量或撞线记录）</td></tr>';
-    return;
-  }
-  tbody.innerHTML = rows.map(r => {
-    const pct = r.used_pct == null ? null : Math.max(0, Math.min(100, r.used_pct));
-    const color = r.cooling || (pct != null && pct >= 90) ? 'var(--bad)'
-      : (pct != null && pct >= 70 ? 'var(--warn)' : 'var(--accent2)');
-    const bar = '<div style="display:flex;align-items:center;gap:6px">'
-      + '<div style="flex:1;height:6px;background:var(--panel2);border:1px solid var(--line);border-radius:3px;overflow:hidden">'
-      + '<div style="height:100%;width:' + (pct == null ? 0 : pct) + '%;background:' + color + ';transition:width .3s ease"></div>'
-      + '</div>'
-      + '<span style="font-size:11px;color:var(--dim);min-width:44px;text-align:right">'
-      + (r.used_pct == null ? '—' : r.used_pct.toFixed(1) + '%') + '</span></div>';
-    const flags = [];
-    if(r.cooling) flags.push('<span class="badge" style="font-size:10px;color:var(--bad)">冷却至 '
-      + esc((r.reset_iso || '').slice(5, 16)) + '</span>');
-      else if(r.estimated) flags.push('<span class="badge" style="font-size:10px;color:var(--dim)" '
-      + 'title="当前窗口的起点未知（没有撞线记录，或记录已过期），已用按最近 24 小时统计，是剩余量的下界">按 24h 估算</span>');
-    const remainCell = r.remaining == null ? '—'
-      : (r.cooling ? '<b style="color:var(--bad)">0</b>' : '<b>' + fmtTok(r.remaining) + '</b>');
-    return '<tr>'
-      + '<td style="text-align:left">' + esc(r.nickname || (r.uid || '').slice(0, 8)) + '</td>'
-      + '<td style="text-align:center">' + esc(realmName(r.realm)) + '</td>'
-      + '<td style="text-align:left">' + esc(r.model) + ' ' + flags.join(' ') + '</td>'
-      + '<td style="text-align:center;font-size:11px;color:var(--dim)">'
-      + esc((r.window_iso || '').slice(5, 16)) + '</td>'
-      + '<td style="text-align:right">' + fmtTok(r.used) + '</td>'
-      + '<td style="text-align:right">' + remainCell + '</td>'
-      + '<td>' + bar + '</td>'
-      + '</tr>';
-  }).join('');
+  const emptyRow = '<tr><td colspan="6" style="text-align:center;color:var(--dim)">'
+    + (remainingModelFilter
+       ? esc('「' + remainingModelFilter + '」在当前范围内没有记录（再点一次选中的徽章显示全部）')
+       : '暂无数据（需要账号先有用量或撞线记录）')
+    + '</td></tr>';
+  REMAINING_REALMS.forEach(({realm, tbody: bodyId}) => {
+    const body = document.getElementById(bodyId);
+    if(!body) return;
+    const realmRows = visible.filter(r => r.realm === realm);
+    if(!realmRows.length){
+      body.innerHTML = emptyRow;
+      return;
+    }
+    body.innerHTML = realmRows.map(r => {
+      const pct = r.used_pct == null ? null : Math.max(0, Math.min(100, r.used_pct));
+      const color = r.cooling || (pct != null && pct >= 90) ? 'var(--bad)'
+        : (pct != null && pct >= 70 ? 'var(--warn)' : 'var(--accent2)');
+      const bar = '<div style="display:flex;align-items:center;gap:6px">'
+        + '<div style="flex:1;height:6px;background:var(--panel2);border:1px solid var(--line);border-radius:3px;overflow:hidden">'
+        + '<div style="height:100%;width:' + (pct == null ? 0 : pct) + '%;background:' + color + ';transition:width .3s ease"></div>'
+        + '</div>'
+        + '<span style="font-size:11px;color:var(--dim);min-width:44px;text-align:right">'
+        + (r.used_pct == null ? '—' : r.used_pct.toFixed(1) + '%') + '</span></div>';
+      const flags = [];
+      if(r.cooling) flags.push('<span class="badge" style="font-size:10px;color:var(--bad)">冷却至 '
+        + esc((r.reset_iso || '').slice(5, 16)) + '</span>');
+        else if(r.estimated) flags.push('<span class="badge" style="font-size:10px;color:var(--dim)" '
+        + 'title="当前窗口的起点未知（没有撞线记录，或记录已过期），已用按最近 24 小时统计，是剩余量的下界">按 24h 估算</span>');
+      const remainCell = r.remaining == null ? '—'
+        : (r.cooling ? '<b style="color:var(--bad)">0</b>' : '<b>' + fmtTok(r.remaining) + '</b>');
+      // 分段明细不在这张表里展示：两段相加的总量看「各账号用量透视与模型消耗
+      // 分布」（原始消耗本来就含两段）。这里只保留冷却行的悬停提示——窗口的
+      // 记账在撞线处截止。
+      const segs = Array.isArray(r.segments) ? r.segments : [];
+      const usedTitle = r.cooling && segs.length
+        ? ' title="' + esc('已用到撞线时刻为止（' + (segs[0].end_iso || '').slice(5, 16)
+                           + '），额度 ' + (r.reset_iso || '').slice(5, 16) + ' 恢复') + '"'
+        : '';
+      return '<tr>'
+        + '<td style="text-align:left">' + esc(r.nickname || (r.uid || '').slice(0, 8)) + '</td>'
+        + '<td style="text-align:left">' + esc(r.model) + ' ' + flags.join(' ') + '</td>'
+        + '<td style="text-align:center;font-size:11px;color:var(--dim)">'
+        + esc((r.window_iso || '').slice(5, 16)) + '</td>'
+        + '<td style="text-align:right"' + usedTitle + '>' + fmtTok(r.used) + '</td>'
+        + '<td style="text-align:right">' + remainCell + '</td>'
+        + '<td>' + bar + '</td>'
+        + '</tr>';
+    }).join('');
+  });
 }
 
 function loadUsageSeries(){
