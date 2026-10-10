@@ -12702,6 +12702,9 @@ class Handler(BaseHTTPRequestHandler):
             if account is None:
                 continue
             res = account.checkin(trigger="manual")
+            nick = account.nickname or account.uid[:8]
+            add_log_entry(f"[任务福利] 账号 [{nick}] 每日签到: {res.get('msg') if res.get('ok') else res.get('error')}",
+                          level="INFO" if res.get("ok") else "WARN", tag="tasks")
             results.append({"uid": account.uid, "nickname": account.nickname, **res})
         return self._json(200, {"results": results, "accounts": account_views()})
 
@@ -12718,9 +12721,9 @@ class Handler(BaseHTTPRequestHandler):
             res = account.daily_chat(trigger="manual")
             # 与网页通道打卡那条一样把结果写进运行日志：msg 里带着网页通道是
             # completed 还是失败原因，面板上光看 toast 的「成功」看不出来。
-            log("account %s: 每日活跃打卡 -> %s"
-                % (account.uid[:8], res.get("msg") if res.get("ok") else res.get("error")),
-                level="INFO" if res.get("ok") else "WARN")
+            nick = account.nickname or account.uid[:8]
+            log(f"[任务福利] 账号 [{nick}] 每日活跃打卡: {res.get('msg') if res.get('ok') else res.get('error')}",
+                level="INFO" if res.get("ok") else "WARN", tag="tasks")
             results.append({"uid": account.uid, "nickname": account.nickname, **res})
         return self._json(200, {"results": results, "accounts": account_views()})
 
@@ -12740,9 +12743,9 @@ class Handler(BaseHTTPRequestHandler):
             if account is None:
                 continue
             res = account.daily_chat_web(trigger="manual")
-            log("account %s: 网页通道打卡 -> %s"
-                % (account.uid[:8], res.get("conversation") if res.get("ok") else res.get("error")),
-                level="INFO" if res.get("ok") else "WARN")
+            nick = account.nickname or account.uid[:8]
+            log(f"[任务福利] 账号 [{nick}] 网页通道打卡: {res.get('conversation') if res.get('ok') else res.get('error')}",
+                level="INFO" if res.get("ok") else "WARN", tag="tasks")
             results.append({"uid": account.uid, "nickname": account.nickname, **res})
         return self._json(200, {"results": results, "accounts": account_views()})
 
