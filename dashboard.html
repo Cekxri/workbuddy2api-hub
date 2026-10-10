@@ -2912,13 +2912,18 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         <select id="growthAcctSelect" onchange="switchGrowthAccount(this.value)" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;color:var(--fg);font-family:inherit">
           <option value="all">全部国内账号 (批量)</option>
         </select>
+        <button class="primary" id="btnPageCheckin" onclick="triggerBuddyCheckin(this)">Buddy 加油站签到</button>
         <button class="primary" id="btnRunTasks" onclick="runGrowthTasks(this)">一键做任务领积分</button>
         <button id="btnCatTravel" onclick="triggerCatTravel(this)">猫猫旅行</button>
         <button id="btnRunStreakBonus" onclick="triggerStreakBonus(this)">连登管家与抽奖</button>
       </div>
     </div>
 
-    <div class="cards" style="margin-bottom:16px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
+    <div class="cards" style="margin-bottom:16px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
+      <div class="card accent2">
+        <div class="k">Buddy 加油站签到</div>
+        <div class="v" id="cnTodayCheckinState" style="font-size:19px">-</div>
+      </div>
       <div class="card">
         <div class="k">连续打卡天数</div>
         <div class="v" id="stkDays" style="color:var(--accent2)">-</div>
@@ -4264,6 +4269,28 @@ async function loadGrowthTasks(){
       sel.innerHTML = opts;
     }
 
+    const chkStateEl = document.getElementById("cnTodayCheckinState");
+    if(chkStateEl){
+      const today = new Date().toISOString().slice(0, 10);
+      let targetAccts = accts.filter(a => a.realm === 'cn');
+      if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
+        targetAccts = targetAccts.filter(a => a.uid === CURRENT_GROWTH_UID);
+      }
+      if(!targetAccts.length){
+        chkStateEl.textContent = '无国内账号';
+      } else {
+        const allDone = targetAccts.every(a => a.lastCheckin && a.lastCheckin.startsWith(today));
+        const someDone = targetAccts.some(a => a.lastCheckin && a.lastCheckin.startsWith(today));
+        if(allDone){
+          chkStateEl.innerHTML = '<span style="color:#26bb82">今日已签到</span>';
+        } else if(someDone){
+          chkStateEl.innerHTML = '<span style="color:var(--accent)">部分已签到</span>';
+        } else {
+          chkStateEl.innerHTML = '<span style="color:var(--warn)">今日未签到</span>';
+        }
+      }
+    }
+
     const elStk = document.getElementById("stkDays");
     if(elStk) elStk.textContent = streak + ' 天';
     const elNrg = document.getElementById("nrgBalance");
@@ -4394,6 +4421,25 @@ async function triggerCatTravel(btn){
   }finally{
     if(btn){ btn.disabled = false; btn.textContent = '猫猫旅行'; }
   }
+}
+
+async function triggerBuddyCheckin(btn){
+  btn.disabled = true; const ot = btn.textContent; btn.textContent = "签到中...";
+  try {
+    const payload = {};
+    if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
+      payload.uid = CURRENT_GROWTH_UID;
+    }
+    const r = await postJSON("/accounts/checkin", payload);
+    const res = r.results || [];
+    if(!res.length) toast("未发现国内版账号", "warn");
+    else {
+      const summary = res.map(x => (x.nickname||x.uid.slice(0,6)) + ": " + (x.ok ? "签到成功 (+100积分)" : (x.error||x.msg))).join("；");
+      toast("Buddy 加油站签到: " + summary, res.some(x => x.ok) ? "ok" : "warn");
+    }
+    await loadAccounts(); await loadGrowthTasks();
+  }catch(e){ toast("签到失败: " + e.message, "bad"); }
+  finally { btn.disabled = false; btn.textContent = ot; }
 }
 
 async function triggerStreakBonus(btn){
