@@ -89,6 +89,11 @@ UPDATE_CHECK_ENABLED_KEY = "update_check_enabled"
 # general update-state store: see update_check_state().
 UPDATE_CHECK_STATE_KEY = "update_check"
 
+# 剩余用量优先调度：把「估计剩余快耗尽」的 (账号, 模型) 先交出去（剩余越少
+# 权重越高）。缺失键读作关：估算本身是从撞线样本反推的，优先它是一次刻意的
+# 取舍（那些组合会明显多接流量），所以老安装保持原样的纯轮询。
+REMAINING_PRIORITY_ENABLED_KEY = "remaining_priority_enabled"
+
 _lock = threading.RLock()
 
 
@@ -1128,6 +1133,30 @@ def set_auto_switch_product(accounts_dir, enabled):
     with _lock:
         data = load(accounts_dir)
         data["auto_switch_product"] = enabled
+        save(accounts_dir, data)
+    return enabled
+
+
+def remaining_priority_enabled(accounts_dir):
+    """Whether pairs close to their estimated remaining quota are served first.
+
+    Off unless the operator turns it on. The remaining-usage estimate is
+    inferred from cap events and the usage log, and preferring the pairs that
+    are close to their estimated limit is a deliberate trade: they take a
+    visibly larger share of the traffic, which is the point of the preference
+    (spend the quota that would otherwise lapse with the window). An install
+    that predates the switch keeps the plain round-robin, so nothing changes
+    until it is explicitly turned on.
+    """
+    return load(accounts_dir).get(REMAINING_PRIORITY_ENABLED_KEY) is True
+
+
+def set_remaining_priority_enabled(accounts_dir, enabled):
+    """Persist the remaining-usage priority switch. Returns the stored boolean."""
+    enabled = bool(enabled)
+    with _lock:
+        data = load(accounts_dir)
+        data[REMAINING_PRIORITY_ENABLED_KEY] = enabled
         save(accounts_dir, data)
     return enabled
 
