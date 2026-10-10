@@ -148,15 +148,31 @@ def fetch_growth_summary(account):
             out["energy"] = (d.get("data") or {}).get("balance", 0)
     except Exception as exc:
         _log(f"growth/energy query failed: {exc}")
-    # 2. 连续打卡
+    # 2. 连续打卡、连登档位、补签卡与抽奖
     try:
         req = urllib.request.Request(CHAT_BASE + "/activity/growth/streak", headers=headers)
         with _accounts.urlopen(req, timeout=10, proxy=account.proxy) as resp:
             d = json.loads(resp.read().decode("utf-8"))
-            st = (d.get("data") or {}).get("streak") or {}
+            data = d.get("data") or {}
+            st = data.get("streak") or {}
             out["streak_days"] = st.get("days", 0)
+            out["makeup_cards"] = (data.get("makeup_cards") or {}).get("balance", 0)
+            redemp = data.get("redemption_status") or {}
+            out["tiers"] = redemp.get("tiers") or []
+            out["tier_statuses"] = {
+                "7d": redemp.get("tier_7d_status", "locked"),
+                "14d": redemp.get("tier_14d_status", "locked"),
+                "28d": redemp.get("tier_28d_status", "locked"),
+            }
     except Exception as exc:
         _log(f"growth/streak query failed: {exc}")
+    try:
+        req = urllib.request.Request(CHAT_BASE + "/activity/growth/lottery/summary", headers=headers)
+        with _accounts.urlopen(req, timeout=10, proxy=account.proxy) as resp:
+            d = json.loads(resp.read().decode("utf-8"))
+            out["lottery_chances"] = (d.get("data") or {}).get("chances", 0)
+    except Exception as exc:
+        _log(f"growth/lottery query failed: {exc}")
     # 3. 猫猫旅行
     try:
         req = urllib.request.Request(CHAT_BASE + "/activity/growth/buddy/travel/status", headers=headers)

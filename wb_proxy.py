@@ -12354,6 +12354,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_tasks_run(payload)
         if path == "/tasks/travel":
             return self._route_tasks_travel(payload)
+        if path == "/tasks/streak-bonus":
+            return self._route_tasks_streak_bonus(payload)
         if path == "/scheduler/trigger":
             return self._route_scheduler_trigger(payload)
         if path == "/scheduler/toggle":
@@ -12527,6 +12529,31 @@ class Handler(BaseHTTPRequestHandler):
             "logs": combined_logs,
             "accounts_count": len(targets)
         })
+
+    def _route_tasks_streak_bonus(self, payload):
+        if not POOL:
+            return self._json(200, {"ok": False, "msg": "账号池不可用"})
+        invalidate_tasks_cache()
+        uid = payload.get("uid")
+        if uid and uid != "all":
+            target = POOL.get(uid)
+            if not target or target.realm != "cn":
+                return self._json(200, {"ok": False, "msg": "未找到指定的国内版账号"})
+            targets = [target]
+        else:
+            targets = [a for a in POOL.accounts if a.realm == "cn" and a.enabled]
+        if not targets:
+            return self._json(200, {"ok": False, "msg": "未找到已启用的国内版账号"})
+        from wb_tasks import run_streak_bonus
+        results = []
+        for i, acc in enumerate(targets):
+            uid_str = acc.uid[:8] if acc.uid else "?"
+            nick = acc.nickname or uid_str
+            res = run_streak_bonus(acc)
+            results.append(f"{nick}: {res.get('msg')}")
+            if i < len(targets) - 1:
+                time.sleep(1.0)
+        return self._json(200, {"ok": True, "msg": chr(10).join(results)})
 
     def _route_tasks_travel(self, payload):
         if not POOL:

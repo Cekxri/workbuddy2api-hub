@@ -2885,6 +2885,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         </select>
         <button class="primary" id="btnRunTasks" onclick="runGrowthTasks(this)">一键做任务领积分</button>
         <button id="btnCatTravel" onclick="triggerCatTravel(this)">猫猫旅行</button>
+        <button id="btnRunStreakBonus" onclick="triggerStreakBonus(this)">连登管家与抽奖</button>
       </div>
     </div>
 
@@ -2892,6 +2893,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <div class="card"><div class="val" id="stkDays">-</div><div class="lbl">连续打卡天数</div></div>
       <div class="card accent"><div class="val" id="nrgBalance">-</div><div class="lbl">成长能量余额</div></div>
       <div class="card accent2"><div class="val" id="catState">-</div><div class="lbl" id="catDesc">猫猫日常状态</div></div>
+      <div class="card"><div class="val" id="makeupCards">-</div><div class="lbl">补签卡余额</div></div>
+      <div class="card warn"><div class="val" id="lotteryChances">-</div><div class="lbl">成长抽奖次数</div></div>
     </div>
 
     <div style="overflow-x:auto">
@@ -4180,6 +4183,10 @@ async function loadGrowthTasks(){
     if(elStk) elStk.textContent = streak + ' 天';
     const elNrg = document.getElementById("nrgBalance");
     if(elNrg) elNrg.textContent = energy;
+    const elCards = document.getElementById("makeupCards");
+    if(elCards) elCards.textContent = (sum.makeup_cards != null ? sum.makeup_cards : '-') + ' 张';
+    const elLottery = document.getElementById("lotteryChances");
+    if(elLottery) elLottery.textContent = (sum.lottery_chances != null ? sum.lottery_chances : '-') + ' 次';
 
     const elCat = document.getElementById("catState");
     const elCatDesc = document.getElementById("catDesc");
@@ -4280,6 +4287,25 @@ async function triggerCatTravel(btn){
     toast("猫猫旅行失败: " + e.message, "bad");
   }finally{
     if(btn){ btn.disabled = false; btn.textContent = '猫猫旅行'; }
+  }
+}
+
+async function triggerStreakBonus(btn){
+  if(btn){ btn.disabled = true; btn.textContent = '执行中...'; }
+  try{
+    const payload = {};
+    if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
+      payload.uid = CURRENT_GROWTH_UID;
+    }
+    const r = await postJSON("/tasks/streak-bonus", payload);
+    const msg = r.msg || (r.ok ? "连登管家与抽奖执行完成" : "操作未完成");
+    toast(msg, r.ok ? "ok" : "warn");
+    await loadAccounts();
+    await loadGrowthTasks();
+  }catch(e){
+    toast("连登管家执行失败: " + e.message, "bad");
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '连登管家与抽奖'; }
   }
 }
 
