@@ -2878,6 +2878,25 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   </div><!-- /pageGateway -->
   
   <div id="pageTasks" class="main-page">
+  <!-- 国际版每日活跃福利 -->
+  <section id="sectionIntlTasks" style="margin-bottom:24px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <div>
+        <h2 style="margin:0">国际版每日活跃福利</h2>
+        <div style="font-size:12px;color:var(--dim)">国际版每日轻量会话与网页通道打卡，触发官方发放每日活跃 Bonus Pack (+30/+50 积分)</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="primary" id="btnPageDailyChat" onclick="doDailyChat(this)">每日活跃打卡 (国际版)</button>
+        <button id="btnPageDailyChatWeb" onclick="doDailyChatWeb(this)">网页通道打卡 (国际版)</button>
+      </div>
+    </div>
+    <div class="cards" style="margin-bottom:14px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+      <div class="card"><div class="val" id="intlAcctCount">-</div><div class="lbl">国际版账号数量</div></div>
+      <div class="card accent"><div class="val" id="intlBonusCredits">-</div><div class="lbl">每日活跃奖励额度</div></div>
+      <div class="card accent2"><div class="val" id="intlTodayActiveState">-</div><div class="lbl">今日活跃打卡状态</div></div>
+    </div>
+  </section>
+
   <!-- 国内版专属成长任务与日常福利 -->
   <section id="sectionGrowthTasks">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
@@ -4158,7 +4177,38 @@ async function switchGrowthAccount(uid){
   await loadGrowthTasks();
 }
 
+async function loadIntlTasks(){
+  try{
+    const r = await getJSON('/accounts');
+    const accts = (r.accounts || []).filter(a => a.realm === 'intl' && a.enabled);
+    const countEl = document.getElementById("intlAcctCount");
+    if(countEl) countEl.textContent = accts.length + ' 个';
+    const bonusEl = document.getElementById("intlBonusCredits");
+    if(bonusEl) bonusEl.textContent = '30 / 50 积分';
+    const stateEl = document.getElementById("intlTodayActiveState");
+    if(stateEl){
+      if(!accts.length){
+        stateEl.textContent = '未添加国际账号';
+      } else {
+        const today = new Date().toISOString().slice(0, 10);
+        const allDone = accts.every(a => a.lastDailyChat && a.lastDailyChat.startsWith(today));
+        const someDone = accts.some(a => a.lastDailyChat && a.lastDailyChat.startsWith(today));
+        if(allDone){
+          stateEl.innerHTML = '<span style="color:#26bb82">今日全部已打卡</span>';
+        } else if(someDone){
+          stateEl.innerHTML = '<span style="color:var(--accent)">部分账号已打卡</span>';
+        } else {
+          stateEl.innerHTML = '<span style="color:var(--warn)">今日尚未打卡</span>';
+        }
+      }
+    }
+  }catch(e){
+    console.error('loadIntlTasks error:', e);
+  }
+}
+
 async function loadGrowthTasks(){
+  loadIntlTasks();
   const sec = document.getElementById("sectionGrowthTasks");
   if(!sec) return;
   sec.style.display = 'block';
