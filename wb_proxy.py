@@ -12523,6 +12523,7 @@ class Handler(BaseHTTPRequestHandler):
             if i < len(targets) - 1:
                 time.sleep(1.5)
         combined_logs.append(f"====== 全部 {len(targets)} 个账号任务执行完毕，累计新增积分: +{total_credit} ======")
+        add_log_entry(f"[任务福利] 批量成长任务执行完成，共 {len(targets)} 个账号，新增积分 +{total_credit}", tag="tasks")
         return self._json(200, {
             "ok": True,
             "credit_added": total_credit,
@@ -12551,6 +12552,7 @@ class Handler(BaseHTTPRequestHandler):
             nick = acc.nickname or uid_str
             res = run_streak_bonus(acc)
             results.append(f"{nick}: {res.get('msg')}")
+            add_log_entry(f"[任务福利] 账号 [{nick}] 连登管家与抽奖: {res.get('msg')}", tag="tasks")
             if i < len(targets) - 1:
                 time.sleep(1.0)
         return self._json(200, {"ok": True, "msg": chr(10).join(results)})
@@ -12586,6 +12588,8 @@ class Handler(BaseHTTPRequestHandler):
             if i < len(targets) - 1:
                 time.sleep(1.0)
         summary_msg = chr(10).join([f"{r['nickname']}: {r['msg']}" for r in results])
+        for r in results:
+            add_log_entry(f"[任务福利] 账号 [{r['nickname']}] 猫猫旅行: {r['msg']}", tag="tasks")
         return self._json(200, {
             "ok": True,
             "results": results,

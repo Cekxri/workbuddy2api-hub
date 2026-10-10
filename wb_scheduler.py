@@ -36,7 +36,7 @@ class Scheduler:
         # in the same log the panel shows.
         wb_tasks.set_logger(self.log)
 
-    def log(self, msg):
+    def log(self, msg, tag=None):
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         entry = f"[{ts}] {msg}"
         self.logs.append(entry)
@@ -44,7 +44,15 @@ class Scheduler:
             self.logs = self.logs[-60:]
         try:
             import wb_proxy
-            wb_proxy.add_log_entry(f"[调度器] {msg}", tag="scheduler")
+            # 任务/打卡/旅行类条目同时进入 tasks 模块日志，方便分类查看
+            effective_tag = tag
+            if not effective_tag:
+                lower = str(msg).lower()
+                if any(k in lower for k in ("签到", "打卡", "活跃", "猫猫", "连登", "夜猫", "抽奖", "兑换")):
+                    effective_tag = "tasks"
+                else:
+                    effective_tag = "scheduler"
+            wb_proxy.add_log_entry(f"[调度器] {msg}", tag=effective_tag)
         except Exception:
             pass
 
