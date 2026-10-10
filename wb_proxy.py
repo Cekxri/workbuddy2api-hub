@@ -14,6 +14,7 @@ Launchers: start-wb-proxy.bat / start-wb-proxy-lan.bat on Windows,
 start-wb-proxy.command (or ./start-wb-proxy.sh) on macOS/Linux.
 """
 import argparse
+import bisect
 import hashlib
 import ipaddress
 from collections import deque
@@ -1285,6 +1286,16 @@ def apply_model_daily_token_limit(refresh=False):
 # 已过期、锚不住当前窗口）的组合没有已知的重置时刻，按最近 24h 用量保守估计
 # （窗口起点必然落在最近 24h 内，所以这是剩余量的下界），并在载荷里标 estimated
 # 供面板区分。
+#
+# 查询侧不做重复计算：
+#   - 每个 (账号, 模型) 的用量缓冲是**时间戳 + 累计和**两个列表，窗口
+#     求和是两次二分 + 一次相减（O(log n)），不是每次查询把上万行重新加一遍；
+#     每行只留时间戳与累计值（旧的 deque-of-tuple 是 tuple + 两个装箱数字），
+#     弱设备上省下的是实实在在的内存与遍历；
+#   - 载荷挂一个短 TTL（WB_REMAINING_TTL，默认 15 秒）——面板每 5 秒轮询一次，
+#     而数字只在用量或撞线发生时变，逐次重建是纯浪费。TTL 内直接返回上次算好的
+#     载荷，连日志尾部都不再扫；面板带 If-None-Match 轮询时命中 304，连那点
+#     JSON 也不再重传（校验符派生自缓存条目的构建时刻，与其它统计接口同款）。
 # ---------------------------------------------------------------------------
 LIMIT_WINDOW_SECONDS = 24 * 3600
 LIMIT_EVENTS_FILE = os.path.join(USAGE_DIR, "limit-events.jsonl")
@@ -1294,15 +1305,79 @@ _REMAINING_KEEP_SECONDS = 26 * 3600
 # 时无界增长（每条只记数字与 uid/model，一千条不到 200KB）。文件本身不裁剪，
 # 冷启动全读一遍也就几十毫秒。
 _REMAINING_MAX_EVENTS = 1000
+# 载荷缓存时长（秒）。比面板的 5 秒轮询长、远短于其它统计接口的 900 秒统计 TTL：
+# 数字最多滞后这么久，但一轮重建能服务好几轮轮询。
+_REMAINING_TTL = float(os.environ.get("WB_REMAINING_TTL", 15))
 
 _remaining_state = {
     "events": [],          # 事件列表，src 标来源（file / log）
     "keys": set(),         # (账号, 模型, 重置时刻) 去重
-    "usage": {},           # (uid, model) -> deque[(at, tokens)]
+    "usage": {},           # (uid, model) -> _pair_buffer() 的 {at,cum,head,base}
     "log": {"offset": 0, "key": None, "tail": b""},      # usage.jsonl 的续读位
     "file": {"offset": 0, "key": None, "tail": b""},     # limit-events.jsonl 的
 }
 _remaining_state_lock = threading.Lock()
+# 载荷缓存（与上面的折叠状态分开两把锁：重建要持状态锁做扫描，命中缓存不该等它）。
+_remaining_cache = {"at": 0.0, "built_at": 0.0, "data": None}
+_remaining_cache_lock = threading.Lock()
+
+
+def _pair_buffer(state, key):
+    """The (at, cum) buffers of one (account, model), created on demand.
+
+    Two parallel lists instead of a deque of (at, tokens) tuples: window sums
+    then cost two bisections plus one subtraction over `cum`, and appends stay
+    O(1). Only the timestamps and the running sum are kept - a row's token
+    count is never read again once it is folded into `cum`, so a third list
+    would be pure memory. No new stdlib import either: the packaged runtime's
+    trim contract (portable_runtime.REQUIRED_FILES) already vouches for
+    bisect, while `array` is not in it (builtin on Windows, a shared extension
+    elsewhere) - see tests/_test_release_assets.py.
+    `head` is the first live index, `base` the token sum of everything trimmed
+    away so far - `cum` keeps counting from the very first row ever buffered,
+    so a range whose left edge falls on the first live entry has to subtract
+    `base` instead of a predecessor.
+    """
+    buf = state["usage"].get(key)
+    if buf is None:
+        buf = state["usage"][key] = {"at": [], "cum": [], "head": 0, "base": 0}
+    return buf
+
+
+def _pair_append(buf, at, tokens):
+    # coerce: a log row is free text, and these buffers only ever hold numbers
+    tokens = int(tokens)
+    buf["at"].append(float(at))
+    buf["cum"].append((buf["cum"][-1] if buf["cum"] else 0) + tokens)
+
+
+def _pair_trim(buf, cutoff):
+    """Drop entries older than `cutoff` (batched: the lists are compacted only
+    when the dead prefix is big enough to pay for the memmove)."""
+    at = buf["at"]
+    while buf["head"] < len(at) and at[buf["head"]] < cutoff:
+        buf["head"] += 1
+    if buf["head"] > 512 and buf["head"] * 2 > len(at):
+        buf["base"] += buf["cum"][buf["head"] - 1] if buf["head"] else 0
+        del at[:buf["head"]]
+        del buf["cum"][:buf["head"]]
+        buf["head"] = 0
+
+
+def _range_sum(buf, lo, hi):
+    """Tokens of one (account, model) with lo <= at <= hi. O(log n)."""
+    if buf is None or buf["head"] >= len(buf["at"]):
+        return 0
+    at = buf["at"]
+    j = bisect.bisect_left(at, lo, buf["head"])
+    k = bisect.bisect_right(at, hi, buf["head"])
+    if k <= j:
+        return 0
+    # cum 自最早的缓冲行累计；左端落到第一个存活条目时（j 在列表头），
+    # 前面的累计值已被裁掉，只能拿 base 补回那段前缀。
+    low = buf["cum"][j - 1] if j > 0 else buf["base"]
+    return buf["cum"][k - 1] - low
+
 
 
 def _merge_event(state, event, source):
@@ -1349,12 +1424,7 @@ def _drop_events(state, source):
 
 def _window_sample(usage, uid, model, reset_at, at):
     """Usage of (uid, model) inside the window ending at `reset_at`."""
-    sample = 0
-    lo = reset_at - LIMIT_WINDOW_SECONDS
-    for t, tokens in usage.get((uid, model)) or ():
-        if lo <= t <= at:
-            sample += tokens
-    return sample
+    return _range_sum(usage.get((uid, model)), reset_at - LIMIT_WINDOW_SECONDS, at)
 
 
 def note_limit_event(account, model, reset_at):
@@ -1371,12 +1441,14 @@ def note_limit_event(account, model, reset_at):
         if not uid or not model or not reset_at:
             return
         at = time.time()
-        usage = _remaining_buckets()["usage"]
+        with _remaining_state_lock:
+            _remaining_refresh(_remaining_state)
+            sample = _window_sample(_remaining_state["usage"], uid, model,
+                                    reset_at, at)
         event = {
             "at": at, "account": uid, "model": model,
             "realm": getattr(account, "realm", "") or "",
-            "reset": float(reset_at),
-            "sample": _window_sample(usage, uid, model, reset_at, at),
+            "reset": float(reset_at), "sample": sample,
         }
         try:
             os.makedirs(USAGE_DIR, exist_ok=True)
@@ -1393,9 +1465,9 @@ def note_limit_event(account, model, reset_at):
 def _fold_remaining(row, state):
     """Fold one usage.jsonl row into the remaining-usage state.
 
-    The row order is the log's append order, so the buffer prune below can use
-    each row's own `at` as "now": rows only ever get newer, and a row older
-    than the retention window can never be needed again.
+    The row order is the log's append order, so the trim below can use each
+    row's own `at` as "now": rows only ever get newer, and a row older than
+    the retention window can never be needed again.
     """
     uid = row.get("account")
     model = row.get("model")
@@ -1419,53 +1491,40 @@ def _fold_remaining(row, state):
         return
     if row_outcome(row) == "client_aborted":
         return
-    buf = state["usage"].get(key)
-    if buf is None:
-        buf = state["usage"][key] = deque()
-    buf.append((at, row.get("total_tokens") or 0))
-    cutoff = at - _REMAINING_KEEP_SECONDS
-    while buf and buf[0][0] < cutoff:
-        buf.popleft()
+    buf = _pair_buffer(state, key)
+    _pair_append(buf, at, row.get("total_tokens") or 0)
+    _pair_trim(buf, at - _REMAINING_KEEP_SECONDS)
 
 
-def _remaining_buckets():
-    """The cached fold, refreshed and copied for the caller.
+def _remaining_refresh(state):
+    """Fold both files' new rows into `state`; caller holds the state lock.
 
-    Same contract as _usage_by_account_buckets(): the copy keeps a reader from
-    mutating the cached deques, and an unreadable file resets the state it
-    feeds instead of publishing a half-folded one. The usage log is folded
-    first so the event journal's samples (computed against it at cap time)
-    and the log-derived events describe the same buffers. The copy is shallow
-    on purpose - the deques are never mutated in place after they leave here.
+    Same pass rules as the other folds: an unreadable or rewritten file resets
+    the contributions it fed instead of publishing a half-folded one. The
+    usage log is folded first so the event journal's samples (computed against
+    it at cap time) and the log-derived events describe the same buffers.
     """
-    with _remaining_state_lock:
-        state = _remaining_state
-        for source, path in (("log", USAGE_LOG), ("file", LIMIT_EVENTS_FILE)):
-            slot = state[source]
-            log_key = _usage_log_key(path)
-            if not _log_resume_ok(slot, log_key, path):
-                # 文件被换掉/截短：这个来源的贡献全部作废，从零重折。
-                state[source] = {"offset": 0, "key": log_key, "tail": b""}
-                if source == "log":
-                    state["usage"].clear()
-                _drop_events(state, source)
-            fold = (lambda row: _fold_remaining(row, state)) if source == "log" \
-                else (lambda row: _merge_event(state, row, "file"))
-            offset, error = _scan_usage_from(state[source]["offset"], fold,
-                                             path=path)
-            if error is None:
-                state[source]["offset"] = offset
-                state[source]["tail"] = _log_tail_signature(offset, path)
-            else:
-                log("remaining usage fold failed (%s): %s" % (source, error))
-                state[source] = {"offset": 0, "key": log_key, "tail": b""}
-                if source == "log":
-                    state["usage"].clear()
-                _drop_events(state, source)
-        return {
-            "events": [dict(event) for event in state["events"]],
-            "usage": {k: list(v) for k, v in state["usage"].items()},
-        }
+    for source, path in (("log", USAGE_LOG), ("file", LIMIT_EVENTS_FILE)):
+        slot = state[source]
+        log_key = _usage_log_key(path)
+        if not _log_resume_ok(slot, log_key, path):
+            # 文件被换掉/截短：这个来源的贡献全部作废，从零重折。
+            state[source] = {"offset": 0, "key": log_key, "tail": b""}
+            if source == "log":
+                state["usage"].clear()
+            _drop_events(state, source)
+        fold = (lambda row: _fold_remaining(row, state)) if source == "log" \
+            else (lambda row: _merge_event(state, row, "file"))
+        offset, error = _scan_usage_from(state[source]["offset"], fold, path=path)
+        if error is None:
+            state[source]["offset"] = offset
+            state[source]["tail"] = _log_tail_signature(offset, path)
+        else:
+            log("remaining usage fold failed (%s): %s" % (source, error))
+            state[source] = {"offset": 0, "key": log_key, "tail": b""}
+            if source == "log":
+                state["usage"].clear()
+            _drop_events(state, source)
 
 
 def _remaining_budgets(events, realm_of):
@@ -1496,20 +1555,44 @@ def _remaining_budgets(events, realm_of):
 def _remaining_payload(now=None, accounts=None):
     """Per-account remaining usage against the estimated per-model budget.
 
+    Refreshes the fold and builds the payload in one pass under the state
+    lock: nothing is copied out (the buffers stay put and are read through
+    their cumulative sums), so a rebuild costs what the new rows cost plus
+    O(pairs * log n), not a re-sum of every buffered row.
+
     Every enabled account is reported for every model that has a budget in its
     realm, plus every model it actually used inside the retention window - an
     account at 0 usage is the honest "full budget" answer, not noise. A pair
     still cooling on a spent window reports remaining 0 and the reset clock
     that hands the quota back.
     """
-    state = _remaining_buckets()
     now = time.time() if now is None else now
     if accounts is None:
         accounts = list(POOL.accounts) if POOL else []
     accounts = [a for a in accounts
                 if getattr(a, "enabled", True) and getattr(a, "uid", "")]
+    with _remaining_state_lock:
+        state = _remaining_state
+        _remaining_refresh(state)
+        return _remaining_payload_locked(state, now, accounts)
+
+
+def _remaining_payload_locked(state, now, accounts):
+    """The payload itself; caller holds the state lock and has refreshed."""
     realm_of = {a.uid: (getattr(a, "realm", "") or "") for a in accounts}
     budgets = _remaining_budgets(state["events"], realm_of)
+    # strftime/localtime is one of the few per-row costs left (30 rows ≈ 0.12ms,
+    # 74% of the build) and rows overwhelmingly share their window start / reset
+    # clock - so format each distinct second once per payload.
+    iso_cache = {}
+
+    def iso_at(ts):
+        key = int(ts)
+        out = iso_cache.get(key)
+        if out is None:
+            out = iso_cache[key] = time.strftime("%Y-%m-%d %H:%M:%S",
+                                                 time.localtime(ts))
+        return out
 
     latest_reset = {}
     next_reset = {}
@@ -1551,10 +1634,7 @@ def _remaining_payload(now=None, accounts=None):
                 reset_at = None
                 cooling = False
                 estimated = True
-            used = 0
-            for t, tokens in state["usage"].get((uid, model)) or ():
-                if t >= window_start:
-                    used += tokens
+            used = _range_sum(state["usage"].get((uid, model)), window_start, now)
             budget = budgets.get((realm, model))
             remaining = None
             pct = None
@@ -1574,12 +1654,9 @@ def _remaining_payload(now=None, accounts=None):
                 "remaining": remaining,
                 "used_pct": pct,
                 "window_start": window_start,
-                "window_iso": time.strftime("%Y-%m-%d %H:%M:%S",
-                                            time.localtime(window_start)),
+                "window_iso": iso_at(window_start),
                 "reset_at": reset_at,
-                "reset_iso": (time.strftime("%Y-%m-%d %H:%M:%S",
-                                            time.localtime(reset_at))
-                              if reset_at else None),
+                "reset_iso": iso_at(reset_at) if reset_at else None,
                 "cooling": cooling,
                 "estimated": estimated,
             })
@@ -1589,11 +1666,49 @@ def _remaining_payload(now=None, accounts=None):
     return {
         "window_seconds": LIMIT_WINDOW_SECONDS,
         "generated_at": now,
-        "generated_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+        "generated_iso": iso_at(now),
         "budgets": [dict(budget, realm=realm, model=model)
                     for (realm, model), budget in sorted(budgets.items())],
         "rows": rows,
     }
+
+
+def remaining_usage(ttl=None):
+    """Cached payload: the panel polls every 5s, the numbers change far slower.
+
+    Within the TTL the last payload is returned as is - no rescan of either
+    file, no rebuild - which is what makes the 5s polling cost nothing between
+    rebuilds. The TTL is deliberately short (WB_REMAINING_TTL, 15s default):
+    long enough to serve several polls per rebuild, short enough that a cap or
+    a burst of usage shows up while the operator is looking at the panel.
+    """
+    ttl = _REMAINING_TTL if ttl is None else ttl
+    now = time.time()
+    with _remaining_cache_lock:
+        entry = _remaining_cache
+        if entry["data"] is not None and (now - entry["at"]) < ttl:
+            return entry["data"]
+    # 重建在缓存锁外：它自己会拿状态锁扫描，命中等它的调用不该被拖住。
+    data = _remaining_payload()
+    with _remaining_cache_lock:
+        _remaining_cache.update({"at": time.time(), "built_at": time.time(),
+                                 "data": data})
+    return data
+
+
+def remaining_usage_etag():
+    """ETag of the current /usage/remaining cache entry, or None.
+
+    与 usage_by_account_etag() 同款：键是常量（这个视图只有一条缓存），配对
+    调用由 _json_cached() 保证。轮询在 TTL 内命中同一份载荷 → 同一枚校验符
+    → 304；重建后自动换戳。
+    """
+    with _remaining_cache_lock:
+        entry = _remaining_cache
+        if entry["data"] is None:
+            return None
+        built_at = entry["built_at"]
+    return _cache_etag("remaining", "all", built_at)
 
 
 _free_models_cache = {"at": 0.0, "data": None}
@@ -11073,9 +11188,9 @@ class Handler(BaseHTTPRequestHandler):
     def _get_usage_remaining(self):
         if not self._authorized():
             return
-        # 不套 TTL 缓存：折叠本身是增量的（多数轮询零新行），而"剩余"随用量
-        # 实时变化，挂上 15 分钟的统计 TTL 反而把最该新鲜的数字拖旧。
-        return self._json(200, _remaining_payload())
+        # 载荷挂短 TTL（WB_REMAINING_TTL，默认 15 秒）+ ETag：面板 5 秒一轮的
+        # 轮询在 TTL 内命中同一条缓存 → 校验符不变 → 304，重建与重传都省掉。
+        return self._json_cached(200, remaining_usage, remaining_usage_etag)
 
     def _get_usage_timeseries(self, query):
         if not self._authorized():

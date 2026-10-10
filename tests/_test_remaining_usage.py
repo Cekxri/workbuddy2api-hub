@@ -97,6 +97,8 @@ def restart_fold():
             "log": {"offset": 0, "key": None, "tail": b""},
             "file": {"offset": 0, "key": None, "tail": b""},
         })
+    with P._remaining_cache_lock:
+        P._remaining_cache.update({"at": 0.0, "built_at": 0.0, "data": None})
 
 
 def account(uid, nickname="", realm="intl"):
@@ -333,6 +335,93 @@ class RemainingUsageTests(unittest.TestCase):
         row = find_row(data, "acct-A")
         self.assertIsNone(row["budget"])
         self.assertEqual(row["used"], 800)
+
+    def test_range_sum_matches_a_naive_sum(self):
+        # The window sums are cumulative-sum lookups now; pin them against a
+        # plain sum over the same rows, head-trim and compaction included.
+        reset, detail = reset_epoch("2026-10-10 08:00:00")
+        rows = [usage_row(reset - 25 * HOUR + i * 137, "acct-A", 100 + i * 7)
+                for i in range(600)]
+        write_log(rows)
+        now = reset + HOUR
+        payload([account("acct-A")], now=now)
+
+        def naive(lo, hi):
+            return sum(r["total_tokens"] for r in rows if lo <= r["at"] <= hi)
+
+        with P._remaining_state_lock:
+            buf = P._remaining_state["usage"][("acct-A", MODEL)]
+            for lo, hi in ((rows[0]["at"] - 1, now), (reset - 24 * HOUR, now),
+                           (now - HOUR, now), (rows[300]["at"], rows[400]["at"]),
+                           (rows[-1]["at"] + 1, now), (rows[0]["at"], rows[5]["at"])):
+                self.assertEqual(P._range_sum(buf, lo, hi), naive(lo, hi), (lo, hi))
+            # Move the head forward: entries before it are out of the window
+            # by construction, and the sums must agree from there on.
+            P._pair_trim(buf, rows[100]["at"])
+        self.assertEqual(buf["head"], 100)
+        with P._remaining_state_lock:
+            for lo, hi in ((rows[100]["at"], now), (rows[150]["at"], now),
+                           (now - HOUR, now)):
+                self.assertEqual(P._range_sum(buf, lo, hi), naive(lo, hi), (lo, hi))
+            # Past the batch threshold the dead prefix is compacted away, and
+            # the cumulative sums must still subtract correctly.
+            P._pair_trim(buf, rows[550]["at"])
+        self.assertEqual(buf["head"], 0)
+        self.assertEqual(len(buf["at"]), 50)
+        with P._remaining_state_lock:
+            for lo, hi in ((rows[550]["at"], now), (rows[580]["at"], now),
+                           (rows[560]["at"], rows[590]["at"])):
+                self.assertEqual(P._range_sum(buf, lo, hi), naive(lo, hi), (lo, hi))
+
+    def test_payload_is_served_from_cache_within_the_ttl(self):
+        reset, detail = reset_epoch("2026-10-09 08:00:00")
+        now = reset + 20 * HOUR
+        write_log([
+            usage_row(reset - 2 * HOUR, "acct-A", 600),
+            cap_row(reset - HOUR, "acct-A", detail),
+        ])
+
+        class _Pool(object):
+            accounts = [account("acct-A")]
+
+        old_pool = P.POOL
+        P.POOL = _Pool()
+        try:
+            first = P.remaining_usage(ttl=30)
+            self.assertEqual(find_row(first, "acct-A")["used"], 0)
+
+            # A row appended behind the cache must NOT be picked up inside the
+            # TTL (that is the whole point: no rescan per poll)...
+            with io.open(P.USAGE_LOG, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(usage_row(now - HOUR, "acct-A", 123),
+                                    ensure_ascii=False) + "\n")
+            cached = P.remaining_usage(ttl=30)
+            self.assertIs(cached, first)
+            self.assertEqual(find_row(cached, "acct-A")["used"], 0)
+
+            # ...and an expired entry rebuilds and picks it up.
+            rebuilt = P.remaining_usage(ttl=0)
+            self.assertIsNot(rebuilt, first)
+            self.assertEqual(find_row(rebuilt, "acct-A")["used"], 123)
+        finally:
+            P.POOL = old_pool
+
+    def test_etag_is_stable_until_a_rebuild(self):
+        reset, detail = reset_epoch("2026-10-09 08:00:00")
+        write_log([
+            usage_row(reset - 2 * HOUR, "acct-A", 600),
+            cap_row(reset - HOUR, "acct-A", detail),
+        ])
+        P.remaining_usage(ttl=30)
+        tag = P.remaining_usage_etag()
+        self.assertTrue(tag and tag.startswith('"'))
+        # Same cache entry -> same validator (the poll gets a 304)…
+        P.remaining_usage(ttl=30)
+        self.assertEqual(P.remaining_usage_etag(), tag)
+        # …and a rebuild mints a new one.
+        time.sleep(0.01)
+        P.remaining_usage(ttl=0)
+        self.assertNotEqual(P.remaining_usage_etag(), tag)
 
     def test_live_cap_event_is_persisted_and_survives_restart(self):
         # The request path records the cap the moment it is classified: the

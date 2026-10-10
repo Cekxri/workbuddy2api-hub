@@ -236,6 +236,7 @@ Codex App 这类客户端会在 Responses 请求里声明 `web_search` / `web_fe
 - **已用从每个账号自己的重置时刻起算**：窗口起点取该账号该模型最近一次重置时刻；重置时刻在未来的组合（正在冷却）剩余记 0 并显示恢复时间。
 - **没有撞线记录的组合标「按 24h 估算」**：窗口起点未知时按最近 24 小时用量统计——窗口起点必然落在最近 24h 内，所以这是剩余量的**下界**（偏保守，不会高估）。
 - 接口 `GET /usage/remaining`（需面板会话）返回 `budgets`（每个区域 × 模型的预算均值 / 区间 / 样本数）与 `rows`（每个账号 × 模型：已用、预算、剩余、窗口起点、是否冷却、是否估算），区块只读不写，不参与请求路径（唯一的请求路径接触点是撞线时记一行事件）。
+- **查询侧不做重复计算**：每个「账号 × 模型」的用量缓冲是**时间戳 + 累计和**两个列表（窗口求和 = 两次二分 + 一次相减，O(log n)，内存约 16 字节/行），载荷再挂一个短 TTL（`WB_REMAINING_TTL`，默认 15 秒）并支持 `ETag` / `If-None-Match`：面板 5 秒一轮的轮询在 TTL 内直接拿上次算好的载荷（连日志尾部都不再扫），带条件请求时回 304。实测（2 万行缓冲）：单次重建 ~0.7ms（旧版逐行重算 ~1.8ms）、轮询一分钟 2.9ms（旧版 21.5ms）、缓冲内存 321KB（旧版 2.3MB）。
 
 ---
 
@@ -347,6 +348,8 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
   - 测试：`tests/_test_agents.py` +11 项、`tests/_test_panel_route_auth.py` +4 项（远程来源读 `enabled:false`、写 403、容器标记压过回环、能力探测两侧答案）、`tests/_test_agent_ui.js` +3 项（入口隐藏与书签回退）；`tests/_mobile_check.py` 的 `nav-equal-width` 不再写死 4 个 Tab，改钉「标签不截断 / 不顶出导航条 / 填满整行」三条几何性质。
 
 - **剩余用量估算：把上游 24h 窗口的预算反推出来**（[PR #247](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/247)，感谢 [@aodianjun](https://github.com/aodianjun)）：上游按 24 小时窗口给「账号 × 模型」配额（用满即 429 / code 6004，带重置墙钟），预算数字却从不公开。新增 `GET /usage/remaining` 与数据看板「剩余用量估算」区块：**预算 = 撞线账号在窗口内用量的平均**（撞线那一刻该账号「自窗口起点以来的成功用量」就是一个样本；按区域聚合，先按账号平均、再跨账号平均），**已用从各账号自己的重置时刻起算**，重置时刻还在未来的组合（冷却中）剩余记 0 并显示恢复时间；没有撞线记录的组合按最近 24h 统计并标「按 24h 估算」——窗口起点必然落在最近 24h 内，所以那是剩余量的下界，偏保守。样本由 429 处理路径**实时**写进 `usage/limit-events.jsonl`：一次请求的重试可能接连撞好几个账号，而日志里只有最后那个账号留着带归属的 429 行，光靠日志会漏掉大部分撞线；历史日志里带账号的 429 行作补充，按（账号 + 模型 + 重置时刻）去重。新增 `tests/_test_remaining_usage.py`（15 项）与 `tests/_test_remaining_usage.js`（26 项）。
+
+- **perf(usage): 剩余用量估算不再重复计算**（[PR #248](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/248)，感谢 [@aodianjun](https://github.com/aodianjun)）：每个「账号 × 模型」的用量缓冲从 deque-of-tuple 换成**时间戳 + 累计和**（窗口求和 = 两次二分 + 一次相减，O(log n)，约 25 字节/行），载荷挂 15 秒短 TTL（`WB_REMAINING_TTL`）并支持 `ETag` / `If-None-Match`：面板 5 秒一轮的轮询在 TTL 内复用上次算好的载荷（连日志尾部都不再扫），带条件请求时回 304。实测 2 万行缓冲：轮询一分钟 21.5ms → 2.9ms、缓冲内存 2.3MB → 321KB（116 → 16 字节/行）、热重建 1.8ms → 0.7ms；并修掉一处裁剪后累计和的重基错误（`tests/_test_remaining_usage.py` 的 600 行对拍用例抓到的，15 → 18 项）。
 
 已发布版本的完整记录（v1.4.5 ~ v1.6.19，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
 ## 七、致谢与引用声明 (Credits & References)
