@@ -4273,23 +4273,29 @@ async function loadGrowthTasks(){
 
     const chkStateEl = document.getElementById("cnTodayCheckinState");
     if(chkStateEl){
-      const today = new Date().toISOString().slice(0, 10);
-      let targetAccts = accts.filter(a => a.realm === 'cn');
-      if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
-        targetAccts = targetAccts.filter(a => a.uid === CURRENT_GROWTH_UID);
-      }
-      if(!targetAccts.length){
-        chkStateEl.textContent = '无国内账号';
-      } else {
-        const allDone = targetAccts.every(a => a.lastCheckin && a.lastCheckin.startsWith(today));
-        const someDone = targetAccts.some(a => a.lastCheckin && a.lastCheckin.startsWith(today));
-        if(allDone){
-          chkStateEl.innerHTML = '<span style="color:#26bb82">今日已签到</span>';
-        } else if(someDone){
-          chkStateEl.innerHTML = '<span style="color:var(--accent)">部分已签到</span>';
-        } else {
-          chkStateEl.innerHTML = '<span style="color:var(--warn)">今日未签到</span>';
+      try{
+        const allAcctsRes = await getJSON('/accounts');
+        const allList = allAcctsRes.accounts || [];
+        let targetAccts = allList.filter(a => a.realm === 'cn' && a.enabled);
+        if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
+          targetAccts = targetAccts.filter(a => a.uid === CURRENT_GROWTH_UID);
         }
+        if(!targetAccts.length){
+          chkStateEl.textContent = '无国内账号';
+        } else {
+          const today = new Date().toISOString().slice(0, 10);
+          const allDone = targetAccts.every(a => a.lastCheckin && a.lastCheckin.startsWith(today));
+          const someDone = targetAccts.some(a => a.lastCheckin && a.lastCheckin.startsWith(today));
+          if(allDone){
+            chkStateEl.innerHTML = '<span style="color:#26bb82">今日已签到</span>';
+          } else if(someDone){
+            chkStateEl.innerHTML = '<span style="color:var(--accent)">部分已签到</span>';
+          } else {
+            chkStateEl.innerHTML = '<span style="color:var(--warn)">今日未签到</span>';
+          }
+        }
+      }catch(e){
+        chkStateEl.textContent = '-';
       }
     }
 
