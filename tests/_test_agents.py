@@ -9,6 +9,7 @@ home directory, plus the client registry itself.
 
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -698,6 +699,57 @@ check("the created settings.yaml was removed again",
       not os.path.exists(os.path.join(home14, ".dsh", "settings.yaml")))
 check("no state record for the second home either",
       "dsh" not in A._load_state(acct14), A._load_state(acct14))
+
+print()
+print("[28] 服务端 / 远程看板不提供一键配置（issue #246）")
+
+check("loopback v4 is allowed",
+      wb_proxy.agents_client_allowed(("127.0.0.1", 51234)) is True)
+check("loopback v6 is allowed",
+      wb_proxy.agents_client_allowed(("::1", 51234, 0, 0)) is True)
+check("an IPv4-mapped loopback peer is allowed",
+      wb_proxy.agents_client_allowed(("::ffff:127.0.0.1", 51234, 0, 0)) is True)
+check("a LAN peer is refused",
+      wb_proxy.agents_client_allowed(("192.168.1.20", 51234)) is False)
+check("a docker bridge peer is refused",
+      wb_proxy.agents_client_allowed(("172.17.0.1", 51234)) is False)
+check("a missing peer address is refused",
+      wb_proxy.agents_client_allowed(None) is False)
+
+saved_form = wb_proxy._SERVER_DEPLOYMENT
+try:
+    wb_proxy._SERVER_DEPLOYMENT = True
+    check("a container / OpenWrt marker wins over a loopback peer",
+          wb_proxy.agents_client_allowed(("127.0.0.1", 51234)) is False)
+finally:
+    wb_proxy._SERVER_DEPLOYMENT = saved_form
+
+
+class RemotePanel:
+    """A panel opened from another machine: the answer must be enabled:false."""
+
+    client_address = ("192.168.1.20", 40000)
+    _agents_client_allowed = wb_proxy.Handler._agents_client_allowed
+
+    def _json(self, code, obj):
+        self.response = (code, obj)
+        return (code, obj)
+
+
+remote = RemotePanel()
+code_r, body_r = wb_proxy.Handler._get_agents(remote)
+check("a remote panel gets enabled:false from GET /agents",
+      code_r == 200 and body_r.get("enabled") is False, body_r)
+check("the remote answer carries no client list and no model list",
+      "clients" not in body_r and "models" not in body_r, body_r)
+
+proxy_src = open(os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "wb_proxy.py"), encoding="utf-8").read()
+check("wb_proxy no longer imports wb_agents at module level",
+      not re.search(r"(?m)^import wb_agents\s*$", proxy_src))
+check("wb_agents is imported lazily inside agents_module()",
+      "def agents_module()" in proxy_src and "        import wb_agents" in proxy_src)
 
 # ---------------------------------------------------------------------------
 # cleanup

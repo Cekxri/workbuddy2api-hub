@@ -33,7 +33,8 @@ const elements = new Map();
 const element = id => {
   if (!elements.has(id)) {
     elements.set(id, {
-      id, innerHTML: '', textContent: '', className: '', style: {}, dataset: {},
+      id, innerHTML: '', textContent: '', className: '', dataset: {},
+      style: {setProperty(){}},
       classList: {add(){}, remove(){}, toggle(){}, contains(){ return false; }},
       addEventListener(){}, removeEventListener(){}, querySelector(){ return null; },
       querySelectorAll(){ return []; }, appendChild(){}, removeChild(){}, focus(){},
@@ -96,7 +97,10 @@ const api = new Function(script + `
   window.__restoreAgent = restoreAgent;
   window.__loadAgents = loadAgents;
   window.__setAgents = function(data, models){ AGENTS_DATA = data; AGENT_MODELS = models; };
-  return { applyAgent, restoreAgent, loadAgents, setAgents: window.__setAgents };`)();
+  return { applyAgent, restoreAgent, loadAgents, setAgents: window.__setAgents,
+           loadAgentsAvailability, switchMainTab,
+           agentsAvailable: function(){ return AGENTS_AVAILABLE; },
+           currentTab: function(){ return currentMainTab; } };`)();
 
 const CLIENTS = [{
   id: 'claude-code', label: 'Claude Code', desc: 'Anthropic CLI',
@@ -202,6 +206,28 @@ const check = (label, cond, extra) => {
   await api.applyAgent('no-such-client', null);
   check('an unknown client is a no-op, not a crash',
         requests.filter(r => r.url.indexOf('/agents/apply') !== -1).length === 0);
+
+  // 服务端形态（看板不在网关本机）时入口整个撤掉（issue #246）：
+  // /agents/available 回 enabled:false → Tab 隐藏，?tab=agents 的书签退回网关页。
+  global.fetch = (url, opts) => {
+    if (String(url).indexOf('/agents/available') !== -1) {
+      const payload = {enabled: false};
+      return Promise.resolve({
+        status: 200, ok: true,
+        json: () => Promise.resolve(payload),
+        text: () => Promise.resolve(JSON.stringify(payload)),
+      });
+    }
+    return realFetch(url, opts);
+  };
+  const navAgents = element('btnNavAgents');
+  await api.loadAgentsAvailability();
+  check('a server-form panel hides the agents tab',
+        navAgents.style.display === 'none', JSON.stringify(navAgents.style));
+  check('the availability flag flips to false', api.agentsAvailable() === false);
+  api.switchMainTab('agents');
+  check('a stale agents tab falls back to the gateway page',
+        api.currentTab() === 'gateway', api.currentTab());
 
   process.stdout.write('agent config UI assertions passed (' + checks + ' checks)\n');
 })().catch(err => {

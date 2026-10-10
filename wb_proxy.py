@@ -68,8 +68,72 @@ import wb_prompt
 import wb_modelsdev
 import wb_probes
 import wb_updates
-import wb_agents
 IS_WINDOWS = os.name == "nt"
+
+# ---- 一键配置客户端（wb_agents）的可用性判定（issue #246）----
+# 这个功能写的是「网关进程所在机器」的客户端配置，所以只有在浏览器和网关
+# 同一台机器上打开看板时才成立。服务端 / Docker / OpenWrt 部署下看板都是
+# 远程打开的，改了也到不了用户自己的电脑，还会白白付出探测与常驻的开销。
+# 因此 wb_agents 改成懒加载：只有下面这道闸门放行、路由真的命中才 import。
+_AGENTS_MODULE = None
+_SERVER_DEPLOYMENT = None
+
+
+def agents_module():
+    """按需 import wb_agents；用不到它的部署连模块都不载入。"""
+    global _AGENTS_MODULE
+    if _AGENTS_MODULE is None:
+        import wb_agents
+        _AGENTS_MODULE = wb_agents
+    return _AGENTS_MODULE
+
+
+def server_deployment_form():
+    """进程是否明显跑在服务端形态（容器 / OpenWrt）。
+
+    只认环境标记；「看板是不是本机打开的」由 agents_client_allowed 按请求
+    来源地址判断。结果缓存——进程活着期间答案不会变。
+    """
+    global _SERVER_DEPLOYMENT
+    if _SERVER_DEPLOYMENT is None:
+        blocked = False
+        try:
+            if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
+                blocked = True
+            elif os.path.exists("/proc/1/cgroup"):
+                with open("/proc/1/cgroup", encoding="utf-8", errors="replace") as fh:
+                    cgroup = fh.read().lower()
+                blocked = any(m in cgroup for m in ("docker", "containerd", "kubepods"))
+        except Exception:
+            blocked = False
+        if not blocked:
+            try:
+                if os.path.exists("/etc/openwrt_release"):
+                    blocked = True
+                elif os.path.exists("/etc/os-release"):
+                    with open("/etc/os-release", encoding="utf-8", errors="replace") as fh:
+                        blocked = "id=openwrt" in fh.read().lower()
+            except Exception:
+                blocked = False
+        _SERVER_DEPLOYMENT = blocked
+    return _SERVER_DEPLOYMENT
+
+
+def agents_client_allowed(client_address):
+    """这个来源地址能不能用一键配置：只认回环。
+
+    非回环说明看板是远程打开的（手机、另一台电脑、容器端口映射），此时
+    apply 改的是容器 / 服务器里的配置目录，需求不成立，直接按不可用处理。
+    """
+    if server_deployment_form():
+        return False
+    try:
+        addr = str(client_address[0])
+    except Exception:
+        return False
+    return addr in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
 def launcher_hint(port):
     """Platform-appropriate launcher command for starting on another port."""
     if IS_WINDOWS:
@@ -10419,6 +10483,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_settings_reveal(query)
         if path == "/agents":
             return self._get_agents()
+        if path == "/agents/available":
+            # 看板启动时用这个廉价判定决定要不要显示入口：不 import
+            # wb_agents、不做任何探测（issue #246）。
+            return self._json(200, {"enabled": self._agents_client_allowed()})
         return self._error(404, "not found", "invalid_request_error")
     def _get_dashboard(self):
         return self._dashboard()
@@ -11383,6 +11451,10 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- one-click agent integration (wb_agents) ----
 
+    def _agents_client_allowed(self):
+        """本请求的来源地址能不能用一键配置（判定见模块级 agents_client_allowed）。"""
+        return agents_client_allowed(getattr(self, "client_address", None))
+
     def _agents_base_url_hint(self):
         """Best guess at the URL a local client should point at.
 
@@ -11456,6 +11528,14 @@ class Handler(BaseHTTPRequestHandler):
         return models
 
     def _get_agents(self):
+        if not self._agents_client_allowed():
+            # 远程看板（服务端 / Docker / OpenWrt）：一键配置改的是网关所在
+            # 机器的配置目录，到不了用户自己的电脑，直接按不可用返回。
+            return self._json(200, {
+                "enabled": False,
+                "reason": "agent config is only available from the machine running the gateway",
+            })
+        wb_agents = agents_module()
         keys = []
         try:
             for entry in configured_keys():
@@ -11468,6 +11548,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             keys = []
         return self._json(200, {
+            "enabled": True,
             "clients": list(wb_agents.overview(ACCOUNTS_DIR).values()),
             "models": self._agents_models(),
             "keys": keys,
@@ -11502,6 +11583,7 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def _handle_agents_apply(self, payload):
+        wb_agents = agents_module()
         client_id = str(payload.get("client") or payload.get("client_id") or "").strip()
         if not client_id:
             return self._error(400, "client is required", "invalid_request_error")
@@ -11556,6 +11638,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, result)
 
     def _handle_agents_restore(self, payload):
+        wb_agents = agents_module()
         client_id = str(payload.get("client") or payload.get("client_id") or "").strip()
         if not client_id:
             return self._error(400, "client is required", "invalid_request_error")
@@ -12694,6 +12777,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self._panel_ok():
                 return self._error(
                     401, "panel password required", "invalid_request_error"
+                )
+            if not self._agents_client_allowed():
+                return self._error(
+                    403,
+                    "agent config is only available from the machine running the gateway",
+                    "invalid_request_error",
                 )
             payload = self._payload_or_error()
             if payload is None:

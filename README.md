@@ -329,6 +329,13 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 - **每日活跃打卡的日志带上网页通道结果**（issue #236）：国际版打卡分两步，桌面端那条轻量对话几乎不会失败，真正决定 30/50 积分的是网页通道会话——而巡检日志只写「✓ 每日活跃对话成功」，网页通道失败时面板上完全看不出来，只能等第二天发现积分没涨。现在巡检与手动打卡的日志都直接带上结果（`网页通道 completed：N 段输出，N ms` / `网页通道失败：<原因>`），与国内签到那条日志的写法一致。
 
+- **一键配置只在网关本机可用，服务端形态整个不加载；顺带修掉第 5 个 Tab 挤坏移动端顶栏**（issue #246，感谢 [@houfukude](https://github.com/houfukude)）：这个功能写的是「网关进程所在机器」的客户端配置，只有浏览器和网关同一台机器时成立——服务端 / Docker / OpenWrt 部署下看板是远程打开的，改了也到不了用户自己的电脑。
+  - `wb_agents` 改成**懒加载**：路由命中且判定通过才 import，用不到它的部署零常驻、零探测、零备份；
+  - 新增可用性判定：请求来源**只认回环**（`127.0.0.1` / `::1` / `::ffff:127.0.0.1`），容器（`/.dockerenv`、`/proc/1/cgroup` 里的 docker/containerd/kubepods）与 OpenWrt（`/etc/openwrt_release`、`os-release` 的 `ID=openwrt`）标记另算一道、压过来源判定；不通过时 `GET /agents` 回 `enabled:false`，`/agents/apply`、`/agents/restore` 直接 403；
+  - 看板启动时用新增的廉价接口 `GET /agents/available` 判定（不 import、不探测），判定为不可用就把入口整个撤掉，`?tab=agents` 的书签退回网关页；本机打开看板的行为一点没变；
+  - **移动端顶栏**：≤640px 主 Tab 行改成横向滚动（与 `.page-nav` 在 ≤860px 的做法一致），按钮保持可读宽度、放得下时仍然平分整行——issue 里的实测溢出（414px +5px、360px +19px、320px +59px）全部归零，390px 五个 Tab 一行放得下；
+  - 测试：`tests/_test_agents.py` +11 项、`tests/_test_panel_route_auth.py` +4 项（远程来源读 `enabled:false`、写 403、容器标记压过回环、能力探测两侧答案）、`tests/_test_agent_ui.js` +3 项（入口隐藏与书签回退）；`tests/_mobile_check.py` 的 `nav-equal-width` 不再写死 4 个 Tab，改钉「标签不截断 / 不顶出导航条 / 填满整行」三条几何性质。
+
 已发布版本的完整记录（v1.4.5 ~ v1.6.19，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
 ## 七、致谢与引用声明 (Credits & References)
 
