@@ -753,6 +753,15 @@ def _perf_stats_uncached(sample=5000, realm=None, since=None, until=None):
         line = line.strip()
         if not line:
             continue
+        # 廉价窗口预过滤（复用 _line_outside_window）：解析前的子串检查就能
+        # 证明落在窗口外的行不再付 json.loads 的钱。它只丢「下面的窗口判断
+        # 本来也会丢」的行，聚合口径一个数都不变；无窗口的调用（since/until
+        # 全空）连检查都不做，因此一分钱都不多花。sample_from 还没定下来的
+        # 时候也不过滤——第一行解析出来的 at 就是 sample_from 的值，跳过解析
+        # 会让它变成窗口内第一行的时间戳，报告的范围就跟着变了。
+        if (since or until) and sample_from is not None and \
+                _line_outside_window(line, since or None, until or None):
+            continue
         try:
             r = json.loads(line)
         except Exception:
@@ -1745,7 +1754,6 @@ def _usage_snapshot_window_from_days(r, day_key, pricing_on):
             state.update({"snap": None, "offset": 0, "tail": b"",
                           "days": {}, "days_floor": None})
             return None
-        floor = state.get("days_floor")
         if not _days_cover(state, day_key):
             return None
         snap = _empty_stats()
@@ -1852,6 +1860,15 @@ _count_lock = threading.Lock()
 # scan per poll into one scan per six polls while the label stays current
 # enough for a record total that only ever grows.
 _COUNT_TTL = float(os.environ.get("WB_COUNT_TTL", 30))
+
+# 增量计数的状态（offset/tail/n/n_realm），由 _count_state_lock 保护。
+# 与 by_account 折叠同一套位置校验（_usage_log_key + _log_offset_holds +
+# _log_tail_signature）：日志被截断、被替换或同尺寸重写时从零重数，宁多扫
+# 一次也不能给出错的页数。TTL 缓存按 realm 分键，这份状态则与 realm 无关
+# ——一次扫描同时维护总数与每个 realm 的计数，任何 realm 的查询都复用同一
+# 条进度，不再各自全量扫一遍。
+_count_state_lock = threading.Lock()
+_count_state = {"offset": 0, "key": None, "tail": b"", "n": 0, "n_realm": {}}
 
 
 _series_cache = {}
@@ -2089,19 +2106,21 @@ def _usage_timeseries_uncached(realm, lo, hi, step):
 
 
 def count_usage_rows(realm=None):
-    """Cached row count - substring match instead of a full JSON parse.
+    """Cached row count - incremental, substring match instead of a full parse.
 
     Rows written before the `realm` field existed (they are all error rows)
-    have to fall back to the account/model heuristic in row_matches_realm,
-    so those few are still parsed properly.
+    have to fall back to the account/model heuristic in row_realm, so those
+    few are still parsed properly - once, when the fold first reaches them.
 
     This runs on every /usage/recent poll purely to render the page total,
     and a full scan of the file dominated that endpoint (measured at ~50% of
-    its cost on a 45MB log). A short TTL keeps the number honest while
-    removing the scan from the poll path.
+    its cost on a 45MB log). The fold is carried over and refreshed with the
+    rows appended since the last call, so a poll costs what the new traffic
+    costs instead of what the whole log costs; the short TTL still keeps the
+    number honest while removing even that from the poll path.
     """
-    # Normalise first: the needle below is built from this value, so a
-    # literal "all" would search for a realm field that never exists.
+    # 先归一化：桶键就是 realm 字符串本身，字面 "all" 会被当成一个永远不存在
+    # 的桶（realm_scope 把它映射成 None = 总数）。
     realm = realm_scope(realm)
     r = realm or ""
     now = time.time()
@@ -2115,34 +2134,120 @@ def count_usage_rows(realm=None):
     return n
 
 
-def _count_usage_rows_uncached(realm=None):
-    needles = ()
-    if realm:
-        needles = ('"realm": "%s"' % realm, '"realm":"%s"' % realm)
-    n = 0
+# `"realm"` 的键文本。旧实现拿 `'"realm": "<值>"'` / `'"realm":"<值>"'` 两个
+# needle 做子串命中，新实现按同一对间距从行里取字段值（见 _count_usage_line）
+# ——口径逐字相同，只是不再为每个 realm 各扫一遍文件。
+_REALM_KEY = '"realm"'
+_REALM_KEY_LEN = len(_REALM_KEY)
+
+
+def _count_usage_line(state, line):
+    """折一行：总数 + 这一行声明的 realm 桶。
+
+    总数数的是**所有非空行**（包括解析不了的行），与旧实现一致。带 realm
+    字段的行按字段值归桶：取值只认旧 needle 覆盖的两种间距（`"realm": "x"`
+    与 `"realm":"x"`），间距再花哨的写法旧实现本来就匹配不到任何 realm，
+    这里也不为它建桶；值读到下一个引号为止——查询用的 realm 不会带引号，
+    字符串里的转义引号也拼不出 `"realm"` 这个键文本（同 _line_outside_window
+    的说明），所以不会误判。同一行重复声明 `"realm"`（手改过的行）按每一处
+    声明的值各计一次，与旧 needle 子串命中的行为一致；只有完全没有该字段的
+    老行（都是错误行）才解析 JSON 走 row_realm() 的账号/模型回退——旧实现
+    每次查询都要为它们付一次 json.loads，这里只在折叠时付一次。
+    """
+    state["n"] += 1
+    counts = state["n_realm"]
+    pos = line.find(_REALM_KEY)
+    if pos < 0:
+        # 没有 realm 字段（老错误行）：解析回退。解析不了就只算进总数。
+        try:
+            realm = row_realm(json.loads(line))
+        except Exception:
+            return
+        counts[realm] = counts.get(realm, 0) + 1
+        return
+    while pos >= 0:
+        end = pos + _REALM_KEY_LEN
+        if line.startswith(': "', end):
+            start = end + 3
+        elif line.startswith(':"', end):
+            start = end + 2
+        else:
+            start = -1
+        if start >= 0:
+            quote = line.find('"', start)
+            if quote >= 0:
+                value = line[start:quote]
+                counts[value] = counts.get(value, 0) + 1
+        pos = line.find(_REALM_KEY, end)
+
+
+def _count_usage_scan(state):
+    """把日志 offset 之后的每一行折进 state；返回 (offset, error)。
+
+    与 _scan_usage_from 同一套字节纪律（整行推进、半行留给下一趟、解码失败
+    即停），但折叠的是**行文本**而不是解析出的 row：计数的总口径里有一类行
+    根本不是合法 JSON（总行数照数），而 _scan_usage_from 在 fold 之前就把
+    它们丢掉了。逐行调用在这里直接写死（不走回调），全量重数一次要过几万行，
+    每行省一次间接调用是这条冷路径上最便宜的一笔。
+    """
+    offset = state["offset"]
     try:
-        with open(USAGE_LOG, encoding="utf-8") as fh:
-            for line in fh:
-                if not line.strip():
-                    continue
-                if not needles:
-                    n += 1
-                    continue
-                if any(x in line for x in needles):
-                    n += 1
-                    continue
-                if '"realm"' in line:
-                    continue          # realm 字段存在但值不同
+        with open(USAGE_LOG, "rb") as fh:
+            fh.seek(offset)
+            while True:
+                raw = fh.readline()
+                if not raw:
+                    break
+                if not raw.endswith(b"\n"):
+                    break
+                end = offset + len(raw)
                 try:
-                    if row_matches_realm(json.loads(line), realm):
-                        n += 1
-                except Exception:
-                    pass
+                    line = raw.decode("utf-8").strip()
+                except UnicodeDecodeError as exc:
+                    return end, exc
+                if line:
+                    try:
+                        _count_usage_line(state, line)
+                    except Exception as exc:
+                        return end, exc
+                offset = end
     except FileNotFoundError:
         pass
-    except Exception:
-        pass
-    return n
+    except Exception as exc:
+        return offset, exc
+    return offset, None
+
+
+def _count_usage_rows_uncached(realm=None):
+    """增量计数：把折叠推进到文件尾，返回 realm 对应的行数。
+
+    状态按「本进程数到哪」记账（offset/tail/n/n_realm），每次调用只数新增
+    的字节；位置校验不过（截断、换文件、同尺寸重写）才从零重数。realm 为
+    空返回总行数，否则返回该 realm 桶里的行数。
+    """
+    state = _count_state
+    with _count_state_lock:
+        log_key = _usage_log_key()
+        if not _log_resume_ok(state, log_key):
+            state.update({"offset": 0, "tail": b"", "n": 0, "n_realm": {}})
+        state["key"] = log_key
+        offset, error = _count_usage_scan(state)
+        n = state["n"]
+        counts = state["n_realm"]
+        if error is None:
+            state["offset"] = offset
+            state["tail"] = _log_tail_signature(offset)
+        else:
+            # 出错的那一行（非法 UTF-8 才会走到这里）可能已经半折进去了：
+            # 这份状态整个作废，下次从零重数——by_account 折叠同款处理。
+            # 这一次仍返回已经折到的部分：旧实现的文本层按块解码，坏行落在
+            # 第一块里时整次报 0、落在后面时给部分数；新实现稳定地给出坏行
+            # 之前的行数，任何情况下都不会更差。
+            log("usage count failed: %s" % error)
+            state.update({"offset": 0, "tail": b"", "n": 0, "n_realm": {}})
+        if not realm:
+            return n
+        return counts.get(realm, 0)
 
 
 def recent_usage(limit=100, realm=None, page=1):
@@ -2909,7 +3014,6 @@ def _analytics_window_from_days(realm, day_key, pricing_on):
             state.update({"maps": _new_analytics_maps(), "offset": 0, "tail": b"",
                           "days": {}, "days_floor": None})
             return None
-        floor = state.get("days_floor")
         if not _days_cover(state, day_key):
             return None
         maps = _new_analytics_maps()
@@ -4661,7 +4765,15 @@ def _usage_cache_maybe_save(kind, offset):
                 due = any(_usage_cache_progress.get(k, 0)
                           - _usage_cache_checkpointed.get(k, 0) >= min_bytes
                           for k in _usage_cache_progress)
-                if not due and (now - _usage_cache_last_attempt) < min_seconds:
+                # 计时器分支只在**确有推进**时才允许触发：进度没动时写出的
+                # 是一份与上次逐字节相同的 checkpoint，纯写放大——面板开着
+                # 就每 900s 白写一份 120KB（复现见套件 [7]）。空闲重写对
+                # 「重启后免冷扫」没有任何贡献，只有日志增长才值得落盘。
+                advanced = any(_usage_cache_progress.get(k, 0)
+                               > _usage_cache_checkpointed.get(k, 0)
+                               for k in _usage_cache_progress)
+                if not due and (not advanced
+                                or (now - _usage_cache_last_attempt) < min_seconds):
                     return
                 # 记「尝试」而不是「成功」：只读文件系统上失败会一直成立，
                 # 不退避的话每次刷新都去试写一遍。
