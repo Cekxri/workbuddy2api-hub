@@ -1280,6 +1280,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '成功': 'succeeded',
     '按包名与面额推断（官方规则：每日活跃 30 / Pro 50 积分）': 'Inferred from the package name and size (official rule: 30 for daily activity, 50 on Pro)',
     '每日签到 (国内版)': 'Daily check-in (China)',
+    'Buddy 加油站签到': 'Buddy gas station check-in',
     '每日签到:': 'Daily check-in:',
     '每账号每日上限（token）': 'Daily cap per account (tokens)',
     '每账号每日上限（积分）': 'Daily cap per account (credits)',
@@ -1941,6 +1942,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "每 5 秒自动刷新 · 数据来自本机反代": "每 5 秒自動重新整理 · 資料來自本機反代",
     "每个账号固定绑定一个出口代理槽。槽位地址变化时绑定账号自动跟随；禁用或删除后回退直连。": "每個帳號固定繫結一個出口代理槽。槽位地址變化時繫結帳號自動跟隨；禁用或刪除後回退直連。",
     "每日签到 (国内版)": "每日簽到 (國內版)",
+    "Buddy 加油站签到": "Buddy 加油站簽到",
     "每日签到:": "每日簽到:",
     "每日签到: ": "每日簽到: ",
     "每账号每日上限（token）": "每帳號每日上限（token）",
@@ -2797,7 +2799,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <button class="sec" onclick="fetchCredits(this)">一键刷新积分</button>
     <button class="sec" onclick="refreshAccounts(this)" title="逐个刷新所有账号的上游访问凭证（相当于对每个账号点一次「刷新凭证」）">一键刷新凭证</button>
     <span class="toolbar-sep" aria-hidden="true"></span>
-    <button class="sec" id="btnCheckin" onclick="doCheckin(this)" style="display:none">每日签到 (国内版)</button>
+    <button class="sec" id="btnCheckin" onclick="doCheckin(this)" style="display:none">Buddy 加油站签到</button>
     <button class="sec" id="btnDailyChat" onclick="doDailyChat(this)" style="display:none">每日活跃打卡 (国际版)</button>
     <!-- 网页通道打卡按钮不再上屏（2026-10-10 起）：网页通道那一步已经由设置里的
          「国际版每日活跃打卡」自动带在「每日活跃打卡」里，手动补跑走
