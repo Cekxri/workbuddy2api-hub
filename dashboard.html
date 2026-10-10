@@ -1271,6 +1271,14 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '不过期': 'No expiry',
     '暂无积分获取记录': 'No credit grants yet',
     '暂无积分获取记录（上游只返回当前仍可见的积分包，先点「一键刷新积分」拉一次）': 'No credit grants on record (the upstream only returns packages still visible; run "Refresh credits" once)',
+    '来源': 'Source',
+    '每日活跃奖励': 'Daily activity reward',
+    '上游发放原因：': 'Upstream reason: ',
+    '本机动作：': 'Gateway action: ',
+    '每日签到': 'Daily check-in',
+    '每日活跃打卡': 'Daily activity check-in',
+    '成功': 'succeeded',
+    '按包名与面额推断（官方规则：每日活跃 30 / Pro 50 积分）': 'Inferred from the package name and size (official rule: 30 for daily activity, 50 on Pro)',
     '每日签到 (国内版)': 'Daily check-in (China)',
     '每日签到:': 'Daily check-in:',
     '每账号每日上限（token）': 'Daily cap per account (tokens)',
@@ -3042,7 +3050,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       </div>
       <div style="overflow-x:auto;max-height:260px">
         <table class="data-cards" id="creditGrantsTable">
-          <thead><tr><th>时间</th><th>账号</th><th>区域</th><th>名称</th><th>积分</th><th>剩余</th><th>到期</th><th>状态</th></tr></thead>
+          <thead><tr><th>时间</th><th>账号</th><th>区域</th><th>名称</th><th>来源</th><th>积分</th><th>剩余</th><th>到期</th><th>状态</th></tr></thead>
           <tbody id="creditGrantsTbody"></tbody>
         </table>
       </div>
@@ -9389,17 +9397,33 @@ function renderCreditGrants(data){
     const tone = (r.status === 'expired' || r.status === 'used_up') ? 'bad'
       : (r.status === 'active' ? 'ok' : '');
     const expiry = r.no_expiry ? '不过期' : String(r.expire_iso || '').slice(5, 16) || '—';
+    // 来源：上游给了发放原因就用它的原文（如「Buddy 加油站签到」「成长计划奖励」），
+    // 没有就按包名与面额推断（国际版的 Bonus Pack 30/50 就是每日活跃奖励）。本机
+    // 签到 / 每日活跃的记录按时间对得上时一并挂进悬停提示，指出这次发放对应哪次动作。
+    const reason = String(r.grant_reason || '').trim();
+    const inferred = !reason && r.realm === 'intl' && /bonus/i.test(String(r.name || ''))
+      && (Number(r.size) === 30 || Number(r.size) === 50);
+    const source = reason || (inferred ? '每日活跃奖励' : '');
+    const tips = [];
+    if(reason) tips.push('上游发放原因：' + reason);
+    if(inferred) tips.push('按包名与面额推断（官方规则：每日活跃 30 / Pro 50 积分）');
+    if(r.action && r.action.task){
+      const task = r.action.task === 'checkin' ? '每日签到' : '每日活跃打卡';
+      tips.push('本机动作：' + task + ' ' + String(r.action.ts || '').slice(5, 16).replace('T', ' ')
+                + ' ' + (r.action.ok ? '成功' : '失败'));
+    }
     return '<tr>'
       + '<td>' + esc(String(r.create_iso || '').slice(5, 16) || '—') + '</td>'
       + '<td title="' + esc(r.uid || '') + '">' + esc(r.nickname || creditAccountLabel(r.uid)) + '</td>'
       + '<td style="text-align:center">' + esc(r.realm === 'cn' ? '国内版' : '国际版') + '</td>'
       + '<td' + (r.grant_reason ? ' title="' + esc(r.grant_reason) + '"' : '') + '>' + esc(r.name || '') + '</td>'
+      + '<td' + (tips.length ? ' title="' + esc(tips.join('；')) + '"' : '') + '>' + esc(source || '—') + '</td>'
       + '<td style="text-align:right">' + fmt(r.size || 0) + '</td>'
       + '<td style="text-align:right">' + fmt(r.remain || 0) + '</td>'
       + '<td style="text-align:center;font-size:11px;color:var(--dim)">' + esc(expiry) + '</td>'
       + '<td style="text-align:center"><span class="badge ' + tone + '">' + esc(status) + '</span></td>'
       + '</tr>';
-  }).join('') || '<tr><td colspan="8" style="color:var(--dim)">暂无积分获取记录</td></tr>';
+  }).join('') || '<tr><td colspan="9" style="color:var(--dim)">暂无积分获取记录</td></tr>';
 }
 
 /* 第一列的口径随范围切换，标签必须跟着走，否则「本周」的数字会被当成「今日」读。 */
