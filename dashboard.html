@@ -2386,14 +2386,35 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     var inst = document.documentElement.getAttribute('data-ui-language');
     if(inst === 'en' || inst === 'zh' || inst === 'zh-Hant') lang = inst;
   }
+  // allowed() 的结果按元素缓存。观察者每收到一条 DOM 变动记录，都会从被改动的
+  // 节点沿祖先链一路检查到根；EN 界面下这条链是每个 tick 都要重走一遍的固定开销
+  // （实测 CPU profile 里 allowed + hasAttribute 占 i18n 开销的大头）。判据只看
+  // 祖先链上的 SKIP 标签 / data-no-i18n / logTerminalBody，全是静态标记，所以
+  // 结论对元素是稳定的；命中缓存时整条链一次返回。用 WeakMap，元素被回收时
+  // 缓存条目一起消失，不会把 DOM 泄漏到全局。
+  var ALLOWED_CACHE = (typeof WeakMap === 'function') ? new WeakMap() : null;
   function allowed(el){
+    var chain = [];
+    var verdict = true;
+    var settled = false;   // 结论是否已经"钉死"（命中缓存或撞上标记）
     while(el && el.nodeType === 1){
-      if(SKIP[el.tagName]) return false;
-      if(el.hasAttribute && el.hasAttribute('data-no-i18n')) return false;
-      if(el.id === 'logTerminalBody') return false;
+      if(ALLOWED_CACHE){
+        var cached = ALLOWED_CACHE.get(el);
+        if(cached !== undefined){ verdict = cached; settled = true; break; }
+      }
+      if(SKIP[el.tagName]){ verdict = false; settled = true; break; }
+      if(el.hasAttribute && el.hasAttribute('data-no-i18n')){ verdict = false; settled = true; break; }
+      if(el.id === 'logTerminalBody'){ verdict = false; settled = true; break; }
+      chain.push(el);
       el = el.parentNode;
     }
-    return true;
+    // 链走到 document 也算钉死；断在游离节点上（还没挂进 DOM）则结果随时可能
+    // 随挂载点改变，不缓存，免得把 true 固化给之后挂到 no-i18n 子树里的节点。
+    if(el && el.nodeType !== 1) settled = true;
+    if(ALLOWED_CACHE && settled){
+      for(var i = 0; i < chain.length; i++) ALLOWED_CACHE.set(chain[i], verdict);
+    }
+    return verdict;
   }
   function doText(node){
     var cur = node.data;
@@ -2409,6 +2430,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     node.data = out;
   }
   function doAttrs(el){
+    // 整树 walk 时绝大多数元素没有任何一个 ATTRS 里的属性；先问一次"有没有属性"
+    // 再进循环，省下每个元素 5 次 hasAttribute 的固定开销（profile 里排名靠前）。
+    if(!el.hasAttributes()) return;
     for(var i = 0; i < ATTRS.length; i++){
       var a = ATTRS[i];
       if(!el.hasAttribute(a)) continue;
@@ -4567,6 +4591,16 @@ function authHeaders(base){
   return h;
 }
 
+// 同一 URL 的在飞请求只保留一份（单飞）。5 秒轮询、手动切页/切窗口、可见性回调
+// 叠在一起时，同一个 URL 会同时发出好几份完全相同的请求：冷窗口的 /usage 扫描
+// 要十几秒，这几份就全在服务端重跑一遍聚合，还占着浏览器的连接池，把后面的
+// /accounts、/scheduler 一起堵住——"切窗口后面板像死了"有一半是这里自己放大的。
+// 登记表按 URL 键控，后来者直接等第一份的结果；请求落定（无论成败）就摘掉登记项，
+// 下一次轮询照常发新请求，所以不会把"每次都要新数据"的语义变成缓存。
+const GETJSON_INFLIGHT = new Map();
+// 挂死保护：网络层僵住时 fetch 可能永远不落定，登记项会一直占着这个 URL，之后
+// 每一轮轮询都陪它一起等。超过这个时长就把登记项视为已死，放行新请求。
+const GETJSON_STALE_MS = 60000;
 async function getJSON(url, opts){
   // cache 模式分两档，按"响应体在服务端是否有一份 TTL 缓存"来选：
   //
@@ -4580,10 +4614,22 @@ async function getJSON(url, opts){
   //    这里绝不能写 no-store——那会让浏览器连副本都不存，条件请求无从谈起，
   //    服务端的 ETag 也就永远用不上。
   const cache = (opts && opts.revalidate) ? 'no-cache' : 'no-store';
-  const r = await fetch(url, {cache: cache, headers: authHeaders()});
-  if(r.status === 401 || r.status === 403){ panelSessionLost(); throw new Error('unauthorized'); }
-  if(!r.ok) throw new Error(r.status);
-  return r.json();
+  // 键里带上 cache 档位：同一 URL 若一处走可校验、一处走 no-store，两者语义不同
+  // （前者允许浏览器回 304 复用副本），合并会让其中一方悄悄拿到不该拿的副本。
+  const key = cache + ' ' + url;
+  const hit = GETJSON_INFLIGHT.get(key);
+  if(hit && (Date.now() - hit.at) < GETJSON_STALE_MS) return hit.p;
+  const run = async () => {
+    const r = await fetch(url, {cache: cache, headers: authHeaders()});
+    if(r.status === 401 || r.status === 403){ panelSessionLost(); throw new Error('unauthorized'); }
+    if(!r.ok) throw new Error(r.status);
+    return r.json();
+  };
+  // 落定即摘除；只摘自己那一份，别误删后来顶替的登记项（上面超时换新时会顶替）。
+  const entry = {p: null, at: Date.now()};
+  entry.p = run().finally(() => { if(GETJSON_INFLIGHT.get(key) === entry) GETJSON_INFLIGHT.delete(key); });
+  GETJSON_INFLIGHT.set(key, entry);
+  return entry.p;
 }
 // 轮询读取的 fetch 选项：这些接口的响应体由服务端的 TTL 缓存决定，同一份缓存
 // 期间不变，所以可以让浏览器存一份、每次回源校验（服务端 ETag 命中即 304）。
@@ -6057,6 +6103,22 @@ async function refreshInner(gen){
     const m = (t.accounts_map && t.accounts_map[uid]);
     return (m && m.nickname) ? m.nickname : String(uid).slice(0,8);
   };
+  // 5 秒一轮的重画里，内容没变就不碰 DOM：实测 100 行时一次 innerHTML 重写要花
+  // ~10ms 解析 + 50~65ms 强制布局（每个 tick 一个 57~77ms 的长任务），而相邻两轮
+  // 里有 1/4~1/2 的轮次数据逐字节相同——代价全白付。指纹覆盖所有会画进表格的
+  // 输入：行数据本身（JSON 快照，任何字段变化都算）、页码/每页条数/区域、账号
+  // 昵称（来自 /usage 的 accounts_map，与行分开变化）、以及价格列的三个开关
+  // （PRICING_ON、CNY/USD 显示币种、汇率——它们和行数据分开变化，漏一个就会
+  // 让"切换币种"这类操作被指纹挡住、表格停在旧币种上）。相同就整段跳过：
+  // 不重拼 HTML、不重排、不重挂悬停明细。
+  const recentFp = [
+    total, RECENT_PAGE, RECENT_LIMIT, window.VIEW_REALM,
+    PRICING_ON ? '1' : '0', costCurrency, costUsdRate,
+    rows.map(r => acctName(r.account)).join('\u0001'),
+    JSON.stringify(rows),
+  ].join('\u0002');
+  if(recentFp === lastRecentFp) return;
+  lastRecentFp = recentFp;
   COST_TIP_ROWS.clear();
   document.getElementById('recent').innerHTML = rows.length ?
     '<table class="data-cards"><thead><tr><th>时间</th><th>模型</th><th>推理强度</th><th>账号</th><th>模式</th><th>结果</th><th>耗时</th><th>首字</th><th>速度</th><th>输入</th><th>输出</th><th>思考</th><th>缓存</th><th>总 token</th><th>积分</th><th class="pricing-col" style="color:var(--warn)">估算价格</th></tr></thead><tbody>'
@@ -6111,6 +6173,9 @@ let RECENT_LIMIT = parseInt(localStorage.getItem('WB_RECENT_LIMIT') || '20', 10)
 if(![10, 20, 50, 100].includes(RECENT_LIMIT)) RECENT_LIMIT = 20;
 let RECENT_PAGE = 1;
 let RECENT_TOTAL_PAGES = 1;
+// 最近请求表上次真正画进 DOM 的内容指纹（见 refreshInner 里的 recentFp）。
+// 5 秒一轮的重画代价几乎全在布局（100 行实测 50~65ms），数据没变就不该重画。
+let lastRecentFp = null;
 
 function updateRecentLimitButtons(){
   [10, 20, 50, 100].forEach(n => {
@@ -6199,6 +6264,11 @@ function panelSessionLost(){
   PANEL_TIMERS.forEach(t => clearInterval(t));
   PANEL_TIMERS = [];
   if(typeof stopLogPolling === 'function') stopLogPolling();
+  // 「+ 添加账号 (OAuth)」弹窗里的登录轮询不在 PANEL_TIMERS 里，是它自己的一条
+  // 2.5s 定时器。不清它的话：网关重启/会话过期时弹窗还开着，pollLogin 每 2.5 秒
+  // 打一次 /accounts/login/poll，每次 401 又回到这里开闸门，这个标签页就会永远
+  // 每 2.5 秒刷一次 401（实测 9 秒内又发 3 次，永不停止）。
+  if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
   PANEL_TOKEN = '';
   try { sessionStorage.removeItem(PANEL_STORE); } catch(e) {}
   const msg = document.getElementById('panelLoginMsg');
@@ -8214,6 +8284,35 @@ let logAutoScroll = true;
 let logPollTimer = null;
 let logFetching = false;
 let logUserScrolledUp = false;
+// 增量渲染的簿记：DOM 里此刻画着的是"哪个过滤条件下的多少行"。轮询带回新行时
+// 只 append 新增的几行；过滤/搜索变化或状态对不上时才整表重画。
+let logDomKey = null;     // 上次渲染时的过滤条件指纹（logFilterKey()）
+let logDomCount = 0;      // DOM 中当前的 .log-line 行数
+const LOG_DOM_MAX = 2000; // 与 logEntries 的缓冲上限一致，超出就从头部裁
+
+// 过滤谓词抽出来共用：整表渲染与增量 append 必须用同一套判据，否则会出现
+// "新行画上去了、但按当前过滤条件它本不该显示"这类两套逻辑漂移出来的脏数据。
+function logMatchesFilter(item){
+  if(logFilterLevel && item.level !== logFilterLevel) return false;
+  if(logFilterTag && item.tag !== logFilterTag) return false;
+  if(logSearchText){
+    const haystack = ((item.msg || '') + ' ' + (item.tag || '') + ' ' + (item.time || '')).toLowerCase();
+    if(!haystack.includes(logSearchText)) return false;
+  }
+  return true;
+}
+function logFilterKey(){ return logFilterLevel + '|' + logFilterTag + '|' + logSearchText; }
+// 单行 HTML 只有这一处定义，整表渲染和增量 append 都用它。
+function logLineHtml(item){
+  const lvlCls = 'lvl-' + (item.level || 'INFO');
+  const tagCls = 'tag-' + (item.tag || 'system');
+  return '<div class="log-line">' +
+    '<span class="log-ts">' + escapeHtml(item.time || '') + '</span>' +
+    '<span class="log-lvl ' + lvlCls + '">' + escapeHtml(item.level || 'INFO') + '</span>' +
+    '<span class="log-tag ' + tagCls + '">[' + escapeHtml(item.tag || 'system') + ']</span>' +
+    '<span class="log-msg">' + escapeHtml(item.msg || '') + '</span>' +
+  '</div>';
+}
 
 function startLogPolling(){
   if(logPollTimer) clearInterval(logPollTimer);
@@ -8241,14 +8340,16 @@ async function fetchNewLogs(forceReset){
     const limit = forceReset ? 500 : 200;
     const data = await getJSON('/logs?since_id=' + since + '&limit=' + limit);
     if(data && data.logs){
+      let fresh = null;     // 本轮真正新增的条目（去重后）
+      let dropped = null;   // 因超上限被挤出缓冲的最旧条目
       if(forceReset){
         logEntries = data.logs;
       } else if(data.logs.length > 0){
         const existingIds = new Set(logEntries.map(x => x.id));
-        data.logs.forEach(item => {
-          if(!existingIds.has(item.id)) logEntries.push(item);
-        });
+        fresh = data.logs.filter(item => !existingIds.has(item.id));
+        fresh.forEach(item => logEntries.push(item));
         if(logEntries.length > 2000){
+          dropped = logEntries.slice(0, logEntries.length - 2000);
           logEntries = logEntries.slice(-2000);
         }
       }
@@ -8257,8 +8358,22 @@ async function fetchNewLogs(forceReset){
       } else if(logEntries.length > 0){
         lastLogId = logEntries[logEntries.length - 1].id;
       }
-      renderLogs();
-      updateLogStats();
+      // 渲染策略：只有真的带着新行回来才碰 DOM。
+      //  - 首次进入 / 手动刷新（forceReset）、过滤条件与上次渲染不一致、或 DOM
+      //    里现在是空态：整表重画，顺带把簿记校正回来；
+      //  - 有新增行且条件一致：只把新增的几行 append 上去，被挤出的旧行从头部
+      //    等量删掉；
+      //  - 没有任何新行：直接跳过——旧实现里 `data.logs` 为空数组也真，于是每
+      //    2 秒把整个终端重写一遍，2000 行时每次约 700KB 的 HTML 解析 + 布局
+      //    （实测 layout 254~324ms）全白烧，忙碌时"每 2 秒卡 0.3 秒"就是它。
+      if(forceReset || logDomKey !== logFilterKey() || logDomCount === 0){
+        renderLogs();
+      } else {
+        if(dropped && dropped.length) dropLogDomHead(dropped);
+        if(fresh && fresh.length) appendLogLines(fresh);
+      }
+      // 统计徽章的数字只由 logEntries 决定，缓冲没变就不用重写（少一次 DOM 写）。
+      if(forceReset || (fresh && fresh.length)) updateLogStats();
     }
     if(statusEl) statusEl.textContent = '就绪 · ' + new Date().toLocaleTimeString();
   } catch(e) {
@@ -8370,38 +8485,64 @@ function renderLogs(){
   const body = document.getElementById('logTerminalBody');
   if(!body) return;
 
-  const filtered = logEntries.filter(item => {
-    if(logFilterLevel && item.level !== logFilterLevel) return false;
-    if(logFilterTag && item.tag !== logFilterTag) return false;
-    if(logSearchText){
-      const haystack = ((item.msg || '') + ' ' + (item.tag || '') + ' ' + (item.time || '')).toLowerCase();
-      if(!haystack.includes(logSearchText)) return false;
-    }
-    return true;
-  });
+  const filtered = logEntries.filter(logMatchesFilter);
 
   if(filtered.length === 0){
     body.innerHTML = '<div class="log-empty">暂无匹配的日志记录</div>';
+    logDomKey = logFilterKey();
+    logDomCount = 0;
     return;
   }
 
-  const htmlParts = [];
-  filtered.forEach(item => {
-    const lvlCls = 'lvl-' + (item.level || 'INFO');
-    const tagCls = 'tag-' + (item.tag || 'system');
-    htmlParts.push(
-      '<div class="log-line">' +
-        '<span class="log-ts">' + escapeHtml(item.time || '') + '</span>' +
-        '<span class="log-lvl ' + lvlCls + '">' + escapeHtml(item.level || 'INFO') + '</span>' +
-        '<span class="log-tag ' + tagCls + '">[' + escapeHtml(item.tag || 'system') + ']</span>' +
-        '<span class="log-msg">' + escapeHtml(item.msg || '') + '</span>' +
-      '</div>'
-    );
-  });
-  body.innerHTML = htmlParts.join('');
+  body.innerHTML = filtered.map(logLineHtml).join('');
+  logDomKey = logFilterKey();
+  logDomCount = filtered.length;
 
   if(logAutoScroll && !logUserScrolledUp){
     body.scrollTop = body.scrollHeight;
+  }
+}
+
+// 只把新到的行追加到终端末尾（insertAdjacentHTML 只解析这一段，不碰已有行）。
+// 旧实现每次轮询都把全部行重拼一遍再整体 innerHTML，2000 行时约 700KB/次；
+// 忙碌时新行通常只有几行，append 的代价与新增量成正比。
+function appendLogLines(items){
+  const body = document.getElementById('logTerminalBody');
+  if(!body) return;
+  const visible = items.filter(logMatchesFilter);
+  if(!visible.length) return;   // 新行全被过滤掉：DOM 一个字节都不动
+  body.insertAdjacentHTML('beforeend', visible.map(logLineHtml).join(''));
+  logDomCount += visible.length;
+  // 兜底上限：正常情况下头部裁剪由 dropLogDomHead 按"被挤出的条目"精确完成，
+  // 这里只防簿记与 DOM 万一脱节（比如有人在控制台里手动改过 DOM）。
+  while(logDomCount > LOG_DOM_MAX){
+    const first = body.firstElementChild;
+    if(!first){ logDomCount = 0; break; }
+    body.removeChild(first);
+    logDomCount--;
+  }
+  if(logAutoScroll && !logUserScrolledUp){
+    body.scrollTop = body.scrollHeight;
+  }
+}
+
+// 缓冲超上限时，最旧的条目被挤出 logEntries；DOM 头部也要把"其中当前过滤条件
+// 下曾经画出来的那些行"删掉，否则开着过滤时终端会攒下已经不在缓冲里的旧行，
+// 和切一次过滤后的整表重画结果对不上。按条数从头部删即可：DOM 顺序与条目顺序
+// 一致，被挤出的条目必然是最老的，也就是 DOM 头部的那几行。
+function dropLogDomHead(droppedEntries){
+  const body = document.getElementById('logTerminalBody');
+  if(!body) return;
+  let cut = 0;
+  for(let i = 0; i < droppedEntries.length; i++){
+    if(logMatchesFilter(droppedEntries[i])) cut++;
+  }
+  while(cut > 0){
+    const first = body.firstElementChild;
+    if(!first){ logDomCount = 0; return; }
+    body.removeChild(first);
+    logDomCount--;
+    cut--;
   }
 }
 
@@ -8536,17 +8677,27 @@ function analyticsQuery(){
  * Reads the combined view on purpose. The table carries its own 区域
  * column, so scoping it to the gateway's current exit would hide exactly the
  * models this page exists to compare. */
+// /v1/models?realm=all 的目录在这里只作展示白名单（哪些模型算"已知模型"），
+// 内容变化极慢，却跟着 5 秒轮询每轮重取一份（实测统计页开着约 12~15 次/分钟、
+// 约 24KB/次）。改成一个 TTL：进统计页时取一次，之后最多每 10 分钟回源一次；
+// 取失败不刷新时间戳，下一轮继续重试（和原来"失败也不清空白名单"一致）。
+let matrixModelsAt = 0;
+const MATRIX_MODELS_TTL_MS = 10 * 60 * 1000;
 async function loadAnalyticsMatrix(){
   try{
       const q = analyticsQuery();
+    const needModels = !MATRIX_MODELS.size || (Date.now() - matrixModelsAt) >= MATRIX_MODELS_TTL_MS;
     const [usage, perf, models] = await Promise.all([
       getJSON('/usage' + q, POLL_READ),
       getJSON('/usage/perf' + q, POLL_READ),
       // The catalog is only a display filter, so a failure here must not
       // blank the table; null keeps the previous allowlist.
-      getJSON('/v1/models?realm=all').catch(() => null),
+      needModels ? getJSON('/v1/models?realm=all').catch(() => null) : Promise.resolve(null),
     ]);
-    if(models && models.data) MATRIX_MODELS = new Set(models.data.map(m => m.id));
+    if(models && models.data){
+      MATRIX_MODELS = new Set(models.data.map(m => m.id));
+      matrixModelsAt = Date.now();
+    }
     cachedMatrixData = { usage: usage, perf: perf };
     fillMatrixFilters(usage);
     renderPerfMatrix(usage, perf);
