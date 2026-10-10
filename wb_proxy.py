@@ -3757,9 +3757,13 @@ def _build_key_rows(key_map, realm=None):
         rows[k_id] = empty_row(k_id, entry.get("name") or k_id, declared,
                                entry.get("enabled", True) is not False, "panel")
     # The launcher key (--api-key / API_KEY) lives in no settings file, so it
-    # is only ever visible as an id in the log. It gets a row when it could
-    # have been used at all, which is what keeps the totals reconcilable.
-    if "launcher" not in rows and (API_KEY or "launcher" in key_map):
+    # is only ever visible as an id in the log. It is not an attribution
+    # dimension: once the panel holds any key of its own the launcher key is
+    # no longer accepted at all (see identify_key), so an unused one is a
+    # permanent zero that says nothing about who spent what. Give it a row
+    # only when the log shows it was actually used - the only state in which
+    # it carries history worth reconciling.
+    if "launcher" not in rows and "launcher" in key_map:
         rows["launcher"] = empty_row("launcher", "启动参数", "", True, "launcher")
 
     def adopt(row, km):
@@ -4846,6 +4850,7 @@ def runtime_settings_view():
         "daily_chat_web": wb_settings.daily_chat_web(ACCOUNTS_DIR),
         "local_web_tools": wb_settings.local_web_tools(ACCOUNTS_DIR),
         "accounts_collapsed": wb_settings.accounts_collapsed(ACCOUNTS_DIR),
+        "key_before_hidden": wb_settings.key_before_hidden(ACCOUNTS_DIR),
         "update_check_enabled": wb_settings.update_check_enabled(ACCOUNTS_DIR),
         "upstream": wb_settings.upstream_config(ACCOUNTS_DIR),
         "prompt": wb_settings.prompt_config(ACCOUNTS_DIR),
@@ -11156,6 +11161,16 @@ class Handler(BaseHTTPRequestHandler):
                                    "invalid_request_error")
             wb_settings.set_accounts_collapsed(ACCOUNTS_DIR, raw)
             reply["accounts_collapsed"] = raw
+        if "key_before_hidden" in payload:
+            # Same shape as accounts_collapsed: one disclosure state per
+            # submission, and strictly a JSON boolean, because "false" as a
+            # string would be truthy and silently fold the row away.
+            raw = payload.get("key_before_hidden")
+            if not isinstance(raw, bool):
+                return self._error(400, "key_before_hidden must be true or false",
+                                   "invalid_request_error")
+            wb_settings.set_key_before_hidden(ACCOUNTS_DIR, raw)
+            reply["key_before_hidden"] = raw
         if "update_check_enabled" in payload:
             # Strictly a JSON boolean, like the switches above: "false" as a
             # string would be truthy and silently start the daily GitHub call.

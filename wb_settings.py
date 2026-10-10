@@ -52,6 +52,11 @@ PRICING_ENABLED_KEY = "pricing_enabled"
 # edit or an older client left behind both keep the default view, and only an
 # explicit true hides the accounts.
 ACCOUNTS_COLLAPSED_KEY = "accounts_collapsed"
+# Whether the panel's per-API-key table folds away its `(切换前)` row - the
+# legacy tail of requests logged before the key field existed. Same
+# normalisation as the disclosure above: only an explicit boolean true hides
+# the row, so a hand edit or an older client cannot drop it by accident.
+KEY_BEFORE_HIDDEN_KEY = "key_before_hidden"
 
 # Instance-wide default UI language. The dashboard can override this per
 # browser with localStorage; this key is the fallback when no override exists.
@@ -1160,6 +1165,27 @@ def set_accounts_collapsed(accounts_dir, collapsed):
         data[ACCOUNTS_COLLAPSED_KEY] = collapsed
         save(accounts_dir, data)
     return collapsed
+
+
+def key_before_hidden(accounts_dir):
+    """Whether the per-API-key table folds away its `(切换前)` row.
+
+    Shown unless the stored value is the boolean true, with the same `is True`
+    normalisation as accounts_collapsed: the row is history worth seeing, so a
+    hand-edited "false", a 1, an object or a missing key must all leave it
+    visible rather than hide it by accident.
+    """
+    return load(accounts_dir).get(KEY_BEFORE_HIDDEN_KEY) is True
+
+
+def set_key_before_hidden(accounts_dir, hidden):
+    """Persist the `(切换前)` row disclosure state. Returns the stored boolean."""
+    hidden = bool(hidden)
+    with _lock:
+        data = load(accounts_dir)
+        data[KEY_BEFORE_HIDDEN_KEY] = hidden
+        save(accounts_dir, data)
+    return hidden
 
 
 def update_check_enabled(accounts_dir):
