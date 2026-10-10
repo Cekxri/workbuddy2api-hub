@@ -667,7 +667,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   };
 
   // 3. Tab 初始化（与下方主脚本的 MAIN_TABS 保持一致）
-  var TABS = ['gateway','analytics','agents','settings','logs'];
+  var TABS = ['gateway','tasks','analytics','agents','settings','logs'];
   var pick = null;
   try {
     var q = new URLSearchParams(location.search).get('tab');
@@ -2616,6 +2616,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <button class="main-nav-btn active" id="btnNavGateway" onclick="switchMainTab('gateway')">
         网关与账号
       </button>
+      <button class="main-nav-btn" id="btnNavTasks" onclick="switchMainTab('tasks')">
+        任务与福利
+      </button>
       <button class="main-nav-btn" id="btnNavAnalytics" onclick="switchMainTab('analytics')">
         数据看板
       </button>
@@ -2872,8 +2875,11 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     </div>
   </section>
 
+  </div><!-- /pageGateway -->
+  
+  <div id="pageTasks" class="main-page">
   <!-- 国内版专属成长任务与日常福利 -->
-  <section id="sectionGrowthTasks" style="display:none">
+  <section id="sectionGrowthTasks">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
       <div>
         <h2 style="margin:0">国内版成长任务与日常福利</h2>
@@ -2914,9 +2920,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 
     <div id="taskLogBox" style="display:none;margin-top:14px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-size:12px;font-family:ui-monospace,monospace;line-height:1.6;max-height:220px;overflow-y:auto"></div>
   </section>
+  </div><!-- /pageTasks -->
 
-  
-  </div><!-- /pageGateway -->
   <div id="pageAnalytics" class="main-page">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px">
       <div>
@@ -4156,10 +4161,6 @@ async function switchGrowthAccount(uid){
 async function loadGrowthTasks(){
   const sec = document.getElementById("sectionGrowthTasks");
   if(!sec) return;
-  if(window.VIEW_REALM !== 'cn'){
-    sec.style.display = 'none';
-    return;
-  }
   sec.style.display = 'block';
   try{
     const q = (CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all') ? ('?uid=' + encodeURIComponent(CURRENT_GROWTH_UID)) : '';
@@ -6354,7 +6355,7 @@ function generatePageList(current, total){
 
 // Tab ids in nav order. One list so the restore path and the nav cannot
 // drift apart.
-const MAIN_TABS = ['gateway', 'analytics', 'agents', 'settings', 'logs'];
+const MAIN_TABS = ['gateway', 'tasks', 'analytics', 'agents', 'settings', 'logs'];
 const MAIN_TAB_STORE = 'wb-proxy-main-tab';
 let currentMainTab = 'gateway';
 let analyticsRange = 'today';
@@ -8128,17 +8129,20 @@ function switchMainTab(tab){
   } catch(e){}
   try { localStorage.setItem(MAIN_TAB_STORE, tab); } catch(e){}
   const btnGateway = document.getElementById('btnNavGateway');
+  const btnTasks = document.getElementById('btnNavTasks');
   const btnAnalytics = document.getElementById('btnNavAnalytics');
   const btnLogs = document.getElementById('btnNavLogs');
   const btnSettings = document.getElementById('btnNavSettings');
   const btnAgents = document.getElementById('btnNavAgents');
   const pageGateway = document.getElementById('pageGateway');
+  const pageTasks = document.getElementById('pageTasks');
   const pageAnalytics = document.getElementById('pageAnalytics');
   const pageLogs = document.getElementById('pageLogs');
   const pageSettings = document.getElementById('pageSettings');
   const pageAgents = document.getElementById('pageAgents');
   const tabs = [
     ['gateway', btnGateway, pageGateway],
+    ['tasks', btnTasks, pageTasks],
     ['analytics', btnAnalytics, pageAnalytics],
     ['logs', btnLogs, pageLogs],
     ['settings', btnSettings, pageSettings],
@@ -8152,6 +8156,7 @@ function switchMainTab(tab){
     // 每个页面各自按自己的区块重建侧栏；非当前页的区块变化在切过来时补上
     if(on) initPageNav(page);
   });
+  if(tab === 'tasks'){ loadGrowthTasks(); }
   if(tab === 'analytics'){ loadAnalytics(); loadAnalyticsMatrix(); }
   if(tab === 'settings'){ loadSettings(); loadProxySlots(); }
   if(tab === 'agents'){ loadAgents(); }
