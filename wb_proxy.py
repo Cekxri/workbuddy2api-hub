@@ -3645,9 +3645,13 @@ def _build_key_rows(key_map, realm=None):
         rows[k_id] = empty_row(k_id, entry.get("name") or k_id, declared,
                                entry.get("enabled", True) is not False, "panel")
     # The launcher key (--api-key / API_KEY) lives in no settings file, so it
-    # is only ever visible as an id in the log. It gets a row when it could
-    # have been used at all, which is what keeps the totals reconcilable.
-    if "launcher" not in rows and (API_KEY or "launcher" in key_map):
+    # is only ever visible as an id in the log. It is not an attribution
+    # dimension: once the panel holds any key of its own the launcher key is
+    # no longer accepted at all (see identify_key), so an unused one is a
+    # permanent zero that says nothing about who spent what. Give it a row
+    # only when the log shows it was actually used - the only state in which
+    # it carries history worth reconciling.
+    if "launcher" not in rows and "launcher" in key_map:
         rows["launcher"] = empty_row("launcher", "启动参数", "", True, "launcher")
 
     def adopt(row, km):

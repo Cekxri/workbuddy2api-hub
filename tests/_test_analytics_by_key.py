@@ -205,6 +205,17 @@ _wire = json.dumps(data, ensure_ascii=False)
 check("the payload survives the trip to the browser",
       len(json.loads(_wire)["keys"]) == len(data["keys"]))
 
+# A launcher key that never carried traffic is not an attribution dimension:
+# with a panel key present it is refused outright, so its empty row is noise.
+# The row above (used launcher) still shows, so only the unused case is gone.
+with io.open(P.USAGE_LOG, "w", encoding="utf-8") as fh:
+    for r in rows:
+        if r.get("key") != "launcher":
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+idle = P._compute_usage_analytics_uncached()
+check("an unused launcher key gets no row at all",
+      "launcher" not in [k["key"] for k in idle["keys"]])
+
 # The realm view must not invent a row for a key bound to the other exit.
 only_cn = P._compute_usage_analytics_uncached(realm="cn")
 check("a key bound to the other exit is not listed in this view",
