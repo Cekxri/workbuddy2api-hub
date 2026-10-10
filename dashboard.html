@@ -4229,17 +4229,16 @@ async function loadIntlTasks(){
     const stateEl = document.getElementById("intlTodayActiveState");
     if(stateEl){
       if(!accts.length){
-        stateEl.textContent = '未添加国际账号';
+        stateEl.textContent = '无国际账号';
       } else {
         const today = new Date().toISOString().slice(0, 10);
-        const allDone = accts.every(a => a.lastDailyChat && a.lastDailyChat.startsWith(today));
-        const someDone = accts.some(a => a.lastDailyChat && a.lastDailyChat.startsWith(today));
-        if(allDone){
-          stateEl.innerHTML = '<span style="color:#26bb82">今日全部已打卡</span>';
-        } else if(someDone){
-          stateEl.innerHTML = '<span style="color:var(--accent)">部分账号已打卡</span>';
+        const doneCount = accts.filter(a => a.lastDailyChat && a.lastDailyChat.startsWith(today)).length;
+        if(doneCount === accts.length){
+          stateEl.innerHTML = '<span style="color:#26bb82">今日已打卡 (' + doneCount + '/' + accts.length + ')</span>';
+        } else if(doneCount > 0){
+          stateEl.innerHTML = '<span style="color:var(--accent)">部分已打卡 (' + doneCount + '/' + accts.length + ')</span>';
         } else {
-          stateEl.innerHTML = '<span style="color:var(--warn)">今日尚未打卡</span>';
+          stateEl.innerHTML = '<span style="color:var(--warn)">今日未打卡 (0/' + accts.length + ')</span>';
         }
       }
     }
@@ -4284,14 +4283,19 @@ async function loadGrowthTasks(){
           chkStateEl.textContent = '无国内账号';
         } else {
           const today = new Date().toISOString().slice(0, 10);
-          const allDone = targetAccts.every(a => a.lastCheckin && a.lastCheckin.startsWith(today));
-          const someDone = targetAccts.some(a => a.lastCheckin && a.lastCheckin.startsWith(today));
-          if(allDone){
-            chkStateEl.innerHTML = '<span style="color:#26bb82">今日已签到</span>';
-          } else if(someDone){
-            chkStateEl.innerHTML = '<span style="color:var(--accent)">部分已签到</span>';
+          const doneCount = targetAccts.filter(a => a.lastCheckin && a.lastCheckin.startsWith(today)).length;
+          if(targetAccts.length === 1){
+            chkStateEl.innerHTML = (doneCount === 1)
+              ? '<span style="color:#26bb82">今日已签到 (1个账号)</span>'
+              : '<span style="color:var(--warn)">今日未签到</span>';
           } else {
-            chkStateEl.innerHTML = '<span style="color:var(--warn)">今日未签到</span>';
+            if(doneCount === targetAccts.length){
+              chkStateEl.innerHTML = '<span style="color:#26bb82">今日已签到 (' + doneCount + '/' + targetAccts.length + '个账号)</span>';
+            } else if(doneCount > 0){
+              chkStateEl.innerHTML = '<span style="color:var(--accent)">部分已签到 (' + doneCount + '/' + targetAccts.length + '个账号)</span>';
+            } else {
+              chkStateEl.innerHTML = '<span style="color:var(--warn)">今日未签到 (0/' + targetAccts.length + '个账号)</span>';
+            }
           }
         }
       }catch(e){
