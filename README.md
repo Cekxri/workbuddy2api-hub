@@ -131,27 +131,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
 - 107 个套件：81 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
-=======
-- 107 个套件：81 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
->>>>>>> pr-238
-=======
-- 107 个套件：81 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
->>>>>>> pr-239
-=======
-- 107 个套件：81 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
->>>>>>> pr-240
-=======
-- 107 个套件：81 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
->>>>>>> pr-243
-=======
-- 107 个套件：81 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
->>>>>>> pr-245
 - `tests/_mobile_check.py` 是独立的 Playwright 手机/桌面布局检查器（需自行安装 Playwright），按需手动运行，不在上面的套件集里。
 - CI（`.github/workflows/tests.yml`）跑同一条命令：Ubuntu 上 python 3.9 与 3.12（3.9 是本项目声称的最低版本），Windows 上 python 3.12；推送 `v*` tag 时额外断言 **tag == 源码版本**（`-ci` 演练 tag 豁免）。
 
@@ -331,14 +311,23 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
-- **按 API Key 的消耗归属表可收起「(切换前)」行**：这张表末尾的「(切换前)」是升级前的历史尾巴（早于 `key` 字段的请求），口径上只减不增却一直占一行。表头新增一个与「启用价估算」同款的 `.switch` 开关，默认关（照常显示），打开即收起该行；偏好与账号区折叠一样存服务端 `accounts/settings.json`（`key_before_hidden`），由 `/settings` 下发、`/settings/save` 单键写回，不走浏览器存储。只有明确的布尔 `true` 才收起，手改成 `"true"` 或 `1` 都仍显示。没有这一行的部署开关自动隐藏，收起时页脚也不再解释那行。
+- **小响应不再白付 40ms、突发并发不再卡 1 秒**（[PR #237](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/237)，感谢 [@aodianjun](https://github.com/aodianjun)）：服务端关掉 Nagle（响应头与响应体两次 write 不再互相等 ACK，werkzeug/uvicorn 同做法），listen backlog 从 stdlib 默认的 5 提到 128（面板打开一页就是 ~7 个并发）。真机（OpenWrt / Celeron N2840）：`/health` 中位 50.0ms → 1.41ms，64 并发突发「卡 ≥1s」43/64 → 0/64。顺带把单请求体上限默认从 50MB 收到 16MB（`WB_MAX_PAYLOAD_BYTES` 可调回）——读 body 发生在 chat 信号量之前，路由器上几个并发大 body 就能把内存打穿。
 
-- **「启动参数」不再单独占一行**：`--api-key` / `API_KEY` 传入的是部署级兜底凭据，面板里只要存在任意一把 key，`identify_key()` 就不再接受它——所以那一行在有面板 key 时必然恒为 0、永不增长。现在只有日志里确实出现过它的用量时才出行，既去掉空行，又保住面板加 key 之前那段历史用量。
+- **面板轮询不再自己把自己堵住**（[PR #238](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/238)，感谢 [@aodianjun](https://github.com/aodianjun)）：`getJSON` 加 URL 级单飞（冷窗口时同一 URL 曾发 13 份、6 份并发，还把 `/accounts`、`/scheduler` 一起堵住）；日志页改成只 append 新行、最近请求渲染前比指纹跳过；英文界面的 i18n 观察者加 WeakMap 缓存；修掉会话失效后 401 轮询停不下来的 bug；`/v1/models?realm=all` 轮询从 5s 改为 10 分钟 TTL。
+
+- **请求热路径提速**（[PR #239](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/239)，感谢 [@aodianjun](https://github.com/aodianjun)）：指纹判定从小写副本上的字面量 `in` 走（等价性按 `re.IGNORECASE` 的 Unicode 特例归一化后逐码点验证），`/v1/chat/completions` 不再重复构建上游 body，token 估算改单遍扫描，`wb_settings.load` 加 (path, mtime, size) 缓存（写入仍即时可见）。168KB 请求的 pre-upstream 合计 48.07ms → 18.50ms。
+
+- **用量聚合最后两个全量读者改增量，外加三个 bug**（[PR #240](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/240)，感谢 [@aodianjun](https://github.com/aodianjun)）：`perf_stats` 加窗口预过滤（`range=today` 389~422ms → 211ms）、`count_usage_rows` 改增量折叠（319ms → 0.23ms，位置校验不过才从零重数）；修掉 checkpoint 空闲也整份重写（每 900s 白写 120KB）、`wb_agents.integrate()` 回滚分支的 `NameError`（多文件客户端写一半失败时既不回滚也不写 state）、两处死代码。
+
+- **OpenWrt 预热器覆盖面板真正轮询的接口**（[PR #241](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/241)，感谢 [@aodianjun](https://github.com/aodianjun)）：预热清单 5 → 20 个目标（补上带 range 的 `/usage`、`/usage/perf` 与 `realm=intl|cn`、by-account、timeseries 四个窗口），服务启动后后台预热一次，预热 cron 由 `*/12` 收紧到 `*/2`（缓存命中不延长 TTL，间隔必须显著小于 TTL）。
+
+- **按 API Key 归属表可收起「(切换前)」行**（[PR #242](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/242)，感谢 [@LeoK77S](https://github.com/LeoK77S)）：表头新增与「启用价估算」同款的开关，默认显示、偏好存服务端；同时「启动参数」只在日志里确实出现过它的用量时才占一行（面板有 key 时它恒为 0）。
+
+- **登录限流按真实来源 IP 分桶**（[PR #243](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/243)，感谢 [@aodianjun](https://github.com/aodianjun)）：反代部署下所有浏览器与缓存预热器共用一个 `127.0.0.1` 桶，一个人连错 5 次就把所有人锁 60 秒。现在只在对端可信（回环或 `WB_TRUSTED_PROXIES` 列出的代理）时才读 `X-Real-IP` / `X-Forwarded-For`，否则仍按对端地址分桶——公网客户端伪造头换不了桶。阈值、窗口与会话语义一行未动。
+
+- **上游连接复用**（[PR #245](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/245)，感谢 [@aodianjun](https://github.com/aodianjun)）：urllib 写死 `Connection: close`，每个请求都要重新 TCP+TLS 握手（真机裸握手 TCP 55.5ms、TLS 118.0ms，是请求路径上最大的一笔）。新增 `wb_upstream_pool.py`：按（目标, 代理串）分池复用连接，每键最多 2 条空闲、LIFO、90s 回收、取出探活、复用前重置读超时、只在 body 读到自然结尾时归还。真机 A/B：14 条流式请求的 TCP 连接 14 → 1，loopback p50 19.9ms → 13.3ms、经真实 RTT 链路 36.2ms → 20.4ms。只在「还没发出请求体 / 还没读到任何响应字节」时安全重试一次；非 http(s) 目标、非 HTTP 代理、3xx 一律回退原路径，`WB_UPSTREAM_KEEPALIVE=0` 可整条关掉。
 
 已发布版本的完整记录（v1.4.5 ~ v1.6.19，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
-
----
-
 ## 七、致谢与引用声明 (Credits & References)
 
 协议兼容、风控规避与任务链路设计过程中，参考并吸纳了以下开源项目的经验与逆向成果：
