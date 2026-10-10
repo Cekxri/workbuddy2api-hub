@@ -80,9 +80,9 @@ table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{text-align:right;padding:9px 12px;border-bottom:1px solid var(--line);
   font-variant-numeric:tabular-nums;vertical-align:middle}
 th{color:var(--dim);font-weight:600;font-size:12px;white-space:nowrap;background:var(--panel2)}
-/* 积分扣减历史：外层容器自己纵向滚动，表头不钉住的话滑到下面就看不出哪列是哪列。
-   表头本来就有 --panel2 底色（不透明），加 sticky 即可盖住滚上来的行。 */
-#creditHistoryTable thead th{position:sticky;top:0;z-index:2;
+/* 积分扣减 / 获取历史：外层容器自己纵向滚动，表头不钉住的话滑到下面就看不出
+   哪列是哪列。表头本来就有 --panel2 底色（不透明），加 sticky 即可盖住滚上来的行。 */
+#creditHistoryTable thead th,#creditGrantsTable thead th{position:sticky;top:0;z-index:2;
   box-shadow:inset 0 -1px 0 var(--line)}
 th:first-child{border-top-left-radius:8px;border-bottom-left-radius:8px}
 th:last-child{border-top-right-radius:8px;border-bottom-right-radius:8px}
@@ -1257,6 +1257,20 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '积分数据刷新间隔（小时）': 'Credit refresh interval (hours)',
     '已保存积分数据刷新间隔': 'Credit refresh interval saved',
     '积分数据刷新间隔请填 0 或正整数（0 = 关闭后台刷新）': 'Credit refresh interval must be 0 or a positive integer (0 turns the background refresh off)',
+    '积分获取历史': 'Credit grants',
+    '积分获取历史已刷新': 'Credit grants refreshed',
+    '积分获取历史加载失败: ': 'Loading the credit grants failed: ',
+    '各账号积分包的上游发放记录（每日活跃奖励、免费套餐、活动包…）。数据是最近一次「刷新积分」的快照，要更新的数字先点账号页的「一键刷新积分」。': 'Packages the upstream granted to each account (daily activity rewards, free plan, campaigns...). This is the snapshot from the last credit refresh; use "Refresh credits" on the accounts page for fresh numbers.',
+    '共 ': 'Total ',
+    ' 笔 · 合计 ': ' grants · granted ',
+    ' · 剩余 ': ' · left ',
+    ' · 数据截至 ': ' · snapshot ',
+    '剩余': 'Left',
+    '到期': 'Expires',
+    '已用完': 'Used up',
+    '不过期': 'No expiry',
+    '暂无积分获取记录': 'No credit grants yet',
+    '暂无积分获取记录（上游只返回当前仍可见的积分包，先点「一键刷新积分」拉一次）': 'No credit grants on record (the upstream only returns packages still visible; run "Refresh credits" once)',
     '每日签到 (国内版)': 'Daily check-in (China)',
     '每日签到:': 'Daily check-in:',
     '每账号每日上限（token）': 'Daily cap per account (tokens)',
@@ -3012,6 +3026,24 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         <table class="data-cards" id="creditHistoryTable">
           <thead><tr><th>时间</th><th>模型</th><th>账号</th><th>积分</th><th>Token</th></tr></thead>
           <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 积分获取历史：上游发给每个账号的积分包（免费套餐 / 每日活跃奖励 / 活动包…） -->
+    <section style="margin-bottom:20px" id="creditGrantsSection">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+        <div>
+          <h2 style="margin:0">积分获取历史</h2>
+          <div style="font-size:12px;color:var(--dim)">各账号积分包的上游发放记录（每日活跃奖励、免费套餐、活动包…）。数据是最近一次「刷新积分」的快照，要更新的数字先点账号页的「一键刷新积分」。</div>
+          <div style="font-size:12px;color:var(--dim);margin-top:4px" id="creditGrantsSummary">-</div>
+        </div>
+        <button class="sec mini" onclick="loadCreditGrants(this)">刷新</button>
+      </div>
+      <div style="overflow-x:auto;max-height:260px">
+        <table class="data-cards" id="creditGrantsTable">
+          <thead><tr><th>时间</th><th>账号</th><th>区域</th><th>名称</th><th>积分</th><th>剩余</th><th>到期</th><th>状态</th></tr></thead>
+          <tbody id="creditGrantsTbody"></tbody>
         </table>
       </div>
     </section>
@@ -9112,6 +9144,7 @@ async function loadAnalytics(){
     renderAnalytics(data);
     loadUsageSeries();
     loadRemainingUsage();
+    loadCreditGrants();
   } catch(err) {
     console.error('loadAnalytics failed:', err);
   }
@@ -9311,6 +9344,62 @@ function renderCreditHistory(data){
     + '<td>' + fmt(x.credit) + '</td>'
     + '<td>' + fmt(x.total_tokens || 0) + '</td>'
     + '</tr>').join('') || '<tr><td colspan="5" style="color:var(--dim)">没有积分扣减记录</td></tr>';
+}
+
+// ---------------------------------------------------------------------------
+// 积分获取历史（/accounts/credits/grants）
+//
+// 上游给每个账号一份积分包清单（免费套餐、每日活跃奖励的 Bonus Pack、活动包…），
+// 每个包带面额与发放时间。这个区块把全部账号的包摊平成一张表、新的在前；接口只读
+// 最近一次「刷新积分」留下的快照（不发上游请求），所以摘要里带上快照时刻。
+// ---------------------------------------------------------------------------
+let LAST_GRANTS_DATA = null;
+const GRANT_STATUS_LABEL = {active: '生效中', available: '可用', used_up: '已用完', expired: '已过期'};
+
+async function loadCreditGrants(btn){
+  if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
+  try{
+    const data = await getJSON('/accounts/credits/grants', POLL_READ);
+    renderCreditGrants(data);
+    if(btn) toast('积分获取历史已刷新', 'ok');
+  }catch(e){
+    if(!isAuthError(e)) toast('积分获取历史加载失败: ' + e.message, 'bad');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '刷新'; }
+  }
+}
+
+function renderCreditGrants(data){
+  if(data) LAST_GRANTS_DATA = data;
+  const d = LAST_GRANTS_DATA || {};
+  const rows = (d.rows || []).slice(0, 100);
+  const s = d.summary || {};
+  const summary = document.getElementById('creditGrantsSummary');
+  if(summary){
+    summary.textContent = rows.length
+      ? ('共 ' + fmt(s.count || rows.length) + ' 笔 · 合计 ' + fmt(s.size || 0)
+         + ' · 剩余 ' + fmt(s.remain || 0)
+         + (d.fetched_iso ? ' · 数据截至 ' + String(d.fetched_iso).slice(5, 16) : ''))
+      : '暂无积分获取记录（上游只返回当前仍可见的积分包，先点「一键刷新积分」拉一次）';
+  }
+  const tbody = document.getElementById('creditGrantsTbody');
+  if(!tbody) return;
+  tbody.innerHTML = rows.map(r => {
+    const status = GRANT_STATUS_LABEL[r.status] || String(r.status || '');
+    const tone = (r.status === 'expired' || r.status === 'used_up') ? 'bad'
+      : (r.status === 'active' ? 'ok' : '');
+    const expiry = r.no_expiry ? '不过期' : String(r.expire_iso || '').slice(5, 16) || '—';
+    return '<tr>'
+      + '<td>' + esc(String(r.create_iso || '').slice(5, 16) || '—') + '</td>'
+      + '<td title="' + esc(r.uid || '') + '">' + esc(r.nickname || creditAccountLabel(r.uid)) + '</td>'
+      + '<td style="text-align:center">' + esc(r.realm === 'cn' ? '国内版' : '国际版') + '</td>'
+      + '<td' + (r.grant_reason ? ' title="' + esc(r.grant_reason) + '"' : '') + '>' + esc(r.name || '') + '</td>'
+      + '<td style="text-align:right">' + fmt(r.size || 0) + '</td>'
+      + '<td style="text-align:right">' + fmt(r.remain || 0) + '</td>'
+      + '<td style="text-align:center;font-size:11px;color:var(--dim)">' + esc(expiry) + '</td>'
+      + '<td style="text-align:center"><span class="badge ' + tone + '">' + esc(status) + '</span></td>'
+      + '</tr>';
+  }).join('') || '<tr><td colspan="8" style="color:var(--dim)">暂无积分获取记录</td></tr>';
 }
 
 /* 第一列的口径随范围切换，标签必须跟着走，否则「本周」的数字会被当成「今日」读。 */

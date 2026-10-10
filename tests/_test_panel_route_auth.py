@@ -127,7 +127,7 @@ class BoundaryCase(unittest.TestCase):
     # Management reads the panel draws, none of which is a model API.
     PANEL_ONLY_GET = ("/settings", "/updates", "/logs", "/tasks", "/scheduler",
                       "/accounts", "/usage", "/pricing", "/proxy/slots",
-                      "/activity/history", "/agents")
+                      "/activity/history", "/agents", "/accounts/credits/grants")
     # The same boundary on a reply that is a file rather than a document.
     PANEL_ONLY_DOWNLOAD = ("/logs/export",)
     # The management writes, each guarded by its own panel check in do_POST.

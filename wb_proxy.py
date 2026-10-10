@@ -3022,6 +3022,103 @@ def account_views(realm=None):
         return []
     return POOL.list_public(realm=realm)
 
+# --------------------------------------------------------- 积分获取历史（发放记录）
+# 上游对每个账号返回一份积分包清单（免费套餐、每日活跃奖励的 Bonus Pack、活动包…），
+# 每个包带面额、发放时间与到期时间。看板的「积分获取历史」就是这份清单的合并视图：
+# 只读内存里的账号积分快照，**不发任何上游请求**（要更新的数字先点「一键刷新积分」），
+# 所以它同时给出快照时刻，让面板标明数据有多旧。
+GRANT_STATUS_ACTIVE = "active"        # 上游标了 in_usage：当前正从它扣减
+GRANT_STATUS_AVAILABLE = "available"  # 有剩余、未过期，只是当前不参与扣减
+GRANT_STATUS_USED_UP = "used_up"      # 用完了
+GRANT_STATUS_EXPIRED = "expired"      # 已过期
+
+
+def _parse_stamp_epoch(text):
+    """'2026-10-10 00:42:45' -> epoch；认不出来返回 None。"""
+    if not text:
+        return None
+    try:
+        return time.mktime(time.strptime(str(text)[:19], "%Y-%m-%d %H:%M:%S"))
+    except Exception:
+        return None
+
+
+def _grant_status(pkg, now):
+    """一个积分包现在的状态；判定顺序是「过期 > 用完 > 在扣减 > 可用」。"""
+    try:
+        remain = float(pkg.get("remain") or 0)
+    except (TypeError, ValueError):
+        remain = 0.0
+    expired = bool(pkg.get("is_expired"))
+    expire_at = _parse_stamp_epoch(pkg.get("expire_time"))
+    if expire_at is not None and expire_at <= now:
+        expired = True
+    if expired:
+        return GRANT_STATUS_EXPIRED
+    if remain <= 0:
+        return GRANT_STATUS_USED_UP
+    return GRANT_STATUS_ACTIVE if pkg.get("in_usage") else GRANT_STATUS_AVAILABLE
+
+
+def credit_grants(now=None):
+    """每个积分包一行（新的在前）＋汇总；只读快照，不发上游请求。"""
+    now = time.time() if now is None else now
+    rows = []
+    fetched = 0.0
+    for account in (POOL.accounts if POOL else []):
+        credits = getattr(account, "credits", None) or {}
+        try:
+            fetched = max(fetched, float(credits.get("updated_at") or 0))
+        except (TypeError, ValueError):
+            pass
+        for pkg in credits.get("packages") or []:
+            if not isinstance(pkg, dict):
+                continue
+            def _num(key):
+                try:
+                    return float(pkg.get(key) or 0)
+                except (TypeError, ValueError):
+                    return 0.0
+            expire_iso = pkg.get("expire_time") or pkg.get("cycle_end_time") or ""
+            rows.append({
+                "uid": account.uid,
+                "nickname": account.nickname or (account.uid or "")[:8],
+                "realm": account.realm,
+                "name": str(pkg.get("name") or pkg.get("package_code") or "Package"),
+                "product": str(pkg.get("sub_product_name") or pkg.get("product_name") or ""),
+                "grant_reason": str(pkg.get("grant_reason") or ""),
+                "size": _num("size"),
+                "remain": _num("remain"),
+                "used": _num("used"),
+                "unit": str(pkg.get("unit") or "credit"),
+                "create_at": _parse_stamp_epoch(pkg.get("create_time")),
+                "create_iso": str(pkg.get("create_time") or ""),
+                "expire_at": _parse_stamp_epoch(expire_iso),
+                "expire_iso": str(expire_iso),
+                "no_expiry": bool(pkg.get("no_expiry")),
+                "days_left": pkg.get("days_left"),
+                "status": _grant_status(pkg, now),
+            })
+    # 新的在前；同一秒按账号、包名稳定排序，免得每次刷新顺序都在跳。
+    rows.sort(key=lambda r: (-(r["create_at"] or 0), r["nickname"], r["name"]))
+    return {
+        "ok": True,
+        "generated_at": now,
+        "generated_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+        "fetched_at": fetched or None,
+        "fetched_iso": (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(fetched))
+                        if fetched else None),
+        "rows": rows,
+        "summary": {
+            "count": len(rows),
+            "size": round(sum(r["size"] for r in rows), 2),
+            "remain": round(sum(r["remain"] for r in rows), 2),
+            "used": round(sum(r["used"] for r in rows), 2),
+            "accounts": len(set(r["uid"] for r in rows)),
+        },
+    }
+
+
 # --------------------------------------------------------------- 任务状态快照
 # GET /tasks 每次都要向上游要两份数据（成长任务 + 汇总），实测约 2 秒；而看板切区域、
 # 切账号、切页面都会各打一次，用户在界面上就是"点了要等几秒才变"。这里按账号放一份
@@ -10907,6 +11004,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_account_credits_detail(query)
         if path == "/accounts/credits":
             return self._get_accounts_credits()
+        if path == "/accounts/credits/grants":
+            return self._get_account_credits_grants()
         if path == "/accounts":
             return self._get_accounts(query)
         if path == "/accounts/export":
@@ -11073,6 +11172,17 @@ class Handler(BaseHTTPRequestHandler):
         for a in (POOL.accounts if POOL else []):
             a.fetch_credits()
         return self._json(200, {"accounts": account_views()})
+
+    def _get_account_credits_grants(self):
+        """积分获取历史：只读账号积分快照，不发上游请求。
+
+        要更新的数字先走「一键刷新积分」（POST /accounts/credits），这里只把
+        最近一次快照里的积分包摊平成一张表；载荷带上快照时刻，面板据此提醒
+        数据有多旧。
+        """
+        if not self._authorized():
+            return
+        return self._json(200, credit_grants())
 
     def _get_account_credits_detail(self, query):
         if not self._authorized():
