@@ -168,6 +168,22 @@ def fetch_growth_summary(account):
     return out
 
 
+def fetch_streak_days(account):
+    """只读查询账号当前连续打卡天数（GET /activity/growth/streak）。
+
+    失败返回 None，不发写请求。供对话活跃上报后回显连登天数使用。
+    """
+    try:
+        req = urllib.request.Request(CHAT_BASE + "/activity/growth/streak",
+                                     headers=account.headers("chat"))
+        with _accounts.urlopen(req, timeout=10, proxy=account.proxy) as resp:
+            d = json.loads(resp.read().decode("utf-8"))
+            st = (d.get("data") or {}).get("streak") or {}
+            return st.get("days")
+    except Exception as exc:
+        _log(f"fetch_streak_days failed: {exc}")
+        return None
+
 def accept_tasks(account, codes, chunk=20):
     """批量接取任务。
 

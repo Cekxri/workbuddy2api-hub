@@ -526,6 +526,9 @@ class Account(object):
         self.credits = data.get("credits") or None
         self.last_checkin = data.get("lastCheckin") or None
         self.last_daily_chat = data.get("lastDailyChat") or None
+        # 国内版每天一次的「对话活跃上报」（点亮官方 growth 连登/热力墙）上次
+        # 成功的时刻；与 lastCheckin 同款：只按「今天成功过没有」做闸门。
+        self.last_activity_report = data.get("lastActivityReport") or None
         # Low-credit guard: once the balance reaches this level the account
         # stops being handed out, so it never drops to zero (a zero balance is
         # what makes the upstream start sending nagging SMS). Resolved from the
@@ -610,6 +613,7 @@ class Account(object):
             "credits": self.credits,
             "lastCheckin": self.last_checkin,
             "lastDailyChat": self.last_daily_chat,
+            "lastActivityReport": self.last_activity_report,
         }
 
     def _throttle_snapshot(self, now):
@@ -678,8 +682,10 @@ class Account(object):
                                  else None),
             "lastCheckin": self.last_checkin,
             "lastDailyChat": self.last_daily_chat,
+            "lastActivityReport": self.last_activity_report,
             "canCheckin": self.realm == "cn",
             "canDailyChat": self.realm == "intl",
+            "canReportActivity": self.realm == "cn",
             "machineId": derive_id(self.uid, "machine"),
             "sessionId": derive_id(self.uid, "session"),
         }
@@ -1137,6 +1143,15 @@ class Account(object):
         today_str = time.strftime("%Y-%m-%d")
         return not str(self.last_daily_chat).startswith(today_str)
 
+    def can_report_activity(self):
+        """国内版每天一次的对话活跃上报（点亮 growth 连登）是否还没做过。"""
+        if self.realm != "cn":
+            return False
+        if not self.last_activity_report:
+            return True
+        today_str = time.strftime("%Y-%m-%d")
+        return not str(self.last_activity_report).startswith(today_str)
+
     def web_headers(self):
         """网页版 app 的出站头：只有 bearer 与 X-User-Id，没有桌面端指纹。"""
         return {
@@ -1339,6 +1354,33 @@ class Account(object):
                 return {"ok": False, "error": "HTTP %d" % exc.code}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    def report_activity(self):
+        """国内版对话活跃上报：一条 /v2/report 点亮官方 growth 连登。
+
+        这是客户端 chat_request_send 事件的复刻（事件形状见 wb_tasks.build_event），
+        上游口径：必须带 userId，否则服务端 200 但静默丢弃；每号每天一次即可，
+        不做多时点高频上报（风控口径）。成功后记 lastActivityReport 并落盘，再读
+        一次 /activity/growth/streak 把连登天数带回去——读失败不影响上报本身的
+        结论。只有国内版有这套成长体系，国际版直接拒绝。
+        """
+        if self.realm != "cn":
+            return {"ok": False, "error": "activity report is only for CN realm accounts"}
+        import wb_tasks
+        event = wb_tasks.build_event(self, "chat")
+        if not wb_tasks.report_events(self, [event]):
+            return {"ok": False, "error": "活跃上报被上游拒绝（未返回 code=0）"}
+        self.last_activity_report = time.strftime("%Y-%m-%d %H:%M:%S")
+        if self.path and os.path.exists(os.path.dirname(self.path)):
+            self.save(os.path.dirname(self.path))
+        days = wb_tasks.fetch_streak_days(self)
+        if days is None:
+            return {"ok": True, "msg": "对话活跃上报成功（连登天数未知）"}
+        if days <= 0:
+            return {"ok": True, "streak_days": 0,
+                    "msg": "对话活跃上报成功，但连登仍是 0 天（可能被上游静默丢弃）"}
+        return {"ok": True, "streak_days": days,
+                "msg": "对话活跃上报成功（连续打卡 %d 天）" % days}
 
     def _parse_package_account(self, acc):
         pkg_name = acc.get("PackageName") or "Package"
@@ -2905,7 +2947,8 @@ EXPORT_VERSION = 1
 # Fields that describe live state rather than the credential itself. They are
 # exported for inspection but never trusted on import: a stale cooldown or a
 # disabled flag from another machine would silently cripple the target pool.
-VOLATILE_FIELDS = ("cooldownUntil", "lastError", "credits", "lastCheckin", "lastDailyChat")
+VOLATILE_FIELDS = ("cooldownUntil", "lastError", "credits", "lastCheckin",
+                   "lastDailyChat", "lastActivityReport")
 
 # The subset of VOLATILE_FIELDS that must not round-trip through the local
 # credential file at all: they are not trusted on load and not written by save(),
