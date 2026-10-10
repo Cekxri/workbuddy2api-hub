@@ -19,7 +19,15 @@ from collections import deque
 import re
 import json
 import os
-MAX_PAYLOAD_BYTES = int(os.environ.get("WB_MAX_PAYLOAD_BYTES", 50 * 1024 * 1024))  # 50MB limit
+# 单请求体上限。默认值从 50MB 收紧到 16MB，是「内存护栏」：body 先整体读成 bytes、
+# 再 decode 成 str、再 json.loads 成对象，实测 50MB body 的 decode+parse 峰值约
+# 109MB、单请求峰值约 160MB；而读 body 发生在 chat 信号量 acquire 之前、线程数又
+# 没有上限，路由器（可用内存约 480MB）上几个并发大 body 就能把机器打穿。
+# 权衡：另一条路是把 body 读取也纳入 chat 信号量，但那会改动 401/404/413 早退与
+# 503 的先后语义、并让慢客户端占着 slot 拖住信号量；只收紧默认值保守得多——16MB
+# 对正常客户端绰绰有余（Codex 1M token 上下文的 JSON 也只有几 MB），确需更大可
+# 显式设 WB_MAX_PAYLOAD_BYTES，内存代价由运维者自己拍板。
+MAX_PAYLOAD_BYTES = int(os.environ.get("WB_MAX_PAYLOAD_BYTES", 16 * 1024 * 1024))  # 16MB limit
 # Upstream chat calls may hold a handler thread for up to 600s, and every
 # request gets its own thread, so an unbounded pool lets a handful of slow
 # clients pin hundreds of threads and the memory behind them. Bound the number
@@ -9544,6 +9552,13 @@ def _cache_etag(kind, key, built_at):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    # 关掉 Nagle（对连接设 TCP_NODELAY）：响应头和响应体是两次独立 write，Nagle
+    # 会把第二次小写攒在手里等第一次的 ACK，碰上客户端 delayed ACK 就是每个小响应
+    # 白付 ~40ms（路由器实测同一 keep-alive 连接的连续小响应：中位数 50.0ms ->
+    # 1.41ms；面板几乎所有 <64KB 的 JSON 都中招，Tailscale 常驻连接上每笔都付
+    # 一次）。StreamRequestHandler.setup() 原生支持这个开关，werkzeug/uvicorn
+    # 同做法，一行生效。
+    disable_nagle_algorithm = True
     # Which configured API key the caller used, set by _key_ok(). Its bound
     # realm decides the upstream exit for this request alone.
     key_entry = None
@@ -12957,9 +12972,20 @@ def _log_startup_summary(args, api_key_generated):
         print()
         sys.stdout.flush()
 
+class GatewayServer(ThreadingHTTPServer):
+    """主服务的 HTTP 服务类：只为把 listen backlog 从 stdlib 默认的 5 提到 128。
+
+    backlog=5 在突发并发下（面板打开一页就是 ~7 个并发请求，多标签更糟）会让
+    内核来不及 accept 的 SYN 被丢弃、客户端按 1s 粒度重传，表现为一部分请求整整
+    慢 1 秒（路由器实测：64 并发突发 43/64 卡 >=1s、最长 2.8s；backlog=128 后
+    0/64、最长 0.18s）。listen() 在 TCPServer.__init__ 里就被调用，所以必须是
+    类属性——实例化之后再改就晚了。
+    """
+    request_queue_size = 128
+
 def _serve_forever(args):
     try:
-        server = ThreadingHTTPServer((args.host, args.port), Handler)
+        server = GatewayServer((args.host, args.port), Handler)
     except OSError as exc:
         # Port stolen between the probe above and this bind, or held by
         # something that does not answer /health: report it in plain words
