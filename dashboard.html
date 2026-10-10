@@ -2889,10 +2889,11 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         <button class="primary" id="btnPageDailyChat" onclick="doDailyChat(this)">每日活跃打卡 (国际版)</button>
       </div>
     </div>
-    <div class="cards" style="margin-bottom:14px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+    <div class="cards" style="margin-bottom:14px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
       <div class="card"><div class="val" id="intlAcctCount">-</div><div class="lbl">国际版账号数量</div></div>
       <div class="card accent"><div class="val" id="intlBonusCredits">-</div><div class="lbl">每日活跃奖励额度</div></div>
       <div class="card accent2"><div class="val" id="intlTodayActiveState">-</div><div class="lbl">今日活跃打卡状态</div></div>
+      <div class="card warn"><div class="val" id="intlTotalGranted">-</div><div class="lbl">累计活跃奖励积分</div></div>
     </div>
   </section>
 
@@ -2913,12 +2914,13 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       </div>
     </div>
 
-    <div class="cards" style="margin-bottom:14px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
-      <div class="card"><div class="val" id="stkDays">-</div><div class="lbl">连续打卡天数</div></div>
-      <div class="card accent"><div class="val" id="nrgBalance">-</div><div class="lbl">成长能量余额</div></div>
-      <div class="card accent2"><div class="val" id="catState">-</div><div class="lbl" id="catDesc">猫猫日常状态</div></div>
+    <div class="cards" style="margin-bottom:14px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
+      <div class="card"><div class="val" id="cnTotalGranted">-</div><div class="lbl">已获取福利总积分</div></div>
+      <div class="card accent"><div class="val" id="stkDays">-</div><div class="lbl">连续打卡天数</div></div>
       <div class="card"><div class="val" id="makeupCards">-</div><div class="lbl">补签卡余额</div></div>
       <div class="card warn"><div class="val" id="lotteryChances">-</div><div class="lbl">成长抽奖次数</div></div>
+      <div class="card accent2"><div class="val" id="catState">-</div><div class="lbl" id="catDesc">猫猫日常状态</div></div>
+      <div class="card"><div class="val" id="nrgBalance">-</div><div class="lbl">成长能量余额</div></div>
     </div>
 
     <div style="overflow-x:auto">
@@ -4178,12 +4180,23 @@ async function switchGrowthAccount(uid){
 
 async function loadIntlTasks(){
   try{
-    const r = await getJSON('/accounts');
+    const [r, g] = await Promise.all([
+      getJSON('/accounts'),
+      getJSON('/accounts/credits/grants').catch(() => ({}))
+    ]);
     const accts = (r.accounts || []).filter(a => a.realm === 'intl' && a.enabled);
     const countEl = document.getElementById("intlAcctCount");
     if(countEl) countEl.textContent = accts.length + ' 个';
     const bonusEl = document.getElementById("intlBonusCredits");
     if(bonusEl) bonusEl.textContent = '30 / 50 积分';
+
+    const intlTotalEl = document.getElementById("intlTotalGranted");
+    if(intlTotalEl){
+      const gRows = (g.rows || []).filter(x => x.realm === 'intl' && (x.name === 'Bonus Pack' || (x.source_inferred && x.source_inferred.includes('活跃'))));
+      const totalAmt = gRows.reduce((acc, x) => acc + (Number(x.size || x.amount) || 0), 0);
+      intlTotalEl.textContent = '+' + fmt(totalAmt) + ' 积分';
+    }
+
     const stateEl = document.getElementById("intlTodayActiveState");
     if(stateEl){
       if(!accts.length){
@@ -4237,6 +4250,27 @@ async function loadGrowthTasks(){
     if(elCards) elCards.textContent = (sum.makeup_cards != null ? sum.makeup_cards : '-') + ' 张';
     const elLottery = document.getElementById("lotteryChances");
     if(elLottery) elLottery.textContent = (sum.lottery_chances != null ? sum.lottery_chances : '-') + ' 次';
+
+    const cnTotalEl = document.getElementById("cnTotalGranted");
+    if(cnTotalEl){
+      try{
+        const g = await getJSON('/accounts/credits/grants');
+        let gRows = (g.rows || []).filter(x => x.realm === 'cn');
+        if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
+          gRows = gRows.filter(x => x.uid === CURRENT_GROWTH_UID);
+        }
+        // 排除掉不带任务/活动属性的纯体验包，统计签到、成长、活动等福利
+        const perksRows = gRows.filter(x => {
+          const r = String(x.grant_reason || '');
+          const n = String(x.name || '');
+          return r.includes('签到') || r.includes('成长') || r.includes('活动') || r.includes('裂变') || n.includes('裂变');
+        });
+        const totalAmt = perksRows.reduce((acc, x) => acc + (Number(x.size || x.amount) || 0), 0);
+        cnTotalEl.textContent = '+' + fmt(totalAmt) + ' 积分';
+      }catch(e){
+        cnTotalEl.textContent = '-';
+      }
+    }
 
     const elCat = document.getElementById("catState");
     const elCatDesc = document.getElementById("catDesc");
