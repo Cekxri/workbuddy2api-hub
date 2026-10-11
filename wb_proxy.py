@@ -6670,6 +6670,9 @@ def log(msg, level=None, tag=None):
     sys.stderr.flush()
     add_log_entry(msg, level=level, tag=tag)
 
+# 本地网路工具的多引擎轮换、冷却与失败分类写进看板日志（tag=webtools）
+wb_webtools.set_logger(log)
+
 def get_logs(limit=200, level="", tag="", search="", since_id=0):
     with _LOG_LOCK:
         items = list(LOG_BUFFER)

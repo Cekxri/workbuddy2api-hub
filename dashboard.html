@@ -1375,7 +1375,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '没有可导入的账号。': 'No accounts to import.',
     '没有启用的代理槽，请先在「设置 → 账号代理槽」添加并保存': 'No proxy slot is enabled; add and save one under Settings → Account proxy slots first',
     '注意：切换后的身分会被保存，重启后继续沿用，不会自动回到 WB。': 'Note: the switched identity is saved and kept after a restart; it does not go back to WB on its own.',
-    '注意：开启后网关会主动出网抓取模型给出的 URL（只挡字面私网地址），且每轮代跑都会多跑一次上游、多消耗该账号的额度；国内网络下 DuckDuckGo 可能连不上，那时模型拿到的是错误文本。': 'Note: with this on, the gateway goes out to fetch the URLs the model asks for (only literal private addresses are blocked), and every proxied round makes one extra upstream call and spends more of that account quota; on Chinese networks DuckDuckGo may be unreachable, and the model then gets error text.',
+    '注意：开启后网关会主动出网抓取模型给出的 URL（字面私网地址与解析进内网的域名都会被挡），且每轮代跑都会多跑一次上游、多消耗该账号的额度；某个搜寻引擎被限流时会自动轮换到下一家，全部不可用才把明确错误交给模型。': 'Note: with this on, the gateway goes out to fetch the URLs the model asks for (literal private addresses and hostnames resolving into a private network are both blocked), and every proxied round makes one extra upstream call and spends more of that account quota; when a search backend is rate-limited the gateway rotates to the next one automatically, and only hands the model a clear failure when every backend is unavailable.',
     '活跃打卡成功': 'Activity check-in succeeded',
     '流式': 'Streaming',
     '浅色': 'Light',
@@ -1655,7 +1655,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '选择颜色主题': 'Choose a color theme',
     '速度': 'Speed',
     '那一份（': '(that set,',
-    '部分客户端（如 Codex App）会宣告 web_search / web_fetch 这类服务端工具，而上游没有对应的执行器：声明送上去，模型看到工具却没有执行器，客户端最后只拿到一句 unsupported call。开启后由本网关代跑——把声明换成自己的同名函数，在本地执行（搜索走 DuckDuckGo，抓页面抓这个 URL）再把结果喂回模型。默认关闭，关闭时声明原样透传，客户端自己声明的搜索工具照常拿到调用。': 'Some clients (such as the Codex App) declare server-side tools like web_search / web_fetch, but the upstream has no executor for them: the declaration goes up, the model sees the tool with nothing to run it, and the client ends up with nothing but unsupported call. With this on, the gateway runs them instead: it swaps the declaration for its own same-named function, runs it locally (search through DuckDuckGo, page fetch for that URL) and feeds the result back to the model. Off by default; when off the declaration passes through untouched and search tools the client declares itself still get called.',
+    '部分客户端（如 Codex App）会宣告 web_search / web_fetch 这类服务端工具，而上游没有对应的执行器：声明送上去，模型看到工具却没有执行器，客户端最后只拿到一句 unsupported call。开启后由本网关代跑——把声明换成自己的同名函数，在本地执行（搜索按 DuckDuckGo → Bing → Wikipedia → Stack Overflow → Google News 的顺序自动轮换，抓页面抓这个 URL）再把结果喂回模型。默认关闭，关闭时声明原样透传，客户端自己声明的搜索工具照常拿到调用。': 'Some clients (such as the Codex App) declare server-side tools like web_search / web_fetch, but the upstream has no executor for them: the declaration goes up, the model sees the tool with nothing to run it, and the client ends up with nothing but unsupported call. With this on, the gateway runs them instead: it swaps the declaration for its own same-named function, runs it locally (search rotates automatically through DuckDuckGo -> Bing -> Wikipedia -> Stack Overflow -> Google News; page fetch uses that URL) and feeds the result back to the model. Off by default; when off the declaration passes through untouched and search tools the client declares itself still get called.',
     '重新扫描': 'Rescan',
     '重新生成链接': 'Regenerate link',
     '错误': 'errors',
@@ -2079,7 +2079,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "没有可导入的账号。": "沒有可匯入的帳號。",
     "没有启用的代理槽，请先在「设置 → 代理槽」添加并保存": "沒有啟用的代理槽，請先在「設定 → 代理槽」新增並儲存",
     "注意：切换后的身分会被保存，重启后继续沿用，不会自动回到 WB。": "注意：切換後的身分會被儲存，重啟後繼續沿用，不會自動回到 WB。",
-    "注意：开启后网关会主动出网抓取模型给出的 URL（只挡字面私网地址），且每轮代跑都会多跑一次上游、多消耗该账号的额度；国内网络下 DuckDuckGo 可能连不上，那时模型拿到的是错误文本。": "注意：開啟後閘道會主動出網抓取模型給出的 URL（只擋字面私網地址），且每輪代跑都會多跑一次上游、多消耗該帳號的額度；國內網路下 DuckDuckGo 可能連不上，那時模型拿到的是錯誤文字。",
+    "注意：开启后网关会主动出网抓取模型给出的 URL（字面私网地址与解析进内网的域名都会被挡），且每轮代跑都会多跑一次上游、多消耗该账号的额度；某个搜寻引擎被限流时会自动轮换到下一家，全部不可用才把明确错误交给模型。": "注意：開啟後閘道會主動出網抓取模型給出的 URL（字面私網地址與解析進內網的網域都會被擋），且每輪代跑都會多跑一次上游、多消耗該帳號的額度；某個搜尋引擎被限流時會自動輪換到下一家，全部不可用才把明確錯誤交給模型。",
     "测试通过 (": "測試透過 (",
     "浏览器拒绝了复制操作": "瀏覽器拒絕了複製操作",
     "添加 WorkBuddy 账号 (OAuth 授权)": "新增 WorkBuddy 帳號 (OAuth 授權)",
@@ -2220,7 +2220,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "选择一个账号 JSON 文件。支持本网关导出的文件、账号数组、单个账号对象， 以及桌面客户端的": "選擇一個帳號 JSON 檔案。支援本閘道匯出的檔案、帳號陣列、單個帳號物件， 以及桌面客戶端的",
     "选择要登录的版本：": "選擇要登入的版本：",
     "逐个刷新所有账号的上游访问凭证（相当于对每个账号点一次「刷新凭证」）": "逐個重新整理所有帳號的上游訪問憑證（相當於對每個帳號點一次「重新整理憑證」）",
-    "部分客户端（如 Codex App）会宣告 web_search / web_fetch 这类服务端工具，而上游没有对应的执行器：声明送上去，模型看到工具却没有执行器，客户端最后只拿到一句 unsupported call。开启后由本网关代跑——把声明换成自己的同名函数，在本地执行（搜索走 DuckDuckGo，抓页面抓这个 URL）再把结果喂回模型。默认关闭，关闭时声明原样透传，客户端自己声明的搜索工具照常拿到调用。": "部分客戶端（如 Codex App）會宣告 web_search / web_fetch 這類服務端工具，而上游沒有對應的執行器：宣告送上去，模型看到工具卻沒有執行器，客戶端最後只拿到一句 unsupported call。開啟後由本閘道代跑——把宣告換成自己的同名函式，在本地執行（搜尋走 DuckDuckGo，抓頁面抓這個 URL）再把結果喂回模型。預設關閉，關閉時宣告原樣透傳，客戶端自己宣告的搜尋工具照常拿到呼叫。",
+    "部分客户端（如 Codex App）会宣告 web_search / web_fetch 这类服务端工具，而上游没有对应的执行器：声明送上去，模型看到工具却没有执行器，客户端最后只拿到一句 unsupported call。开启后由本网关代跑——把声明换成自己的同名函数，在本地执行（搜索按 DuckDuckGo → Bing → Wikipedia → Stack Overflow → Google News 的顺序自动轮换，抓页面抓这个 URL）再把结果喂回模型。默认关闭，关闭时声明原样透传，客户端自己声明的搜索工具照常拿到调用。": "部分客戶端（如 Codex App）會宣告 web_search / web_fetch 這類服務端工具，而上游沒有對應的執行器：宣告送上去，模型看到工具卻沒有執行器，客戶端最後只拿到一句 unsupported call。開啟後由本閘道代跑——把宣告換成自己的同名函式，在本地執行（搜尋按 DuckDuckGo → Bing → Wikipedia → Stack Overflow → Google News 的順序自動輪換，抓頁面抓這個 URL）再把結果喂回模型。預設關閉，關閉時宣告原樣透傳，客戶端自己宣告的搜尋工具照常拿到呼叫。",
     "重新打开会补算关闭期间的请求": "重新開啟會補算關閉期間的請求",
     "重新生成链接": "重新生成連結",
     "限额已保存": "限額已儲存",
@@ -3729,10 +3729,10 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
           <div>
             <h2 style="margin:0">本地网络工具 <em id="setLocalWebToolsState"></em></h2>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              部分客户端（如 Codex App）会宣告 web_search / web_fetch 这类服务端工具，而上游没有对应的执行器：声明送上去，模型看到工具却没有执行器，客户端最后只拿到一句 unsupported call。开启后由本网关代跑——把声明换成自己的同名函数，在本地执行（搜索走 DuckDuckGo，抓页面抓这个 URL）再把结果喂回模型。默认关闭，关闭时声明原样透传，客户端自己声明的搜索工具照常拿到调用。
+              部分客户端（如 Codex App）会宣告 web_search / web_fetch 这类服务端工具，而上游没有对应的执行器：声明送上去，模型看到工具却没有执行器，客户端最后只拿到一句 unsupported call。开启后由本网关代跑——把声明换成自己的同名函数，在本地执行（搜索按 DuckDuckGo → Bing → Wikipedia → Stack Overflow → Google News 的顺序自动轮换，抓页面抓这个 URL）再把结果喂回模型。默认关闭，关闭时声明原样透传，客户端自己声明的搜索工具照常拿到调用。
             </div>
             <div style="font-size:12px;color:var(--warn);margin-top:4px">
-              注意：开启后网关会主动出网抓取模型给出的 URL（只挡字面私网地址），且每轮代跑都会多跑一次上游、多消耗该账号的额度；国内网络下 DuckDuckGo 可能连不上，那时模型拿到的是错误文本。
+              注意：开启后网关会主动出网抓取模型给出的 URL（字面私网地址与解析进内网的域名都会被挡），且每轮代跑都会多跑一次上游、多消耗该账号的额度；某个搜寻引擎被限流时会自动轮换到下一家，全部不可用才把明确错误交给模型。
             </div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">

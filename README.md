@@ -202,10 +202,12 @@ python tests/run_all.py realm      # 只跑名字里含 realm 的
 
 ### 7. 本地网络工具（可选，默认关闭）
 
-Codex App 这类客户端会在 Responses 请求里声明 `web_search` / `web_fetch`，而上游没有对应的执行器——声明送上去只会拿到一句 unsupported call。打开「设置 → 本地网络工具」后，网关把那份声明换成自己的同名 function，拦下模型的调用并在本地执行（搜索走 DuckDuckGo HTML 版，抓页面抓模型给出的 URL），再把结果喂回模型，最多代跑 3 轮（`WB_MAX_WEB_ROUNDS` 可调，上限 8）；搜索过程会作为 `web_search_call` 卡片事件与 `url_citation` 引用回到客户端。
+Codex App 这类客户端会在 Responses 请求里声明 `web_search` / `web_fetch`，而上游没有对应的执行器——声明送上去只会拿到一句 unsupported call。打开「设置 → 本地网络工具」后，网关把那份声明换成自己的同名 function，拦下模型的调用并在本地执行（搜索在 DuckDuckGo / Bing / Wikipedia / Stack Overflow / Google News 之间自动轮换，抓页面抓模型给出的 URL），再把结果喂回模型，最多代跑 3 轮（`WB_MAX_WEB_ROUNDS` 可调，上限 8）；搜索过程会作为 `web_search_call` 卡片事件与 `url_citation` 引用回到客户端。
 
 - 关闭时（默认）声明原样透传，客户端自己声明的搜索工具照常拿到调用；
-- 打开后网关会主动出网抓取模型给出的 URL（只挡字面私网地址），且每轮代跑都会多跑一次上游、多消耗该账号额度；国内网络下 DuckDuckGo 可能连不上，那时模型拿到的是错误文本；
+- 打开后网关会主动出网抓取模型给出的 URL（字面私网地址与解析进内网的域名都会被挡；
+  `WB_WEB_TOOLS_PROXY` 可以给这组工具单独指定出口代理），每轮代跑都会多跑一次上游、多消耗该账号额度；
+- 某个搜寻引擎被限流／拦截时会自动轮换到下一家，只有全部不可用才把明确错误交给模型；常规引擎（DuckDuckGo / Bing）接手时对模型无感，Wikipedia / Stack Overflow / Google News 这类非常规来源会在结果里标明来源；
 - 只影响声明了这两个工具的客户端，普通 `/v1/chat/completions` 客户端不经过这条路径。
 
 ### 8. 智能体一键配置
@@ -368,6 +370,10 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 - **修复：上游风控限制 403（code 11140）不再被当成内容审核**（#288）：账号被上游限制时（正文「账号存在异常行为，已被限制使用」/「restricted due to unusual activity」），原先落进内容审核分支——降级提示词重试一次后就把错误透传给客户端，被限制的账号既不冷却也继续被选用，同一条对话被一次次打死。现在按账号级限制处理：冷却该账号 2 小时并轮到下一个账号，上游解封后自愈；池里只剩一个账号时仍把限制原因交给客户端。内容审核 403 的降级路径不变。顺带把重试循环的 5xx 从固定清单（500/502/503/504）放宽为一切 >= 500——上游自定义的 550 这类原先会直接甩回客户端，现在按瞬时故障轮转。新增 `tests/_test_restricted_403.py`（6 项）。
 
 - **修复：`remaining` 的 checkpoint 从来没能被采纳（写者/校验者口径矛盾）**：折叠侧按日志顺序追加，而 `at` 取的是请求**完成**时刻——多线程下会回退几毫秒（本机日志有一对 4.96ms，路由器自己写出的 checkpoint 里有一对 0.47ms），加载侧却要求每个 (账号 × 模型) 的 `at` 严格单调，一处乱序就整份拒绝：每次重启 `/usage/remaining` 都退回从零冷扫（真机实测 3.05~4.5s）。现在折叠侧按 `at` 有序插入（只在乱序时才付 O(n) 挪动，pair 通常几十~几百条；顺序追加仍是 O(1)），加载侧对旧版（日志顺序）缓冲做一次稳定排序并重建累计和/`base`（(at, 增量) 配对不变、已裁剪的死前缀物理丢弃、`base` 记绝对值），形状校验不再要求有序。同一处乱序在窗口求和上的连带错误一并修掉：`_range_sum`/`_range_sum_open` 的二分前提恢复后，乱序日志下的窗口和等于「按排序后重算」的值（旧版会少算、甚至算成 0）。新增 `tests/_test_remaining_checkpoint_order.py`（12 项：乱序日志的折叠与窗口和、乱序/旧版 checkpoint 的重启采纳与逐字节对拍、截断与同尺寸重写仍然作废、两个独立进程的冷折 vs 采纳对拍）。
+- **本地网络工具（`web_search` / `web_fetch`）改成多引擎自动轮换**（[PR #290](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/290)）：旧的单引擎实现只走 DuckDuckGo HTML 版，上游对出口 IP 限流、返回反爬页时，解析不到结果就会把失败误报成「查无结果」，同一网关上的对话都只看到搜不到。现在同一句查询会按 `duckduckgo -> bing -> wikipedia -> stackoverflow -> google news` 自动轮换（只用国际来源；`WB_WEB_ENGINES` 可覆盖顺序与子集），常规引擎（DuckDuckGo / Bing）接手时结果与平常完全一致、模型无感；换成 Wikipedia / Stack Overflow / Google News 这类非常规来源时，结果明确带上 `Source: ...` 并要模型告知用户出处；全部引擎都不可用才回 `web search is temporarily unavailable`（附各家原因，并要求模型不要重试同一句、直接告知使用者）。
+  - 「真的没有结果」与「被限流／拦截」分开分类：HTTP 202/403/429 或反爬页（DDG anomaly 页等签名）判为被挡，引擎进冷却（`WB_WEB_COOLDOWN`，默认 600 秒；其他引擎健康时跳过冷却中的，其他全挂时再补试一轮）；查询结果 TTL 快取（`WB_WEB_CACHE_TTL`，默认 600 秒；空结果 120 秒）＋同 key 併发去重＋对外最小间隔（`WB_WEB_MIN_INTERVAL`，默认 0.5 秒）＋单次搜寻总预算（`WB_WEB_BUDGET`，默认 25 秒）。
+  - `web_fetch` 一并硬化：只收文本型内容（PDF 等二进位直接回明确错误）、支援 gzip 压缩、4 MB 读档上限、charset 依标头与 `<meta>` 推断、结果进快取；URL 守卫除原有字面检查外，会解析 DNS 并核对每个位址都是公网（防 DNS rebinding 把 fetch 指进内网）；新增 `WB_WEB_TOOLS_PROXY` 给这组工具单独指定出口代理。
+  - 多引擎轮换、冷却与失败分类写进看板日志（`tag=webtools`）；测试：`tests/_test_local_web_tools.py` 从 68 项扩到 120 项（轮换、来源标注、冷却、快取与节流、失败分类、抓取闸门、DNS/IP 守卫，全部离线跑）；`release/portable_runtime.py` 的运行时契约补 `Lib/gzip.py`。
 
 - **修复「网页通道打卡」在认证代理下必然 407**：账号绑定带 user/pwd 的代理槽时，网页通道那一步固定失败并回 `OSError: Tunnel connection failed: 407 Proxy Authentication Required`，而桌面通道与面板「出口 IP 测试」都正常。原因是 `wb_webagent.AcpChannel._connect()` 用裸 `http.client` + `set_tunnel()` 直连代理，只传了 `host/port`：`urllib.request.ProxyHandler` 会替 urlopen 那条路径把 URL 里的凭据转成 `Proxy-Authorization: Basic ...`，而 `set_tunnel()` 不带这个头——于是同一个代理 URL 在两条通道上行为不一致。
   - 现在 `_connect()` 走 `_proxy_parts()` 解析代理 URL，把 `Proxy-Authorization` 显式塞进 CONNECT（取值口径与 `ProxyHandler.proxy_open` 一致：先 `unquote` 再 base64），两种写法都认：`http://user:pass@host:port` 与无 scheme 的 `user:pass@host:port`（后者此前连 host/port 都会被 `urlparse` 误判成 scheme，一并修正）；没填凭据时不发该头，免认证代理行为不变。
